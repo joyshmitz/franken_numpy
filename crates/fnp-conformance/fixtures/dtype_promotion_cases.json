@@ -1,0 +1,6 @@
+[
+  {"id": "bool_i32", "lhs": "bool", "rhs": "i32", "expected": "i32"},
+  {"id": "i32_i64", "lhs": "i32", "rhs": "i64", "expected": "i64"},
+  {"id": "i32_f32", "lhs": "i32", "rhs": "f32", "expected": "f64"},
+  {"id": "f32_f64", "lhs": "f32", "rhs": "f64", "expected": "f64"}
+]

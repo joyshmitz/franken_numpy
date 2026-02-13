@@ -1,0 +1,5 @@
+{
+  "suite": "smoke",
+  "oracle": "legacy_numpy_code/numpy",
+  "notes": "Bootstrap fixture for first runnable conformance harness"
+}

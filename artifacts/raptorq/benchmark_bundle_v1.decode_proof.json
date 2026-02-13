@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "bundle_id": "benchmark_bundle_v1",
+  "generated_at_unix_ms": 1770974452160,
+  "dropped_symbol": "sbn=0 esi=0 kind=source",
+  "recovery_symbols_used": 16,
+  "recovery_success": true,
+  "expected_hash": "dc3b9339c5ac87363f6086b1e8684db04ab584610c832df0b037bf53c60b164f",
+  "recovered_hash": "dc3b9339c5ac87363f6086b1e8684db04ab584610c832df0b037bf53c60b164f",
+  "error": null
+}

@@ -1,0 +1,32 @@
+[
+  {
+    "id": "broadcast_rank_mismatch_ok",
+    "lhs": [8, 1, 6, 1],
+    "rhs": [7, 1, 5],
+    "expected_broadcast": [8, 7, 6, 5],
+    "stride_shape": [2, 3, 4],
+    "stride_item_size": 8,
+    "stride_order": "C",
+    "expected_strides": [96, 32, 8]
+  },
+  {
+    "id": "broadcast_rank_mismatch_fortran",
+    "lhs": [3, 1],
+    "rhs": [1, 7],
+    "expected_broadcast": [3, 7],
+    "stride_shape": [2, 3, 4],
+    "stride_item_size": 8,
+    "stride_order": "F",
+    "expected_strides": [8, 16, 48]
+  },
+  {
+    "id": "broadcast_incompatible",
+    "lhs": [4, 3],
+    "rhs": [5, 3],
+    "expected_broadcast": null,
+    "stride_shape": [5],
+    "stride_item_size": 4,
+    "stride_order": "C",
+    "expected_strides": [4]
+  }
+]

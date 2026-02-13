@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "oracle_source": "system",
+  "generated_at_unix_ms": 1771013154371,
+  "cases": [
+    {
+      "id": "add_broadcast_2x3_plus_3",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        2,
+        3
+      ],
+      "values": [
+        11.0,
+        22.0,
+        33.0,
+        14.0,
+        25.0,
+        36.0
+      ],
+      "dtype": "float64"
+    },
+    {
+      "id": "sub_same_shape_2x2",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        2,
+        2
+      ],
+      "values": [
+        6.0,
+        6.0,
+        6.0,
+        6.0
+      ],
+      "dtype": "float64"
+    },
+    {
+      "id": "mul_scalar_broadcast",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        2,
+        2
+      ],
+      "values": [
+        0.5,
+        1.0,
+        1.5,
+        2.0
+      ],
+      "dtype": "float64"
+    },
+    {
+      "id": "div_vector_by_scalar",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        3
+      ],
+      "values": [
+        4.0,
+        5.0,
+        6.0
+      ],
+      "dtype": "float64"
+    },
+    {
+      "id": "sum_all_no_keepdims",
+      "status": "ok",
+      "error": null,
+      "shape": [],
+      "values": [
+        21.0
+      ],
+      "dtype": "float64"
+    },
+    {
+      "id": "sum_axis1_keepdims",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        2,
+        1
+      ],
+      "values": [
+        6.0,
+        15.0
+      ],
+      "dtype": "float64"
+    },
+    {
+      "id": "sum_axis0_no_keepdims",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        3
+      ],
+      "values": [
+        5.0,
+        7.0,
+        9.0
+      ],
+      "dtype": "float64"
+    }
+  ]
+}

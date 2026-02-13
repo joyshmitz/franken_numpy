@@ -1,0 +1,13 @@
+[package]
+name = "fnp-runtime"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+asupersync = ["dep:asupersync"]
+frankentui = ["dep:ftui"]
+
+[dependencies]
+asupersync = { version = "0.1.1", default-features = false, optional = true }
+ftui = { version = "0.1.1", default-features = false, optional = true }

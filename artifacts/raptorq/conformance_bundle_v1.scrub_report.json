@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "bundle_id": "conformance_bundle_v1",
+  "generated_at_unix_ms": 1770974452155,
+  "status": "ok",
+  "expected_hash": "f2852ecd86bf1d10f4a4f5609b1b4b0a381b5219db39a17f0b9e4e0e826933b9",
+  "decoded_hash": "f2852ecd86bf1d10f4a4f5609b1b4b0a381b5219db39a17f0b9e4e0e826933b9",
+  "full_decode_match": true,
+  "recovery_decode_match": true,
+  "symbols_total": 29,
+  "symbols_used_full": 29,
+  "symbols_used_recovery": 28
+}

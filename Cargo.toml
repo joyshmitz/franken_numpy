@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/fnp-dtype",
+  "crates/fnp-ndarray",
+  "crates/fnp-iter",
+  "crates/fnp-ufunc",
+  "crates/fnp-linalg",
+  "crates/fnp-random",
+  "crates/fnp-io",
+  "crates/fnp-conformance",
+  "crates/fnp-runtime",
+]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "MIT"

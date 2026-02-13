@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "bundle_id": "benchmark_bundle_v1",
+  "generated_at_unix_ms": 1770974452160,
+  "status": "ok",
+  "expected_hash": "dc3b9339c5ac87363f6086b1e8684db04ab584610c832df0b037bf53c60b164f",
+  "decoded_hash": "dc3b9339c5ac87363f6086b1e8684db04ab584610c832df0b037bf53c60b164f",
+  "full_decode_match": true,
+  "recovery_decode_match": true,
+  "symbols_total": 17,
+  "symbols_used_full": 17,
+  "symbols_used_recovery": 16
+}

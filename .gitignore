@@ -1,0 +1,29 @@
+/target
+**/*.rs.bk
+
+# bv (beads viewer) local config and caches
+.bv/
+
+# local issue tracker state
+.beads/
+
+# Python virtualenvs and caches
+.venv/
+.venv-*/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Editor/OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local logs and profiling artifacts
+*.log
+*.profraw
+*.profdata
