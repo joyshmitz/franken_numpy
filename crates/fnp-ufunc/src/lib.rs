@@ -141,31 +141,8 @@ impl UFuncArray {
 
                 let out_shape = reduced_shape(&self.shape, axis, keepdims);
                 let out_count = element_count(&out_shape).map_err(UFuncError::Shape)?;
-                let out_strides = contiguous_strides_elems(&out_shape);
-                let in_strides = contiguous_strides_elems(&self.shape);
-
-                let in_count = self.values.len();
-                let mut in_multi = vec![0usize; self.shape.len()];
-                let mut out_multi = Vec::with_capacity(out_shape.len());
                 let mut out_values = vec![0.0f64; out_count];
-
-                for flat in 0..in_count {
-                    unravel_index(flat, &self.shape, &in_strides, &mut in_multi);
-                    out_multi.clear();
-
-                    for (idx, value) in in_multi.iter().copied().enumerate() {
-                        if idx == axis {
-                            if keepdims {
-                                out_multi.push(0);
-                            }
-                        } else {
-                            out_multi.push(value);
-                        }
-                    }
-
-                    let out_flat = ravel_index(&out_multi, &out_shape, &out_strides);
-                    out_values[out_flat] += self.values[flat];
-                }
+                reduce_sum_axis_contiguous(&self.values, &self.shape, axis, &mut out_values);
 
                 Ok(Self {
                     shape: out_shape,
@@ -238,28 +215,39 @@ fn aligned_broadcast_axis_steps(
     axis_steps
 }
 
-fn unravel_index(flat: usize, shape: &[usize], strides: &[usize], out_multi: &mut [usize]) {
-    if shape.is_empty() {
+fn reduce_sum_axis_contiguous(
+    values: &[f64],
+    shape: &[usize],
+    axis: usize,
+    out_values: &mut [f64],
+) {
+    debug_assert!(axis < shape.len());
+    if out_values.is_empty() {
         return;
     }
 
-    let mut rem = flat;
-    for ((slot, &dim), &stride) in out_multi.iter_mut().zip(shape).zip(strides) {
-        if dim == 0 || stride == 0 {
-            *slot = 0;
-            continue;
-        }
-        *slot = (rem / stride) % dim;
-        rem %= stride;
+    let axis_len = shape[axis];
+    if axis_len == 0 {
+        return;
     }
-}
 
-#[must_use]
-fn ravel_index(multi: &[usize], _shape: &[usize], strides: &[usize]) -> usize {
-    multi
-        .iter()
-        .zip(strides)
-        .fold(0usize, |acc, (&idx, &stride)| acc + idx * stride)
+    let inner = shape[axis + 1..].iter().copied().product::<usize>();
+    let outer = shape[..axis].iter().copied().product::<usize>();
+
+    let mut out_flat = 0usize;
+    for outer_idx in 0..outer {
+        let base = outer_idx * axis_len * inner;
+        for inner_idx in 0..inner {
+            let mut sum = 0.0f64;
+            let mut offset = base + inner_idx;
+            for _ in 0..axis_len {
+                sum += values[offset];
+                offset += inner;
+            }
+            out_values[out_flat] = sum;
+            out_flat += 1;
+        }
+    }
 }
 
 #[must_use]
@@ -356,6 +344,35 @@ mod tests {
         let out_keep = arr.reduce_sum(Some(1), true).expect("sum axis=1 keepdims");
         assert_eq!(out_keep.shape(), &[2, 1]);
         assert_eq!(out_keep.values(), &[6.0, 15.0]);
+    }
+
+    #[test]
+    fn reduce_sum_axis_zero_preserves_c_order() {
+        let arr = UFuncArray::new(
+            vec![2, 3, 2],
+            vec![
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, //
+                7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+            ],
+            DType::F64,
+        )
+        .expect("arr");
+
+        let out_drop = arr.reduce_sum(Some(0), false).expect("sum axis=0");
+        assert_eq!(out_drop.shape(), &[3, 2]);
+        assert_eq!(out_drop.values(), &[8.0, 10.0, 12.0, 14.0, 16.0, 18.0]);
+
+        let out_keep = arr.reduce_sum(Some(0), true).expect("sum axis=0 keepdims");
+        assert_eq!(out_keep.shape(), &[1, 3, 2]);
+        assert_eq!(out_keep.values(), &[8.0, 10.0, 12.0, 14.0, 16.0, 18.0]);
+    }
+
+    #[test]
+    fn reduce_sum_empty_axis_returns_zero_initialized_outputs() {
+        let arr = UFuncArray::new(vec![2, 0, 3], Vec::new(), DType::F64).expect("arr");
+        let out = arr.reduce_sum(Some(1), false).expect("sum axis=1");
+        assert_eq!(out.shape(), &[2, 3]);
+        assert_eq!(out.values(), &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
     }
 
     #[test]
