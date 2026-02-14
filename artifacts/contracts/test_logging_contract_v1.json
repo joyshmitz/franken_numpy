@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "contract_version": "test-logging-contract-v1",
+  "required_structured_log_fields": [
+    "fixture_id",
+    "seed",
+    "mode",
+    "env_fingerprint",
+    "artifact_refs",
+    "reason_code"
+  ],
+  "mandatory_invariant_families": [
+    "shape_stride_legality",
+    "dtype_promotion_table",
+    "runtime_policy_fail_closed",
+    "ufunc_metamorphic_relations",
+    "ufunc_adversarial_error_surface"
+  ],
+  "shrink_requirements": {
+    "deterministic_seed_replay": true,
+    "minimize_shape_before_values": true,
+    "max_shrink_steps": 32,
+    "must_emit_shrink_reason_code": true
+  },
+  "required_test_helper_apis": [
+    "fnp_conformance::run_all_core_suites",
+    "fnp_conformance::test_contracts::run_test_contract_suite",
+    "fnp_conformance::set_runtime_policy_log_path"
+  ],
+  "fixture_id_policy": {
+    "allowed_chars": "a-z0-9_",
+    "must_start_with_alnum": true,
+    "must_be_lowercase": true
+  },
+  "replay_semantics": {
+    "deterministic_seed_required_for_property_and_adversarial": true,
+    "require_reason_code_for_policy_and_adversarial": true,
+    "require_artifact_refs_for_policy_and_adversarial": true
+  },
+  "required_gate_scripts": [
+    "scripts/e2e/run_test_contract_gate.sh"
+  ],
+  "required_human_docs": [
+    "artifacts/contracts/TESTING_AND_LOGGING_CONVENTIONS_V1.md"
+  ],
+  "required_fixture_collections": [
+    "crates/fnp-conformance/fixtures/runtime_policy_cases.json",
+    "crates/fnp-conformance/fixtures/runtime_policy_adversarial_cases.json",
+    "crates/fnp-conformance/fixtures/ufunc_input_cases.json",
+    "crates/fnp-conformance/fixtures/ufunc_metamorphic_cases.json",
+    "crates/fnp-conformance/fixtures/ufunc_adversarial_cases.json"
+  ]
+}

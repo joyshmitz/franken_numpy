@@ -1,0 +1,33 @@
+[
+  {
+    "id": "add_commutative_dense_2x2",
+    "relation": "add_commutative",
+    "seed": 301,
+    "lhs_shape": [2, 2],
+    "lhs_values": [1.0, -2.0, 3.5, 4.0],
+    "lhs_dtype": "f64",
+    "rhs_shape": [2, 2],
+    "rhs_values": [5.0, 6.0, -7.0, 8.0],
+    "rhs_dtype": "f64"
+  },
+  {
+    "id": "mul_commutative_broadcast_2x3_by_3",
+    "relation": "mul_commutative",
+    "seed": 302,
+    "lhs_shape": [2, 3],
+    "lhs_values": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+    "lhs_dtype": "f64",
+    "rhs_shape": [3],
+    "rhs_values": [0.5, -1.0, 2.0],
+    "rhs_dtype": "f64"
+  },
+  {
+    "id": "sum_linearity_scalar_neg_2_5",
+    "relation": "sum_linearity",
+    "seed": 303,
+    "lhs_shape": [2, 3],
+    "lhs_values": [1.5, -2.0, 3.0, 0.25, 4.0, -5.0],
+    "lhs_dtype": "f64",
+    "scalar": -2.5
+  }
+]

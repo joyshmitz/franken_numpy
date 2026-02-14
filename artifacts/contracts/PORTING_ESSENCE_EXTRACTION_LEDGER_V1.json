@@ -1,0 +1,361 @@
+{
+  "schema_version": 1,
+  "schema_id": "porting-essence-extraction-ledger-v1",
+  "doctrine": {
+    "full_drop_in_parity_required": true,
+    "scope_reduction_allowed": false,
+    "clean_room_required": true,
+    "mandatory_method_stack": [
+      "alien-artifact-coding",
+      "extreme-software-optimization",
+      "alien-graveyard",
+      "raptorq-everywhere",
+      "strict-hardened-compatibility-doctrine"
+    ]
+  },
+  "logging_schema_commitments": [
+    "fixture_id",
+    "seed",
+    "mode",
+    "env_fingerprint",
+    "artifact_refs",
+    "reason_code"
+  ],
+  "packets": [
+    {
+      "packet_id": "FNP-P2C-001",
+      "subsystem": "shape/reshape legality",
+      "legacy_paths": [
+        "legacy_numpy_code/numpy/_core/src/multiarray/shape.c"
+      ],
+      "legacy_symbols": [
+        "_fix_unknown_dimension",
+        "_attempt_nocopy_reshape",
+        "PyArray_Newshape",
+        "PyArray_Reshape"
+      ],
+      "unit_property_ids": [
+        "UP-001-reshape-unknown-dim",
+        "UP-001-broadcast-shape",
+        "UP-001-contig-strides"
+      ],
+      "differential_ids": [
+        "DF-001-reshape-oracle-core",
+        "DF-001-broadcast-shape"
+      ],
+      "e2e_ids": [
+        "E2E-001-io-broadcast-reduce",
+        "E2E-001-reshape-chain"
+      ],
+      "artifact_refs": [
+        "crates/fnp-ndarray/src/lib.rs",
+        "crates/fnp-conformance/src/lib.rs"
+      ],
+      "owner_bead": "bd-23m.12.1",
+      "parity_debt_status": "open"
+    },
+    {
+      "packet_id": "FNP-P2C-002",
+      "subsystem": "dtype descriptors and promotion",
+      "legacy_paths": [
+        "legacy_numpy_code/numpy/_core/src/multiarray/descriptor.c",
+        "legacy_numpy_code/numpy/_core/src/multiarray/dtypemeta.c",
+        "legacy_numpy_code/numpy/_core/include/numpy/can_cast_table.h"
+      ],
+      "legacy_symbols": [
+        "_convert_from_type",
+        "dtypemeta_dealloc",
+        "initialize_legacy_dtypemeta_aliases"
+      ],
+      "unit_property_ids": [
+        "UP-002-promote-commutative",
+        "UP-002-cast-lossless",
+        "UP-002-alias-normalization"
+      ],
+      "differential_ids": [
+        "DF-002-promotion-matrix",
+        "DF-002-mixed-dtype-ufunc"
+      ],
+      "e2e_ids": [
+        "E2E-002-mixed-dtype-pipeline"
+      ],
+      "artifact_refs": [
+        "crates/fnp-dtype/src/lib.rs",
+        "crates/fnp-conformance/src/lib.rs"
+      ],
+      "owner_bead": "bd-23m.13.1",
+      "parity_debt_status": "open"
+    },
+    {
+      "packet_id": "FNP-P2C-003",
+      "subsystem": "strided transfer semantics",
+      "legacy_paths": [
+        "legacy_numpy_code/numpy/_core/src/multiarray/dtype_transfer.c"
+      ],
+      "legacy_symbols": [
+        "_strided_to_strided_*",
+        "PyArray_GetStridedZeroPadCopyFn"
+      ],
+      "unit_property_ids": [
+        "UP-003-overlap-witness",
+        "UP-003-strided-copy-equivalence"
+      ],
+      "differential_ids": [
+        "DF-003-transfer-overlap-oracle",
+        "DF-003-astype-strided"
+      ],
+      "e2e_ids": [
+        "E2E-003-overlap-assign-pipeline"
+      ],
+      "artifact_refs": [
+        "PHASE2C_EXTRACTION_PACKET.md"
+      ],
+      "owner_bead": "bd-23m.14.1",
+      "parity_debt_status": "open"
+    },
+    {
+      "packet_id": "FNP-P2C-004",
+      "subsystem": "NDIter traversal/index semantics",
+      "legacy_paths": [
+        "legacy_numpy_code/numpy/_core/src/multiarray/nditer_api.c"
+      ],
+      "legacy_symbols": [
+        "NpyIter_Reset",
+        "NpyIter_GotoMultiIndex",
+        "NpyIter_GotoIndex",
+        "NpyIter_GetTransferFlags"
+      ],
+      "unit_property_ids": [
+        "UP-004-reset-state",
+        "UP-004-goto-index",
+        "UP-004-transfer-flags"
+      ],
+      "differential_ids": [
+        "DF-004-nditer-order",
+        "DF-004-nditer-indexing"
+      ],
+      "e2e_ids": [
+        "E2E-004-iterator-kernel-chain"
+      ],
+      "artifact_refs": [
+        "PHASE2C_EXTRACTION_PACKET.md"
+      ],
+      "owner_bead": "bd-23m.15.1",
+      "parity_debt_status": "open"
+    },
+    {
+      "packet_id": "FNP-P2C-005",
+      "subsystem": "ufunc dispatch + gufunc signature",
+      "legacy_paths": [
+        "legacy_numpy_code/numpy/_core/src/multiarray/umath/ufunc_object.c"
+      ],
+      "legacy_symbols": [
+        "_parse_signature",
+        "_ufunc_setup_flags",
+        "convert_ufunc_arguments",
+        "ufunc_get_name_cstr"
+      ],
+      "unit_property_ids": [
+        "UP-005-binary-broadcast",
+        "UP-005-reduce-axis",
+        "UP-005-div-zero-contract"
+      ],
+      "differential_ids": [
+        "DF-005-ufunc-oracle-suite",
+        "DF-005-reduction-oracle"
+      ],
+      "e2e_ids": [
+        "E2E-005-ufunc-replay",
+        "E2E-005-policy-forensics"
+      ],
+      "artifact_refs": [
+        "crates/fnp-ufunc/src/lib.rs",
+        "crates/fnp-conformance/src/ufunc_differential.rs",
+        "crates/fnp-conformance/fixtures/ufunc_input_cases.json",
+        "crates/fnp-conformance/fixtures/oracle_outputs/ufunc_oracle_output.json",
+        "crates/fnp-conformance/fixtures/oracle_outputs/ufunc_differential_report.json"
+      ],
+      "owner_bead": "bd-23m.16.1",
+      "parity_debt_status": "partial"
+    },
+    {
+      "packet_id": "FNP-P2C-006",
+      "subsystem": "stride tricks + broadcasting API",
+      "legacy_paths": [
+        "legacy_numpy_code/numpy/lib/_stride_tricks_impl.py"
+      ],
+      "legacy_symbols": [
+        "as_strided",
+        "sliding_window_view",
+        "broadcast_to",
+        "broadcast_shapes",
+        "broadcast_arrays"
+      ],
+      "unit_property_ids": [
+        "UP-006-broadcast-api-legality",
+        "UP-006-view-alias-contract"
+      ],
+      "differential_ids": [
+        "DF-006-stride-tricks-oracle",
+        "DF-006-broadcast-api"
+      ],
+      "e2e_ids": [
+        "E2E-006-broadcast-views-replay"
+      ],
+      "artifact_refs": [
+        "PHASE2C_EXTRACTION_PACKET.md"
+      ],
+      "owner_bead": "bd-23m.17.1",
+      "parity_debt_status": "open"
+    },
+    {
+      "packet_id": "FNP-P2C-007",
+      "subsystem": "RNG core and constructor contract",
+      "legacy_paths": [
+        "legacy_numpy_code/numpy/random/_generator.pyx"
+      ],
+      "legacy_symbols": [
+        "Generator",
+        "default_rng"
+      ],
+      "unit_property_ids": [
+        "UP-007-seed-replay",
+        "UP-007-constructor-contract"
+      ],
+      "differential_ids": [
+        "DF-007-generator-seed-oracle",
+        "DF-007-distribution-sanity"
+      ],
+      "e2e_ids": [
+        "E2E-007-rng-replay-pipeline"
+      ],
+      "artifact_refs": [
+        "PHASE2C_EXTRACTION_PACKET.md"
+      ],
+      "owner_bead": "bd-23m.18.1",
+      "parity_debt_status": "open"
+    },
+    {
+      "packet_id": "FNP-P2C-008",
+      "subsystem": "linalg bridge first wave",
+      "legacy_paths": [
+        "legacy_numpy_code/numpy/linalg/lapack_lite/*",
+        "legacy_numpy_code/numpy/linalg/*"
+      ],
+      "legacy_symbols": [
+        "lapack_lite bridge entrypoints",
+        "wrapper dispatch contracts"
+      ],
+      "unit_property_ids": [
+        "UP-008-decomp-shape",
+        "UP-008-residual-bounds"
+      ],
+      "differential_ids": [
+        "DF-008-linalg-oracle-wave1"
+      ],
+      "e2e_ids": [
+        "E2E-008-linalg-regression-chain"
+      ],
+      "artifact_refs": [
+        "PHASE2C_EXTRACTION_PACKET.md"
+      ],
+      "owner_bead": "bd-23m.19.1",
+      "parity_debt_status": "open"
+    },
+    {
+      "packet_id": "FNP-P2C-009",
+      "subsystem": "NPY/NPZ IO contract",
+      "legacy_paths": [
+        "legacy_numpy_code/numpy/lib/format.py",
+        "legacy_numpy_code/numpy/lib/npyio.py"
+      ],
+      "legacy_symbols": [
+        "header parse/write contracts",
+        "round-trip IO contracts"
+      ],
+      "unit_property_ids": [
+        "UP-009-header-parse",
+        "UP-009-roundtrip",
+        "UP-009-malformed-reject"
+      ],
+      "differential_ids": [
+        "DF-009-io-roundtrip-oracle",
+        "DF-009-header-adversarial"
+      ],
+      "e2e_ids": [
+        "E2E-009-io-ufunc-reduce"
+      ],
+      "artifact_refs": [
+        "artifacts/contracts/security_control_checks_v1.yaml",
+        "PHASE2C_EXTRACTION_PACKET.md"
+      ],
+      "owner_bead": "bd-23m.20.1",
+      "parity_debt_status": "open"
+    }
+  ],
+  "ambiguities": [
+    {
+      "ambiguity_id": "AMB-001",
+      "packet_id": "FNP-P2C-001",
+      "risk_tier": "critical",
+      "owner": "bd-23m.12.2",
+      "closure_condition": "contract table finalized and strict differential drift = 0.0"
+    },
+    {
+      "ambiguity_id": "AMB-002",
+      "packet_id": "FNP-P2C-002",
+      "risk_tier": "critical",
+      "owner": "bd-23m.13.2",
+      "closure_condition": "full promotion matrix validated against legacy oracle"
+    },
+    {
+      "ambiguity_id": "AMB-003",
+      "packet_id": "FNP-P2C-003",
+      "risk_tier": "critical",
+      "owner": "bd-23m.14.3",
+      "closure_condition": "overlap witness suite and adversarial transfer fixtures pass"
+    },
+    {
+      "ambiguity_id": "AMB-004",
+      "packet_id": "FNP-P2C-004",
+      "risk_tier": "high",
+      "owner": "bd-23m.15.2",
+      "closure_condition": "iterator state trace replay is green in strict and hardened modes"
+    },
+    {
+      "ambiguity_id": "AMB-005",
+      "packet_id": "FNP-P2C-005",
+      "risk_tier": "critical",
+      "owner": "bd-23m.16.2",
+      "closure_condition": "dispatch precedence fixtures and tie-break contracts match legacy"
+    },
+    {
+      "ambiguity_id": "AMB-006",
+      "packet_id": "FNP-P2C-006",
+      "risk_tier": "high",
+      "owner": "bd-23m.17.3",
+      "closure_condition": "threat model closure + replay logs for hostile stride-trick cases"
+    },
+    {
+      "ambiguity_id": "AMB-007",
+      "packet_id": "FNP-P2C-007",
+      "risk_tier": "high",
+      "owner": "bd-23m.18.2",
+      "closure_condition": "deterministic seed replay matrix validated against legacy generator outputs"
+    },
+    {
+      "ambiguity_id": "AMB-008",
+      "packet_id": "FNP-P2C-008",
+      "risk_tier": "medium",
+      "owner": "bd-23m.19.2",
+      "closure_condition": "residual/tolerance contracts locked and differential checks pass"
+    },
+    {
+      "ambiguity_id": "AMB-009",
+      "packet_id": "FNP-P2C-009",
+      "risk_tier": "high",
+      "owner": "bd-23m.20.3",
+      "closure_condition": "malformed metadata parser behavior validated as fail-closed"
+    }
+  ]
+}
