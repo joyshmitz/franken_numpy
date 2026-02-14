@@ -6,6 +6,7 @@ pub mod raptorq_artifacts;
 pub mod security_contracts;
 pub mod test_contracts;
 pub mod ufunc_differential;
+pub mod workflow_scenarios;
 
 use crate::ufunc_differential::{UFuncInputCase, UFuncOperation};
 use fnp_dtype::{DType, promote};
@@ -780,6 +781,7 @@ pub fn run_all_core_suites(config: &HarnessConfig) -> Result<Vec<SuiteReport>, S
         run_runtime_policy_adversarial_suite(config)?,
         security_contracts::run_security_contract_suite(config)?,
         test_contracts::run_test_contract_suite(config)?,
+        workflow_scenarios::run_user_workflow_scenario_suite(config)?,
         run_ufunc_differential_suite(config)?,
         run_ufunc_metamorphic_suite(config)?,
         run_ufunc_adversarial_suite(config)?,
@@ -1017,6 +1019,14 @@ mod tests {
     fn ufunc_adversarial_suite_is_green() {
         let cfg = HarnessConfig::default_paths();
         let suite = run_ufunc_adversarial_suite(&cfg).expect("adversarial suite should run");
+        assert!(suite.all_passed(), "failures={:?}", suite.failures);
+    }
+
+    #[test]
+    fn workflow_scenario_suite_is_green() {
+        let cfg = HarnessConfig::default_paths();
+        let suite = super::workflow_scenarios::run_user_workflow_scenario_suite(&cfg)
+            .expect("workflow scenario suite should run");
         assert!(suite.all_passed(), "failures={:?}", suite.failures);
     }
 

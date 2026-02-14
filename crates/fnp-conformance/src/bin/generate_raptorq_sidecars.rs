@@ -16,6 +16,7 @@ fn run() -> Result<(), String> {
 
     let conformance_files = vec![
         fixture_root.join("ufunc_input_cases.json"),
+        fixture_root.join("workflow_scenario_corpus.json"),
         fixture_root.join("oracle_outputs/ufunc_oracle_output.json"),
         fixture_root.join("oracle_outputs/ufunc_differential_report.json"),
     ];

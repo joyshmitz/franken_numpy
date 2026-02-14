@@ -10,5 +10,6 @@ This folder stores normalized oracle-vs-target fixtures for `fnp-conformance`.
 - `ufunc_input_cases.json`: differential ufunc/reduction input corpus.
 - `ufunc_metamorphic_cases.json`: deterministic metamorphic checks (commutativity, linearity).
 - `ufunc_adversarial_cases.json`: adversarial ufunc inputs expecting controlled errors.
+- `workflow_scenario_corpus.json`: user workflow golden journeys linking differential fixtures, e2e scripts, and prioritized gap beads.
 - `oracle_outputs/ufunc_oracle_output.json`: captured NumPy oracle outputs.
 - `oracle_outputs/ufunc_differential_report.json`: comparator report against current Rust implementation.

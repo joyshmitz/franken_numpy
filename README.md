@@ -41,6 +41,7 @@ Implemented first major vertical slices:
 - `fnp-runtime`: strict/hardened decision policy + fail-closed wire decoding + audited override gate + evidence ledger
 - `fnp-ufunc`: broadcasted binary ops + reduction sum (axis/keepdims)
 - `fnp-conformance`: fixture suites + adversarial security suites + oracle capture + differential report + benchmark baseline + RaptorQ sidecars/scrub/decode proofs
+  + workflow scenario corpus + golden journey gate with strict/hardened replay logs
 
 Program doctrine:
 - Current implementation is an in-progress parity wave, not a reduced-scope endpoint.
@@ -56,8 +57,10 @@ cargo run -p fnp-conformance --bin generate_raptorq_sidecars
 cargo run -p fnp-conformance --bin validate_phase2c_packet -- --packet-id FNP-P2C-001
 cargo run -p fnp-conformance --bin run_security_gate
 cargo run -p fnp-conformance --bin run_test_contract_gate
+cargo run -p fnp-conformance --bin run_workflow_scenario_gate
 scripts/e2e/run_security_policy_gate.sh
 scripts/e2e/run_test_contract_gate.sh
+scripts/e2e/run_workflow_scenario_gate.sh
 ```
 
 Example: use `uv` Python 3.14 + NumPy for capture:
@@ -75,6 +78,7 @@ Notes:
 - Packet contract schema lock is versioned as `phase2c-contract-v1` in `artifacts/contracts/`.
 - Security threat controls are machine-mapped in `artifacts/contracts/security_control_checks_v1.yaml`.
 - Runtime-policy e2e logs are emitted as JSONL under `artifacts/logs/` by `run_security_gate` / `scripts/e2e/run_security_policy_gate.sh`.
+- Workflow-scenario e2e logs are emitted as JSONL under `artifacts/logs/` by `run_workflow_scenario_gate` / `scripts/e2e/run_workflow_scenario_gate.sh`.
 - Test/logging conventions are locked in `artifacts/contracts/test_logging_contract_v1.json` and `artifacts/contracts/TESTING_AND_LOGGING_CONVENTIONS_V1.md`.
 
 ## Repository Layout

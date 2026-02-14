@@ -1,0 +1,178 @@
+[
+  {
+    "id": "broadcast_reduce_dashboard_refresh",
+    "category": "high_frequency",
+    "description": "Common analytics pipeline: broadcasted add followed by axis reduction while preserving deterministic replay metadata.",
+    "seed": 5101,
+    "env_fingerprint": "linux-x86_64-rust2024",
+    "artifact_refs": [
+      "crates/fnp-conformance/fixtures/ufunc_input_cases.json",
+      "crates/fnp-conformance/fixtures/oracle_outputs/ufunc_differential_report.json",
+      "scripts/e2e/run_workflow_scenario_gate.sh"
+    ],
+    "reason_code": "user_vectorized_broadcast_reduce",
+    "strict": {
+      "expected_status": "pass"
+    },
+    "hardened": {
+      "expected_status": "pass"
+    },
+    "steps": [
+      {
+        "id": "step_add_broadcast",
+        "kind": "ufunc_input",
+        "case_id": "add_broadcast_2x3_plus_3"
+      },
+      {
+        "id": "step_sum_axis1",
+        "kind": "ufunc_input",
+        "case_id": "sum_axis1_keepdims"
+      },
+      {
+        "id": "step_policy_known_good",
+        "kind": "runtime_policy",
+        "case_id": "strict_known_good",
+        "expected_action_strict": "allow",
+        "expected_action_hardened": "allow"
+      }
+    ],
+    "links": {
+      "differential_fixture_ids": [
+        "add_broadcast_2x3_plus_3",
+        "sum_axis1_keepdims"
+      ],
+      "e2e_script_paths": [
+        "scripts/e2e/run_workflow_scenario_gate.sh",
+        "scripts/e2e/run_test_contract_gate.sh"
+      ]
+    },
+    "gaps": [
+      {
+        "bead_id": "bd-23m.12.7",
+        "owner": "bd-23m.12.7",
+        "priority": "p1",
+        "description": "Add reshape-heavy workflow steps once packet FNP-P2C-001 G-stage scenarios land."
+      },
+      {
+        "bead_id": "bd-23m.13.7",
+        "owner": "bd-23m.13.7",
+        "priority": "p1",
+        "description": "Expand mixed-dtype workflow coverage once packet FNP-P2C-002 G-stage scenarios land."
+      }
+    ]
+  },
+  {
+    "id": "hardened_validation_for_risky_workload",
+    "category": "high_risk",
+    "description": "Risky but compatible workload that should stay API-compatible while hardened mode escalates to full validation.",
+    "seed": 5102,
+    "env_fingerprint": "linux-x86_64-rust2024",
+    "artifact_refs": [
+      "crates/fnp-conformance/fixtures/runtime_policy_cases.json",
+      "artifacts/contracts/SECURITY_COMPATIBILITY_THREAT_MATRIX_V1.md",
+      "scripts/e2e/run_workflow_scenario_gate.sh"
+    ],
+    "reason_code": "hardened_risk_escalation_path",
+    "strict": {
+      "expected_status": "pass"
+    },
+    "hardened": {
+      "expected_status": "pass"
+    },
+    "steps": [
+      {
+        "id": "step_policy_hardened_escalation",
+        "kind": "runtime_policy",
+        "case_id": "hardened_risky_validation",
+        "expected_action_strict": "allow",
+        "expected_action_hardened": "full_validate"
+      },
+      {
+        "id": "step_reduce_axis0",
+        "kind": "ufunc_input",
+        "case_id": "sum_axis0_no_keepdims"
+      }
+    ],
+    "links": {
+      "differential_fixture_ids": [
+        "sum_axis0_no_keepdims"
+      ],
+      "e2e_script_paths": [
+        "scripts/e2e/run_workflow_scenario_gate.sh",
+        "scripts/e2e/run_security_policy_gate.sh"
+      ]
+    },
+    "gaps": [
+      {
+        "bead_id": "bd-23m.22",
+        "owner": "bd-23m.22",
+        "priority": "p1",
+        "description": "Improve failure forensics UI so hardened validation escalations are easier to diagnose."
+      },
+      {
+        "bead_id": "bd-23m.23",
+        "owner": "bd-23m.23",
+        "priority": "p1",
+        "description": "Add reliability/flake budgets tied to workflow-scenario replay coverage."
+      }
+    ]
+  },
+  {
+    "id": "unknown_metadata_fail_closed_guard",
+    "category": "adversarial",
+    "description": "Hostile metadata and wire-mode inputs must fail closed in both strict and hardened operation modes.",
+    "seed": 5103,
+    "env_fingerprint": "linux-x86_64-rust2024",
+    "artifact_refs": [
+      "crates/fnp-conformance/fixtures/runtime_policy_adversarial_cases.json",
+      "artifacts/contracts/security_control_checks_v1.yaml",
+      "scripts/e2e/run_workflow_scenario_gate.sh"
+    ],
+    "reason_code": "unknown_metadata_fail_closed",
+    "strict": {
+      "expected_status": "fail_closed"
+    },
+    "hardened": {
+      "expected_status": "fail_closed"
+    },
+    "steps": [
+      {
+        "id": "step_wire_unknown_mode",
+        "kind": "runtime_policy_wire",
+        "case_id": "wire_unknown_mode_fail_closed",
+        "expected_action_strict": "fail_closed",
+        "expected_action_hardened": "fail_closed"
+      },
+      {
+        "id": "step_wire_unknown_class",
+        "kind": "runtime_policy_wire",
+        "case_id": "wire_unknown_class_fail_closed",
+        "expected_action_strict": "fail_closed",
+        "expected_action_hardened": "fail_closed"
+      }
+    ],
+    "links": {
+      "differential_fixture_ids": [
+        "sum_all_no_keepdims"
+      ],
+      "e2e_script_paths": [
+        "scripts/e2e/run_workflow_scenario_gate.sh",
+        "scripts/e2e/run_security_policy_gate.sh"
+      ]
+    },
+    "gaps": [
+      {
+        "bead_id": "bd-23m.20.7",
+        "owner": "bd-23m.20.7",
+        "priority": "p2",
+        "description": "Extend adversarial workflow coverage into malformed NPY/NPZ parse and replay scenarios."
+      },
+      {
+        "bead_id": "bd-23m.17.7",
+        "owner": "bd-23m.17.7",
+        "priority": "p1",
+        "description": "Add hostile stride-trick workflow replays once packet FNP-P2C-006 G-stage scenarios land."
+      }
+    ]
+  }
+]

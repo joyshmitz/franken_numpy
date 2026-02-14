@@ -15,3 +15,4 @@ Current locked schema/version set:
 - executable security control map: `security_control_checks_v1.yaml`
 - test/logging contract (machine): `test_logging_contract_v1.json`
 - test/logging conventions (human): `TESTING_AND_LOGGING_CONVENTIONS_V1.md`
+- workflow scenario corpus contract (human): `USER_WORKFLOW_SCENARIO_CORPUS_V1.md`

@@ -15,6 +15,7 @@ Every conformance expansion must preserve and extend these invariant families:
 3. `runtime_policy_fail_closed`
 4. `ufunc_metamorphic_relations`
 5. `ufunc_adversarial_error_surface`
+6. `user_workflow_golden_journeys`
 
 Current suite anchors:
 
@@ -23,6 +24,7 @@ Current suite anchors:
 - `runtime_policy_fail_closed` -> `run_runtime_policy_suite`, `run_runtime_policy_adversarial_suite`
 - `ufunc_metamorphic_relations` -> `run_ufunc_metamorphic_suite`
 - `ufunc_adversarial_error_surface` -> `run_ufunc_adversarial_suite`
+- `user_workflow_golden_journeys` -> `workflow_scenarios::run_user_workflow_scenario_suite`
 
 ## 2. Property Testing + Shrink Requirements
 
@@ -74,6 +76,7 @@ The contract currently requires these helper API anchors:
 1. `fnp_conformance::run_all_core_suites`
 2. `fnp_conformance::test_contracts::run_test_contract_suite`
 3. `fnp_conformance::set_runtime_policy_log_path`
+4. `fnp_conformance::workflow_scenarios::run_user_workflow_scenario_suite`
 
 ## 6. Enforcement Gates
 
@@ -81,13 +84,25 @@ Contract enforcement commands:
 
 1. `cargo test -p fnp-conformance test_contract_suite_is_green -- --nocapture`
 2. `cargo run -p fnp-conformance --bin run_test_contract_gate`
-3. `scripts/e2e/run_test_contract_gate.sh`
+3. `cargo run -p fnp-conformance --bin run_workflow_scenario_gate`
+4. `scripts/e2e/run_test_contract_gate.sh`
+5. `scripts/e2e/run_workflow_scenario_gate.sh`
 
 Gate behavior:
 
 1. Missing contract fields or invalid schema fails the suite.
 2. Missing seed/reason_code/artifact_refs in required fixture classes fails the suite.
 3. Missing required gate script fails the suite.
+
+## 8. Workflow Scenario Corpus Requirements
+
+The workflow corpus fixture (`crates/fnp-conformance/fixtures/workflow_scenario_corpus.json`) must:
+
+1. Include at least one scenario for each category: `high_frequency`, `high_risk`, `adversarial`.
+2. Encode strict/hardened expected statuses (`pass` or `fail_closed`) per scenario.
+3. Provide deterministic replay metadata (`id`, `seed`, `env_fingerprint`, `artifact_refs`, `reason_code`).
+4. Link each scenario to differential fixture IDs and executable e2e script paths.
+5. Include non-empty prioritized gap entries with explicit `bead_id` and `owner`.
 
 ## 7. Method-Stack Mapping (Alien/Optimization/Durability/Compatibility)
 
