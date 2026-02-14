@@ -249,3 +249,38 @@ Status key:
 - [x] `cargo test -p fnp-conformance -- --nocapture`
 - [x] `cargo bench`
 - [x] `scripts/e2e/run_security_policy_gate.sh`
+
+## 11. Round-3 Extreme Optimization + Alien Uplift (Current Pass)
+
+### 11.1 Profile-first baseline capture
+- [x] Build release benchmark binary (`generate_benchmark_baseline`)
+- [x] Capture pre-change hyperfine artifact (`round3_before`)
+- [x] Capture pre-change baseline snapshot (`ufunc_benchmark_baseline_round3_before.json`)
+- [x] Attempt `perf` profiling and record environment restriction (`perf_event_paranoid=4`)
+- [x] Capture fallback syscall profile (`strace -c`) for pre-change run
+
+### 11.2 One-lever implementation
+- [x] Replace per-element axis reduction reindexing with contiguous kernel in `crates/fnp-ufunc/src/lib.rs`
+- [x] Keep API and dtype semantics unchanged
+- [x] Add non-last-axis ordering regression test (`axis=0`, 3D array)
+- [x] Add empty-axis zero-initialized output regression test
+
+### 11.3 Rebaseline and quantify
+- [x] Capture post-change hyperfine artifact (`round3_after`)
+- [x] Capture post-change baseline snapshot (`ufunc_benchmark_baseline_round3_after.json`)
+- [x] Capture fallback syscall profile (`strace -c`) for post-change run
+- [x] Confirm command-level mean latency delta (`22.924 ms -> 10.070 ms`, `-56.07%`)
+- [x] Confirm targeted reduction percentile deltas (`~ -90%` p50/p95/p99 on axis reduction workload)
+
+### 11.4 Proof and decision artifacts
+- [x] Generate round-3 golden checksum manifest (`artifacts/proofs/golden_checksums_round3.txt`)
+- [x] Verify checksum manifest (`sha256sum -c`)
+- [x] Add round-3 isomorphism proof (`artifacts/proofs/ISOMORPHISM_PROOF_ROUND3.md`)
+- [x] Add round-3 opportunity matrix (`artifacts/optimization/ROUND3_OPPORTUNITY_MATRIX.md`)
+- [x] Add round-3 alien recommendation cards (`artifacts/decisions/ALIEN_GRAVEYARD_RECOMMENDATION_CARDS_ROUND3.md`)
+
+### 11.5 Open-bead triage + diagnostics
+- [x] Run `bv --robot-next`, `bv --robot-priority`, `bv --robot-triage`
+- [x] Run `bv --robot-alerts` (no active critical alerts)
+- [x] Run `bv --robot-insights` for critical path and bottleneck update
+- [x] Run `bv --robot-suggest` and defer low-signal dependency suggestions pending manual validation
