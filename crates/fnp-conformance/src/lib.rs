@@ -10,7 +10,7 @@ pub mod workflow_scenarios;
 
 use crate::ufunc_differential::{UFuncInputCase, UFuncOperation};
 use fnp_dtype::{DType, promote};
-use fnp_ndarray::{MemoryOrder, broadcast_shape, contiguous_strides};
+use fnp_ndarray::{MemoryOrder, NdLayout, broadcast_shape, contiguous_strides};
 use fnp_runtime::{
     CompatibilityClass, DecisionAction, DecisionAuditContext, EvidenceLedger, RuntimeMode,
     decide_and_record_with_context, decide_compatibility_from_wire,
@@ -89,6 +89,46 @@ struct ShapeStrideFixtureCase {
     artifact_refs: Vec<String>,
     #[serde(default)]
     reason_code: String,
+    #[serde(default)]
+    as_strided: Option<AsStridedFixtureCase>,
+    #[serde(default)]
+    broadcast_to: Option<BroadcastToFixtureCase>,
+    #[serde(default)]
+    sliding_window: Option<SlidingWindowFixtureCase>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AsStridedFixtureCase {
+    shape: Vec<usize>,
+    strides: Vec<isize>,
+    #[serde(default)]
+    expected_shape: Option<Vec<usize>>,
+    #[serde(default)]
+    expected_strides: Option<Vec<isize>>,
+    #[serde(default)]
+    expected_error_contains: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BroadcastToFixtureCase {
+    shape: Vec<usize>,
+    #[serde(default)]
+    expected_shape: Option<Vec<usize>>,
+    #[serde(default)]
+    expected_strides: Option<Vec<isize>>,
+    #[serde(default)]
+    expected_error_contains: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SlidingWindowFixtureCase {
+    window_shape: Vec<usize>,
+    #[serde(default)]
+    expected_shape: Option<Vec<usize>>,
+    #[serde(default)]
+    expected_strides: Option<Vec<isize>>,
+    #[serde(default)]
+    expected_error_contains: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -204,6 +244,9 @@ struct ShapeStrideLogEntry {
     stride_shape: Vec<usize>,
     stride_order: String,
     expected_strides: Vec<isize>,
+    as_strided_checked: bool,
+    broadcast_to_checked: bool,
+    sliding_window_checked: bool,
     passed: bool,
 }
 
@@ -286,6 +329,9 @@ pub fn run_shape_stride_suite(config: &HarnessConfig) -> Result<SuiteReport, Str
         let mut ok = true;
         let reason_code = normalize_reason_code(&case.reason_code);
         let artifact_refs = normalize_artifact_refs(case.artifact_refs.clone());
+        let as_strided_checked = case.as_strided.is_some();
+        let broadcast_to_checked = case.broadcast_to.is_some();
+        let sliding_window_checked = case.sliding_window.is_some();
         let mode = if config.strict_mode {
             "strict"
         } else {
@@ -333,20 +379,212 @@ pub fn run_shape_stride_suite(config: &HarnessConfig) -> Result<SuiteReport, Str
             }
         };
 
-        match contiguous_strides(&case.stride_shape, case.stride_item_size, order) {
-            Ok(strides) if strides == case.expected_strides => {}
-            Ok(strides) => {
+        let computed_strides =
+            match contiguous_strides(&case.stride_shape, case.stride_item_size, order) {
+                Ok(strides) if strides == case.expected_strides => Some(strides),
+                Ok(strides) => {
+                    ok = false;
+                    report.failures.push(format!(
+                        "{}: stride mismatch expected={:?} actual={strides:?}",
+                        case.id, case.expected_strides
+                    ));
+                    Some(strides)
+                }
+                Err(err) => {
+                    ok = false;
+                    report
+                        .failures
+                        .push(format!("{}: stride computation failed: {err}", case.id));
+                    None
+                }
+            };
+
+        let base_layout = computed_strides.map(|strides| NdLayout {
+            shape: case.stride_shape.clone(),
+            strides,
+            item_size: case.stride_item_size,
+        });
+
+        if let Some(as_strided_case) = &case.as_strided {
+            if let Some(base) = &base_layout {
+                match base.as_strided(
+                    as_strided_case.shape.clone(),
+                    as_strided_case.strides.clone(),
+                ) {
+                    Ok(view) => {
+                        if let Some(needle) = &as_strided_case.expected_error_contains {
+                            ok = false;
+                            report.failures.push(format!(
+                                "{}: as_strided expected error containing '{}' but succeeded",
+                                case.id, needle
+                            ));
+                        } else {
+                            if let Some(expected_shape) = &as_strided_case.expected_shape
+                                && view.shape != *expected_shape
+                            {
+                                ok = false;
+                                report.failures.push(format!(
+                                    "{}: as_strided shape mismatch expected={expected_shape:?} actual={:?}",
+                                    case.id, view.shape
+                                ));
+                            }
+
+                            if let Some(expected_strides) = &as_strided_case.expected_strides
+                                && view.strides != *expected_strides
+                            {
+                                ok = false;
+                                report.failures.push(format!(
+                                    "{}: as_strided strides mismatch expected={expected_strides:?} actual={:?}",
+                                    case.id, view.strides
+                                ));
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        if let Some(needle) = &as_strided_case.expected_error_contains {
+                            let actual = err.to_string().to_lowercase();
+                            if !actual.contains(&needle.to_lowercase()) {
+                                ok = false;
+                                report.failures.push(format!(
+                                    "{}: as_strided expected error containing '{}' but got '{}'",
+                                    case.id, needle, err
+                                ));
+                            }
+                        } else {
+                            ok = false;
+                            report.failures.push(format!(
+                                "{}: as_strided unexpectedly failed: {}",
+                                case.id, err
+                            ));
+                        }
+                    }
+                }
+            } else {
                 ok = false;
                 report.failures.push(format!(
-                    "{}: stride mismatch expected={:?} actual={strides:?}",
-                    case.id, case.expected_strides
+                    "{}: cannot validate as_strided without valid base layout",
+                    case.id
                 ));
             }
-            Err(err) => {
+        }
+
+        if let Some(broadcast_to_case) = &case.broadcast_to {
+            if let Some(base) = &base_layout {
+                match base.broadcast_to(broadcast_to_case.shape.clone()) {
+                    Ok(view) => {
+                        if let Some(needle) = &broadcast_to_case.expected_error_contains {
+                            ok = false;
+                            report.failures.push(format!(
+                                "{}: broadcast_to expected error containing '{}' but succeeded",
+                                case.id, needle
+                            ));
+                        } else {
+                            if let Some(expected_shape) = &broadcast_to_case.expected_shape
+                                && view.shape != *expected_shape
+                            {
+                                ok = false;
+                                report.failures.push(format!(
+                                    "{}: broadcast_to shape mismatch expected={expected_shape:?} actual={:?}",
+                                    case.id, view.shape
+                                ));
+                            }
+
+                            if let Some(expected_strides) = &broadcast_to_case.expected_strides
+                                && view.strides != *expected_strides
+                            {
+                                ok = false;
+                                report.failures.push(format!(
+                                    "{}: broadcast_to strides mismatch expected={expected_strides:?} actual={:?}",
+                                    case.id, view.strides
+                                ));
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        if let Some(needle) = &broadcast_to_case.expected_error_contains {
+                            let actual = err.to_string().to_lowercase();
+                            if !actual.contains(&needle.to_lowercase()) {
+                                ok = false;
+                                report.failures.push(format!(
+                                    "{}: broadcast_to expected error containing '{}' but got '{}'",
+                                    case.id, needle, err
+                                ));
+                            }
+                        } else {
+                            ok = false;
+                            report.failures.push(format!(
+                                "{}: broadcast_to unexpectedly failed: {}",
+                                case.id, err
+                            ));
+                        }
+                    }
+                }
+            } else {
                 ok = false;
-                report
-                    .failures
-                    .push(format!("{}: stride computation failed: {err}", case.id));
+                report.failures.push(format!(
+                    "{}: cannot validate broadcast_to without valid base layout",
+                    case.id
+                ));
+            }
+        }
+
+        if let Some(sliding_window_case) = &case.sliding_window {
+            if let Some(base) = &base_layout {
+                match base.sliding_window_view(sliding_window_case.window_shape.clone()) {
+                    Ok(view) => {
+                        if let Some(needle) = &sliding_window_case.expected_error_contains {
+                            ok = false;
+                            report.failures.push(format!(
+                                "{}: sliding_window_view expected error containing '{}' but succeeded",
+                                case.id, needle
+                            ));
+                        } else {
+                            if let Some(expected_shape) = &sliding_window_case.expected_shape
+                                && view.shape != *expected_shape
+                            {
+                                ok = false;
+                                report.failures.push(format!(
+                                    "{}: sliding_window_view shape mismatch expected={expected_shape:?} actual={:?}",
+                                    case.id, view.shape
+                                ));
+                            }
+
+                            if let Some(expected_strides) = &sliding_window_case.expected_strides
+                                && view.strides != *expected_strides
+                            {
+                                ok = false;
+                                report.failures.push(format!(
+                                    "{}: sliding_window_view strides mismatch expected={expected_strides:?} actual={:?}",
+                                    case.id, view.strides
+                                ));
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        if let Some(needle) = &sliding_window_case.expected_error_contains {
+                            let actual = err.to_string().to_lowercase();
+                            if !actual.contains(&needle.to_lowercase()) {
+                                ok = false;
+                                report.failures.push(format!(
+                                    "{}: sliding_window_view expected error containing '{}' but got '{}'",
+                                    case.id, needle, err
+                                ));
+                            }
+                        } else {
+                            ok = false;
+                            report.failures.push(format!(
+                                "{}: sliding_window_view unexpectedly failed: {}",
+                                case.id, err
+                            ));
+                        }
+                    }
+                }
+            } else {
+                ok = false;
+                report.failures.push(format!(
+                    "{}: cannot validate sliding_window_view without valid base layout",
+                    case.id
+                ));
             }
         }
 
@@ -366,6 +604,9 @@ pub fn run_shape_stride_suite(config: &HarnessConfig) -> Result<SuiteReport, Str
             stride_shape: case.stride_shape,
             stride_order: case.stride_order,
             expected_strides: case.expected_strides,
+            as_strided_checked,
+            broadcast_to_checked,
+            sliding_window_checked,
             passed: ok,
         };
         maybe_append_shape_stride_log(&log_entry)?;
@@ -1016,14 +1257,14 @@ fn maybe_append_runtime_policy_log(entry: &RuntimePolicyLogEntry) -> Result<(), 
         .map_err(|err| format!("failed opening {}: {err}", path.display()))?;
     let line = serde_json::to_string(entry)
         .map_err(|err| format!("failed serializing runtime policy log entry: {err}"))?;
-    file.write_all(line.as_bytes())
-        .and_then(|_| file.write_all(b"\n"))
-        .map_err(|err| {
-            format!(
-                "failed appending runtime policy log {}: {err}",
-                path.display()
-            )
-        })
+    let mut payload = line.into_bytes();
+    payload.push(b'\n');
+    file.write_all(&payload).map_err(|err| {
+        format!(
+            "failed appending runtime policy log {}: {err}",
+            path.display()
+        )
+    })
 }
 
 fn maybe_append_shape_stride_log(entry: &ShapeStrideLogEntry) -> Result<(), String> {
@@ -1048,14 +1289,14 @@ fn maybe_append_shape_stride_log(entry: &ShapeStrideLogEntry) -> Result<(), Stri
         .map_err(|err| format!("failed opening {}: {err}", path.display()))?;
     let line = serde_json::to_string(entry)
         .map_err(|err| format!("failed serializing shape-stride log entry: {err}"))?;
-    file.write_all(line.as_bytes())
-        .and_then(|_| file.write_all(b"\n"))
-        .map_err(|err| {
-            format!(
-                "failed appending shape-stride log {}: {err}",
-                path.display()
-            )
-        })
+    let mut payload = line.into_bytes();
+    payload.push(b'\n');
+    file.write_all(&payload).map_err(|err| {
+        format!(
+            "failed appending shape-stride log {}: {err}",
+            path.display()
+        )
+    })
 }
 
 fn maybe_append_dtype_promotion_log(entry: &DTypePromotionLogEntry) -> Result<(), String> {
@@ -1080,14 +1321,14 @@ fn maybe_append_dtype_promotion_log(entry: &DTypePromotionLogEntry) -> Result<()
         .map_err(|err| format!("failed opening {}: {err}", path.display()))?;
     let line = serde_json::to_string(entry)
         .map_err(|err| format!("failed serializing dtype-promotion log entry: {err}"))?;
-    file.write_all(line.as_bytes())
-        .and_then(|_| file.write_all(b"\n"))
-        .map_err(|err| {
-            format!(
-                "failed appending dtype-promotion log {}: {err}",
-                path.display()
-            )
-        })
+    let mut payload = line.into_bytes();
+    payload.push(b'\n');
+    file.write_all(&payload).map_err(|err| {
+        format!(
+            "failed appending dtype-promotion log {}: {err}",
+            path.display()
+        )
+    })
 }
 
 fn validate_runtime_policy_log_fields(
@@ -1288,6 +1529,9 @@ mod tests {
 
         let raw = fs::read_to_string(&log_path).expect("shape/stride log should exist");
         let mut entry_count = 0usize;
+        let mut saw_as_strided_check = false;
+        let mut saw_broadcast_to_check = false;
+        let mut saw_sliding_window_check = false;
         for line in raw.lines().filter(|line| !line.trim().is_empty()) {
             entry_count += 1;
             let value: Value = serde_json::from_str(line).expect("log line must be valid json");
@@ -1323,8 +1567,37 @@ mod tests {
                     .and_then(Value::as_str)
                     .is_some_and(|s| !s.trim().is_empty())
             );
+
+            let as_strided_checked = obj
+                .get("as_strided_checked")
+                .and_then(Value::as_bool)
+                .expect("as_strided_checked should be bool");
+            let broadcast_to_checked = obj
+                .get("broadcast_to_checked")
+                .and_then(Value::as_bool)
+                .expect("broadcast_to_checked should be bool");
+            let sliding_window_checked = obj
+                .get("sliding_window_checked")
+                .and_then(Value::as_bool)
+                .expect("sliding_window_checked should be bool");
+
+            saw_as_strided_check |= as_strided_checked;
+            saw_broadcast_to_check |= broadcast_to_checked;
+            saw_sliding_window_check |= sliding_window_checked;
         }
         assert!(entry_count > 0, "shape/stride log should contain entries");
+        assert!(
+            saw_as_strided_check,
+            "shape/stride logs should include at least one as_strided check"
+        );
+        assert!(
+            saw_broadcast_to_check,
+            "shape/stride logs should include at least one broadcast_to check"
+        );
+        assert!(
+            saw_sliding_window_check,
+            "shape/stride logs should include at least one sliding_window check"
+        );
         set_shape_stride_log_path(None);
         let _ = fs::remove_file(log_path);
     }

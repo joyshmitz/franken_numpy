@@ -116,12 +116,27 @@ struct ModeExecution {
 }
 
 static WORKFLOW_SCENARIO_LOG_PATH: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+static WORKFLOW_SCENARIO_LOG_REQUIRED: OnceLock<Mutex<bool>> = OnceLock::new();
 
 pub fn set_workflow_scenario_log_path(path: Option<PathBuf>) {
     let cell = WORKFLOW_SCENARIO_LOG_PATH.get_or_init(|| Mutex::new(None));
     if let Ok(mut slot) = cell.lock() {
         *slot = path;
     }
+}
+
+pub fn set_workflow_scenario_log_required(required: bool) {
+    let cell = WORKFLOW_SCENARIO_LOG_REQUIRED.get_or_init(|| Mutex::new(false));
+    if let Ok(mut slot) = cell.lock() {
+        *slot = required;
+    }
+}
+
+fn workflow_scenario_log_required() -> bool {
+    WORKFLOW_SCENARIO_LOG_REQUIRED
+        .get()
+        .and_then(|cell| cell.lock().ok().map(|slot| *slot))
+        .unwrap_or(false)
 }
 
 pub fn run_user_workflow_scenario_suite(config: &HarnessConfig) -> Result<SuiteReport, String> {
@@ -633,6 +648,11 @@ fn maybe_append_workflow_log(entry: &WorkflowScenarioLogEntry) -> Result<(), Str
         .and_then(|slot| slot.clone());
     let from_env = std::env::var_os("FNP_WORKFLOW_SCENARIO_LOG_PATH").map(PathBuf::from);
     let Some(path) = configured.or(from_env) else {
+        if workflow_scenario_log_required() {
+            return Err(
+                "workflow scenario log path is required but unset; configure --log-path or FNP_WORKFLOW_SCENARIO_LOG_PATH".to_string(),
+            );
+        }
         return Ok(());
     };
 
@@ -648,14 +668,14 @@ fn maybe_append_workflow_log(entry: &WorkflowScenarioLogEntry) -> Result<(), Str
         .map_err(|err| format!("failed opening {}: {err}", path.display()))?;
     let line = serde_json::to_string(entry)
         .map_err(|err| format!("failed serializing workflow scenario log entry: {err}"))?;
-    file.write_all(line.as_bytes())
-        .and_then(|_| file.write_all(b"\n"))
-        .map_err(|err| {
-            format!(
-                "failed appending workflow scenario log {}: {err}",
-                path.display()
-            )
-        })
+    let mut payload = line.into_bytes();
+    payload.push(b'\n');
+    file.write_all(&payload).map_err(|err| {
+        format!(
+            "failed appending workflow scenario log {}: {err}",
+            path.display()
+        )
+    })
 }
 
 fn record_check(report: &mut SuiteReport, passed: bool, failure: String) {

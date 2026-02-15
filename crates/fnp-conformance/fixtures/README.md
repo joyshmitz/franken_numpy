@@ -3,7 +3,7 @@
 This folder stores normalized oracle-vs-target fixtures for `fnp-conformance`.
 
 - `smoke_case.json`: minimal bootstrap fixture ensuring harness wiring works.
-- `shape_stride_cases.json`: broadcast legality + stride derivation checks.
+- `shape_stride_cases.json`: broadcast legality, stride derivation, and stride-tricks API checks (`as_strided`, `broadcast_to`, `sliding_window_view`).
 - `dtype_promotion_cases.json`: deterministic promotion-table checks.
 - `runtime_policy_cases.json`: strict/hardened fail-closed policy checks with structured log context.
 - `runtime_policy_adversarial_cases.json`: malformed/unknown wire-class inputs proving fail-closed behavior.
