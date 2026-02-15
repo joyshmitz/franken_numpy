@@ -56,6 +56,79 @@ Contradictions/unknowns register (must be closed during doc-overhaul passes):
 | `DOC-C003` | No explicit packet-to-artifact ownership crosswalk for unresolved domains (NDIter, RNG, linalg, IO). | `EXHAUSTIVE_LEGACY_ANALYSIS.md` sections 10-13 | `bd-23m.24.3` | high | Add packet index that binds each unresolved behavior class to packet bead IDs and closure gates. |
 | `DOC-C004` | Structured logging contract was added but not yet threaded into all subsystem extraction sections. | `artifacts/contracts/test_logging_contract_v1.json`, `artifacts/contracts/TESTING_AND_LOGGING_CONVENTIONS_V1.md` | `bd-23m.24.10` | medium | Each packet section names required log fields and reason-code taxonomy coverage status. |
 
+## DOC-PASS-01 Full Module/Package Cartography with Ownership and Boundaries
+
+### DOC-PASS-01.1 Workspace ownership map (crate -> behavior contract)
+
+| Crate | Ownership boundary (Rust anchors) | Legacy anchor families | Executable evidence anchors | Boundary contract |
+|---|---|---|---|---|
+| `fnp-dtype` | `crates/fnp-dtype/src/lib.rs` (`DType`, `promote`, `can_cast_lossless`) | `numpy/_core/src/multiarray/dtypemeta.c`, `descriptor.c`, `can_cast_table.h` | `crates/fnp-conformance/fixtures/dtype_promotion_cases.json`, `crates/fnp-conformance/src/lib.rs` (`run_dtype_promotion_suite`) | Owns deterministic dtype identity/promotion/cast primitives only; does not own array layout, iteration, or execution kernels. |
+| `fnp-ndarray` | `crates/fnp-ndarray/src/lib.rs` (`broadcast_shape`, `broadcast_shapes`, `fix_unknown_dimension`, `contiguous_strides`, `NdLayout`) | `numpy/_core/src/multiarray/shape.c`, `shape.h`, stride legality loci | `crates/fnp-conformance/fixtures/shape_stride_cases.json`, `run_shape_stride_suite` | Owns shape/stride legality and contiguous layout calculus; does not own dtype promotion policy or numeric kernels. |
+| `fnp-ufunc` | `crates/fnp-ufunc/src/lib.rs` (`UFuncArray`, `BinaryOp`, `elementwise_binary`, `reduce_sum`) | `numpy/_core/src/umath/ufunc_object.c`, reduction/dispatch loop families | `crates/fnp-conformance/src/ufunc_differential.rs`, `ufunc_*` fixtures, `run_ufunc_*` suites | Owns broadcasted elementwise/reduction execution semantics for scoped ops; relies on `fnp-dtype` + `fnp-ndarray` for promotion/layout decisions. |
+| `fnp-runtime` | `crates/fnp-runtime/src/lib.rs` (`decide_compatibility*`, `evaluate_policy_override`, `EvidenceLedger`) | Runtime policy doctrine from strict/hardened contract set (fail-closed matrix) | `runtime_policy_cases.json`, `runtime_policy_adversarial_cases.json`, workflow scenario suite | Owns strict/hardened compatibility decisions, fail-closed wire decoding, and policy/audit evidence records; does not own numerical semantics. |
+| `fnp-conformance` | `crates/fnp-conformance/src/lib.rs` + submodules (`contract_schema`, `security_contracts`, `test_contracts`, `workflow_scenarios`, `benchmark`, `raptorq_artifacts`, `ufunc_differential`) | Oracle/tests from `legacy_numpy_code/numpy`, packet artifact topology contracts | `run_all_core_suites`, contract/test/security/workflow suites, RaptorQ sidecar/scrub/decode proof tooling | Owns verification and evidence production/validation pipeline; must not redefine core semantics owned by execution crates. |
+| `fnp-iter` | `crates/fnp-iter/src/lib.rs` (template placeholder) | `numpy/_core/src/multiarray/nditer*` | Packet-A docs in `artifacts/phase2c/FNP-P2C-006/*` | Planned owner for NDIter traversal invariants; executable ownership is not yet implemented (parity debt). |
+| `fnp-random` | `crates/fnp-random/src/lib.rs` (template placeholder) | `numpy/random/*.pyx`, `numpy/random/src/*` | none yet beyond crate stub | Planned owner for deterministic RNG streams/state schemas; currently unimplemented parity debt. |
+| `fnp-linalg` | `crates/fnp-linalg/src/lib.rs` (template placeholder) | `numpy/linalg/lapack_lite/*` | none yet beyond crate stub | Planned owner for linear algebra adapter contracts; currently unimplemented parity debt. |
+| `fnp-io` | `crates/fnp-io/src/lib.rs` (template placeholder) | `numpy/lib/format.py`, npy/npz parser/writer paths | none yet beyond crate stub | Planned owner for NPY/NPZ parsing/writing hardening; currently unimplemented parity debt. |
+
+### DOC-PASS-01.2 Dependency direction and layering constraints
+
+Workspace dependency graph (from `Cargo.toml` manifests):
+
+1. Foundation leaves: `fnp-dtype`, `fnp-ndarray`, `fnp-iter`, `fnp-random`, `fnp-linalg`, `fnp-io`.
+2. Execution layer: `fnp-ufunc` -> (`fnp-dtype`, `fnp-ndarray`).
+3. Policy layer: `fnp-runtime` (optional feature links: `asupersync`, `ftui`).
+4. Verification layer: `fnp-conformance` -> (`fnp-dtype`, `fnp-ndarray`, `fnp-ufunc`, `fnp-runtime`) + evidence dependencies (`serde*`, `sha2`, `base64`, `asupersync`).
+
+Layering law (non-negotiable for this pass):
+
+- Core semantics flow upward: dtype/shape -> execution -> runtime policy -> conformance/evidence.
+- Verification modules may call execution/policy crates, but execution crates must not depend on conformance crates.
+- Stub crates (`fnp-iter`, `fnp-random`, `fnp-linalg`, `fnp-io`) are reserved ownership slots; promotion to active owners requires packet A->I evidence artifacts.
+
+Potentially invalid edges to reject:
+
+| Forbidden edge | Why forbidden | Detection/closure |
+|---|---|---|
+| `fnp-dtype` -> `fnp-ufunc`/`fnp-conformance` | Inverts semantic hierarchy and couples primitives to higher layers | Enforce via manifest review in packet D-stage and contract-schema checks. |
+| `fnp-ndarray` -> `fnp-runtime` | Layout legality must remain policy-neutral | Reject in implementation plans (`artifacts/phase2c/*/implementation_plan.md`). |
+| Any crate -> `fnp-conformance` (except tests/tools) | Would mix production semantics with oracle/harness code | Gate via Cargo review + `cargo check --workspace --all-targets`. |
+
+### DOC-PASS-01.3 Module hot paths, adapters, and compatibility pockets
+
+| Path | Role type | Why it is a topology hotspot |
+|---|---|---|
+| `crates/fnp-ndarray/src/lib.rs` (`broadcast_shape`, `fix_unknown_dimension`, `contiguous_strides`) | Hot path | Central SCE legality kernel; every broadcast/reshape legality decision funnels here. |
+| `crates/fnp-ufunc/src/lib.rs` (`UFuncArray::elementwise_binary`, `reduce_sum`) | Hot path | Numeric execution path that combines broadcast mapping and reduction index traversal. |
+| `crates/fnp-runtime/src/lib.rs` (`decide_compatibility_from_wire`, `decide_and_record_with_context`) | Policy adapter | Converts wire metadata into strict/hardened decisions and audit ledger events. |
+| `crates/fnp-conformance/src/ufunc_differential.rs` (`PY_CAPTURE_SCRIPT`, `capture_numpy_oracle`, `compare_against_oracle`) | Oracle adapter/shim | Bridges Rust execution to legacy/system NumPy (or pure fallback) for parity comparisons. |
+| `crates/fnp-conformance/src/contract_schema.rs` | Artifact contract validator | Enforces packet artifact topology (`phase2c-contract-v1`) before packet promotion. |
+| `crates/fnp-conformance/src/workflow_scenarios.rs` | Integration shim | Links fixture-level checks to E2E scenario corpus and replay logging expectations. |
+| `crates/fnp-conformance/src/raptorq_artifacts.rs` | Durability adapter | Generates/validates sidecars, scrub reports, and decode proofs for long-lived evidence bundles. |
+
+### DOC-PASS-01.4 Verification implications by ownership boundary (covered/missing/deferred)
+
+| Ownership boundary | Unit/Property | Differential | E2E | Structured logging | Status + owner |
+|---|---|---|---|---|---|
+| `fnp-ndarray` shape/stride legality | covered (crate tests + shape/stride fixtures) | covered (indirect via ufunc differential shape checks), still partial | deferred to packet scenario layers | partial (runtime/workflow logs exist; shape-specific reason taxonomy incomplete) | partial; packet owner `bd-23m.12` |
+| `fnp-dtype` promotion/cast primitives | covered (crate tests + promotion fixture suite) | missing full cast-matrix differential | missing packet-level journey | missing per-cast reason-code taxonomy | missing/partial; packet owner `bd-23m.13` |
+| `fnp-ufunc` scoped ops (`add/sub/mul/div/sum`) | covered (crate tests + metamorphic/adversarial suites) | covered for scoped fixtures; broader NumPy surface missing | deferred (workflow corpus links exist, packet-local journeys incomplete) | covered at fixture/scenario level | partial; packet owner `bd-23m.17` + `bd-23m.19` |
+| `fnp-runtime` strict/hardened policy | covered (crate tests + policy suites) | not applicable as numerical diff; policy-wire adversarial coverage is covered | covered via workflow scenario suite | covered (`fixture_id`,`seed`,`mode`,`env_fingerprint`,`artifact_refs`,`reason_code`) | covered for current surface; continuing under foundation beads `bd-23m.6`, `bd-23m.23` |
+| `fnp-iter` NDIter traversal ownership | missing | missing | missing | missing | missing; packet owner `bd-23m.17` |
+| `fnp-random` deterministic stream/state | missing | missing | missing | missing | missing; packet owner `bd-23m.18` |
+| `fnp-linalg` solver contracts | missing | missing | missing | missing | missing; packet owner `bd-23m.19` |
+| `fnp-io` npy/npz contracts | missing | missing | missing | missing | missing; packet owner `bd-23m.20` |
+
+### DOC-PASS-01.5 Contradictions and unknowns register (topology-specific)
+
+| ID | Contradiction / unknown | Evidence anchors | Risk | Owner | Closure criteria |
+|---|---|---|---|---|---|
+| `TOPO-C001` | Four ownership crates (`fnp-iter`, `fnp-random`, `fnp-linalg`, `fnp-io`) are still template stubs, so topology ownership exists but implementation boundaries are not executable yet. | `crates/fnp-iter/src/lib.rs`, `crates/fnp-random/src/lib.rs`, `crates/fnp-linalg/src/lib.rs`, `crates/fnp-io/src/lib.rs` | critical | `bd-23m.17`, `bd-23m.18`, `bd-23m.19`, `bd-23m.20` | Replace template modules with packet D-stage boundaries + passing unit/property suites and contract artifacts. |
+| `TOPO-C002` | Differential harness is currently concentrated in ufunc/policy surfaces; packet-specific differential lanes for transfer, RNG, linalg, and IO are not wired. | `crates/fnp-conformance/src/lib.rs`, fixture inventory under `crates/fnp-conformance/fixtures` | high | packet F-stage beads (`bd-23m.14.6`, `bd-23m.18.6`, `bd-23m.19.6`, `bd-23m.20.6`) | Add packet-local fixture manifests, oracle capture paths, and differential report outputs with reason codes. |
+| `TOPO-C003` | Layering constraints are documented but not machine-enforced as a workspace contract test. | Root `Cargo.toml` + crate manifests | medium | foundation gate `bd-23m.23` | Add automated dependency-direction check to reliability gate outputs and fail CI on forbidden edges. |
+| `TOPO-C004` | Runtime/workflow structured logs are optional via path configuration, allowing silent no-op when env/config is absent. | `set_runtime_policy_log_path`, `set_workflow_scenario_log_path`, `maybe_append_runtime_policy_log` | medium | foundation orchestration `bd-23m.6` | Gate runs must set explicit log paths and fail when required log artifacts are absent. |
+
 ## 2. Quantitative Legacy Inventory (Measured)
 
 - Total files: `2326`
