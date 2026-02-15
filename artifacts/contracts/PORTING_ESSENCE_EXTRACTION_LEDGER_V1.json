@@ -88,6 +88,8 @@
         "artifacts/phase2c/FNP-P2C-002/legacy_anchor_map.md",
         "artifacts/phase2c/FNP-P2C-002/behavior_extraction_ledger.md",
         "artifacts/phase2c/FNP-P2C-002/contract_table.md",
+        "artifacts/phase2c/FNP-P2C-002/risk_note.md",
+        "artifacts/phase2c/FNP-P2C-002/implementation_plan.md",
         "crates/fnp-dtype/src/lib.rs",
         "crates/fnp-conformance/src/lib.rs"
       ],
