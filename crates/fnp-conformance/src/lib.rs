@@ -1047,9 +1047,12 @@ fn validate_runtime_policy_log_fields(
 #[cfg(test)]
 mod tests {
     use super::{
-        HarnessConfig, run_all_core_suites, run_runtime_policy_adversarial_suite, run_smoke,
-        run_ufunc_adversarial_suite, run_ufunc_differential_suite, run_ufunc_metamorphic_suite,
+        HarnessConfig, run_all_core_suites, run_runtime_policy_adversarial_suite,
+        run_shape_stride_suite, run_smoke, run_ufunc_adversarial_suite,
+        run_ufunc_differential_suite, run_ufunc_metamorphic_suite, set_shape_stride_log_path,
     };
+    use serde_json::Value;
+    use std::fs;
     use std::path::PathBuf;
 
     #[test]
@@ -1093,6 +1096,58 @@ mod tests {
         let cfg = HarnessConfig::default_paths();
         let suite = super::test_contracts::run_test_contract_suite(&cfg).expect("suite should run");
         assert!(suite.all_passed(), "failures={:?}", suite.failures);
+    }
+
+    #[test]
+    fn shape_stride_suite_emits_structured_logs_with_required_fields() {
+        let cfg = HarnessConfig::default_paths();
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let log_path = temp.path().join("shape_stride_suite.jsonl");
+        set_shape_stride_log_path(Some(log_path.clone()));
+
+        let suite = run_shape_stride_suite(&cfg).expect("shape/stride suite should run");
+        assert!(suite.all_passed(), "failures={:?}", suite.failures);
+
+        let raw = fs::read_to_string(&log_path).expect("shape/stride log should exist");
+        let mut entry_count = 0usize;
+        for line in raw.lines().filter(|line| !line.trim().is_empty()) {
+            entry_count += 1;
+            let value: Value = serde_json::from_str(line).expect("log line must be valid json");
+            let obj = value.as_object().expect("log line must be json object");
+            assert!(
+                obj.get("fixture_id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| !s.trim().is_empty())
+            );
+            assert!(obj.get("seed").is_some_and(Value::is_u64));
+            assert!(
+                obj.get("mode")
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| s == "strict" || s == "hardened")
+            );
+            assert!(
+                obj.get("env_fingerprint")
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| !s.trim().is_empty())
+            );
+            assert!(
+                obj.get("artifact_refs")
+                    .and_then(Value::as_array)
+                    .is_some_and(|arr| {
+                        !arr.is_empty()
+                            && arr
+                                .iter()
+                                .all(|item| item.as_str().is_some_and(|s| !s.trim().is_empty()))
+                    })
+            );
+            assert!(
+                obj.get("reason_code")
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| !s.trim().is_empty())
+            );
+        }
+        assert!(entry_count > 0, "shape/stride log should contain entries");
+        set_shape_stride_log_path(None);
     }
 
     #[test]

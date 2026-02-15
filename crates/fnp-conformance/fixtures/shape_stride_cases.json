@@ -7,7 +7,14 @@
     "stride_shape": [2, 3, 4],
     "stride_item_size": 8,
     "stride_order": "C",
-    "expected_strides": [96, 32, 8]
+    "expected_strides": [96, 32, 8],
+    "seed": 101,
+    "env_fingerprint": "fnp-conformance-default-paths",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-001/fixture_manifest.json",
+      "artifacts/phase2c/FNP-P2C-001/parity_gate.yaml"
+    ],
+    "reason_code": "broadcast_ok"
   },
   {
     "id": "broadcast_rank_mismatch_fortran",
@@ -17,7 +24,14 @@
     "stride_shape": [2, 3, 4],
     "stride_item_size": 8,
     "stride_order": "F",
-    "expected_strides": [8, 16, 48]
+    "expected_strides": [8, 16, 48],
+    "seed": 102,
+    "env_fingerprint": "fnp-conformance-default-paths",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-001/fixture_manifest.json",
+      "artifacts/phase2c/FNP-P2C-001/parity_gate.yaml"
+    ],
+    "reason_code": "fortran_stride_ok"
   },
   {
     "id": "broadcast_incompatible",
@@ -27,6 +41,13 @@
     "stride_shape": [5],
     "stride_item_size": 4,
     "stride_order": "C",
-    "expected_strides": [4]
+    "expected_strides": [4],
+    "seed": 103,
+    "env_fingerprint": "fnp-conformance-default-paths",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-001/fixture_manifest.json",
+      "artifacts/phase2c/FNP-P2C-001/parity_gate.yaml"
+    ],
+    "reason_code": "broadcast_incompatible_expected"
   }
 ]
