@@ -6,6 +6,7 @@ use fnp_conformance::workflow_scenarios::{
 };
 use fnp_conformance::{HarnessConfig, SuiteReport};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -27,7 +28,7 @@ struct AttemptSummary {
     suite: SuiteSummary,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct ReliabilityDiagnostic {
     subsystem: String,
     reason_code: String,
@@ -54,6 +55,8 @@ struct GateSummary {
     suites: Vec<SuiteSummary>,
     reliability: ReliabilitySummary,
     report_path: Option<String>,
+    artifact_index_path: String,
+    forensics_artifact_index: ForensicsArtifactIndex,
 }
 
 #[derive(Debug, Deserialize)]
@@ -61,9 +64,82 @@ struct WorkflowScenarioFixtureCase {
     id: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct TriageReport {
+    failure_class: String,
+    first_bad_evidence: String,
+    suggested_next_action: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct FailureEnvelope {
+    gate: String,
+    suite: String,
+    failure_class: String,
+    reason_code: String,
+    first_bad_evidence: String,
+    fixture_lineage: Vec<String>,
+    replay_command: String,
+    evidence_refs: Vec<String>,
+    suggested_next_action: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ArtifactIndexEntry {
+    id: String,
+    kind: String,
+    path: String,
+    description: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ForensicsArtifactIndex {
+    schema_version: u8,
+    gate: String,
+    generated_at_unix_ms: u128,
+    status: String,
+    execution_context: String,
+    triage: Option<TriageReport>,
+    failure_envelopes: Vec<FailureEnvelope>,
+    artifacts: Vec<ArtifactIndexEntry>,
+}
+
+#[derive(Debug)]
+struct WorkflowFailureEvidence {
+    fixture_id: String,
+    scenario_id: String,
+    step_id: String,
+    reason_code: String,
+    detail: String,
+    artifact_refs: Vec<String>,
+}
+
+struct ForensicsBuildContext<'a> {
+    status: &'a str,
+    attempts: &'a [AttemptSummary],
+    diagnostics: &'a [ReliabilityDiagnostic],
+    workflow_log: &'a str,
+    report_path: Option<&'a str>,
+    flake_budget: usize,
+    coverage_floor: f64,
+}
+
+struct FailureEnvelopeInput<'a> {
+    reason_code: &'a str,
+    failure_class: &'a str,
+    first_bad_evidence: String,
+    workflow_log: &'a str,
+    report_path: Option<&'a str>,
+    log_evidence: Option<&'a WorkflowFailureEvidence>,
+    replay_command: &'a str,
+    suggested_next_action: &'a str,
+    diagnostic_evidence_refs: Vec<String>,
+}
+
 #[derive(Debug)]
 struct GateOptions {
     log_path: PathBuf,
+    artifact_index_path: PathBuf,
     retries: usize,
     flake_budget: usize,
     coverage_floor: f64,
@@ -176,6 +252,22 @@ fn run() -> Result<(), String> {
         "fail"
     };
     let attempts_run = attempts.len();
+    let report_path = options
+        .report_path
+        .as_ref()
+        .map(|path| path.display().to_string());
+
+    let forensics_artifact_index = build_forensics_artifact_index(ForensicsBuildContext {
+        status,
+        attempts: &attempts,
+        diagnostics: &diagnostics,
+        workflow_log: &workflow_log,
+        report_path: report_path.as_deref(),
+        flake_budget: options.flake_budget,
+        coverage_floor: options.coverage_floor,
+    })?;
+    write_json_file(&options.artifact_index_path, &forensics_artifact_index)?;
+
     let summary = GateSummary {
         status,
         workflow_log,
@@ -190,10 +282,9 @@ fn run() -> Result<(), String> {
             coverage_ratio,
             diagnostics,
         },
-        report_path: options
-            .report_path
-            .as_ref()
-            .map(|path| path.display().to_string()),
+        report_path,
+        artifact_index_path: options.artifact_index_path.display().to_string(),
+        forensics_artifact_index,
     };
 
     let summary_json = serde_json::to_string_pretty(&summary)
@@ -222,6 +313,7 @@ fn run() -> Result<(), String> {
 
 fn parse_args() -> Result<GateOptions, String> {
     let mut log_path: Option<PathBuf> = None;
+    let mut artifact_index_path: Option<PathBuf> = None;
     let mut report_path: Option<PathBuf> = None;
     let mut retries = 0usize;
     let mut flake_budget = 0usize;
@@ -234,6 +326,12 @@ fn parse_args() -> Result<GateOptions, String> {
                     .next()
                     .ok_or_else(|| "--log-path requires a value".to_string())?;
                 log_path = Some(PathBuf::from(value));
+            }
+            "--artifact-index-path" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "--artifact-index-path requires a value".to_string())?;
+                artifact_index_path = Some(PathBuf::from(value));
             }
             "--report-path" => {
                 let value = args
@@ -272,7 +370,7 @@ fn parse_args() -> Result<GateOptions, String> {
             }
             "--help" | "-h" => {
                 println!(
-                    "Usage: cargo run -p fnp-conformance --bin run_workflow_scenario_gate -- [--log-path <path>] [--report-path <path>] [--retries <n>] [--flake-budget <n>] [--coverage-floor <ratio>]"
+                    "Usage: cargo run -p fnp-conformance --bin run_workflow_scenario_gate -- [--log-path <path>] [--artifact-index-path <path>] [--report-path <path>] [--retries <n>] [--flake-budget <n>] [--coverage-floor <ratio>]"
                 );
                 std::process::exit(0);
             }
@@ -288,9 +386,15 @@ fn parse_args() -> Result<GateOptions, String> {
             .join("../../artifacts/logs")
             .join(format!("workflow_scenario_e2e_{ts_millis}.jsonl"))
     });
+    let artifact_index_path = artifact_index_path.unwrap_or_else(|| {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../artifacts/logs")
+            .join(format!("workflow_scenario_artifact_index_{ts_millis}.json"))
+    });
 
     Ok(GateOptions {
         log_path,
+        artifact_index_path,
         retries,
         flake_budget,
         coverage_floor,
@@ -416,5 +520,394 @@ fn coverage_ratio(summary: &SuiteSummary) -> f64 {
         0.0
     } else {
         summary.pass_count as f64 / summary.case_count as f64
+    }
+}
+
+fn now_unix_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_millis())
+}
+
+fn build_forensics_artifact_index(
+    context: ForensicsBuildContext<'_>,
+) -> Result<ForensicsArtifactIndex, String> {
+    let first_failed_log = load_first_failed_workflow_evidence(Path::new(context.workflow_log))?;
+    let first_suite_failure = context
+        .attempts
+        .iter()
+        .flat_map(|attempt| attempt.suite.failures.iter())
+        .find(|failure| !failure.trim().is_empty())
+        .cloned();
+
+    let reason_code = if let Some(diagnostic) = context.diagnostics.first() {
+        diagnostic.reason_code.clone()
+    } else if let Some(log) = &first_failed_log {
+        log.reason_code.clone()
+    } else {
+        "scenario_assertion_failed".to_string()
+    };
+    let failure_class = failure_class_from_reason_code(&reason_code).to_string();
+
+    let first_bad_evidence = if let Some(log) = &first_failed_log {
+        format!(
+            "{}::{}::{}: {}",
+            log.scenario_id, log.step_id, log.fixture_id, log.detail
+        )
+    } else if let Some(failure) = &first_suite_failure {
+        failure.clone()
+    } else if let Some(diagnostic) = context.diagnostics.first() {
+        diagnostic.message.clone()
+    } else {
+        "no failure evidence recorded".to_string()
+    };
+
+    let suggested_next_action = suggested_next_action(
+        &reason_code,
+        context.workflow_log,
+        context.flake_budget,
+        context.coverage_floor,
+        first_failed_log.as_ref(),
+    );
+
+    let triage = if context.status == "fail" {
+        Some(TriageReport {
+            failure_class: failure_class.clone(),
+            first_bad_evidence: first_bad_evidence.clone(),
+            suggested_next_action: suggested_next_action.clone(),
+        })
+    } else {
+        None
+    };
+
+    let replay_command = replay_command(
+        context.workflow_log,
+        context.flake_budget,
+        context.coverage_floor,
+    );
+    let failure_envelopes = if context.status == "fail" {
+        let mut envelopes = Vec::new();
+        if context.diagnostics.is_empty() {
+            envelopes.push(build_failure_envelope(FailureEnvelopeInput {
+                reason_code: "scenario_assertion_failed",
+                failure_class: &failure_class,
+                first_bad_evidence: first_suite_failure
+                    .unwrap_or_else(|| first_bad_evidence.clone()),
+                workflow_log: context.workflow_log,
+                report_path: context.report_path,
+                log_evidence: first_failed_log.as_ref(),
+                replay_command: &replay_command,
+                suggested_next_action: &suggested_next_action,
+                diagnostic_evidence_refs: Vec::new(),
+            }));
+        } else {
+            for diagnostic in context.diagnostics {
+                envelopes.push(build_failure_envelope(FailureEnvelopeInput {
+                    reason_code: &diagnostic.reason_code,
+                    failure_class: failure_class_from_reason_code(&diagnostic.reason_code),
+                    first_bad_evidence: diagnostic.message.clone(),
+                    workflow_log: context.workflow_log,
+                    report_path: context.report_path,
+                    log_evidence: first_failed_log.as_ref(),
+                    replay_command: &replay_command,
+                    suggested_next_action: &suggested_next_action,
+                    diagnostic_evidence_refs: diagnostic.evidence_refs.clone(),
+                }));
+            }
+        }
+        envelopes
+    } else {
+        Vec::new()
+    };
+
+    let mut artifacts = vec![
+        ArtifactIndexEntry {
+            id: "workflow_log".to_string(),
+            kind: "jsonl_log".to_string(),
+            path: context.workflow_log.to_string(),
+            description: "Step-level workflow replay log with pass/fail entries".to_string(),
+        },
+        ArtifactIndexEntry {
+            id: "workflow_corpus".to_string(),
+            kind: "fixture_collection".to_string(),
+            path: "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json".to_string(),
+            description: "Scenario fixture corpus referenced by workflow gate".to_string(),
+        },
+        ArtifactIndexEntry {
+            id: "ufunc_input_cases".to_string(),
+            kind: "fixture_collection".to_string(),
+            path: "crates/fnp-conformance/fixtures/ufunc_input_cases.json".to_string(),
+            description: "Differential fixture cases linked from workflow scenarios".to_string(),
+        },
+        ArtifactIndexEntry {
+            id: "workflow_runner_script".to_string(),
+            kind: "replay_script".to_string(),
+            path: "scripts/e2e/run_workflow_scenario_gate.sh".to_string(),
+            description: "Canonical script for local/CI replay".to_string(),
+        },
+    ];
+    if let Some(path) = context.report_path {
+        artifacts.push(ArtifactIndexEntry {
+            id: "reliability_report".to_string(),
+            kind: "gate_report".to_string(),
+            path: path.to_string(),
+            description: "Workflow reliability summary report".to_string(),
+        });
+    }
+
+    Ok(ForensicsArtifactIndex {
+        schema_version: 1,
+        gate: "run_workflow_scenario_gate".to_string(),
+        generated_at_unix_ms: now_unix_ms(),
+        status: context.status.to_string(),
+        execution_context: execution_context().to_string(),
+        triage,
+        failure_envelopes,
+        artifacts,
+    })
+}
+
+fn build_failure_envelope(input: FailureEnvelopeInput<'_>) -> FailureEnvelope {
+    let mut evidence_refs = vec![input.workflow_log.to_string()];
+    if let Some(path) = input.report_path {
+        evidence_refs.push(path.to_string());
+    }
+    evidence_refs.extend(input.diagnostic_evidence_refs);
+    if let Some(log) = input.log_evidence {
+        evidence_refs.extend(log.artifact_refs.iter().cloned());
+    }
+    evidence_refs.sort();
+    evidence_refs.dedup();
+
+    let fixture_lineage = if let Some(log) = input.log_evidence {
+        vec![
+            format!("scenario_id={}", log.scenario_id),
+            format!("step_id={}", log.step_id),
+            format!("fixture_id={}", log.fixture_id),
+        ]
+    } else {
+        Vec::new()
+    };
+
+    FailureEnvelope {
+        gate: "run_workflow_scenario_gate".to_string(),
+        suite: "workflow_scenarios".to_string(),
+        failure_class: input.failure_class.to_string(),
+        reason_code: input.reason_code.to_string(),
+        first_bad_evidence: input.first_bad_evidence,
+        fixture_lineage,
+        replay_command: input.replay_command.to_string(),
+        evidence_refs,
+        suggested_next_action: input.suggested_next_action.to_string(),
+    }
+}
+
+fn replay_command(workflow_log: &str, flake_budget: usize, coverage_floor: f64) -> String {
+    format!(
+        "cargo run -p fnp-conformance --bin run_workflow_scenario_gate -- --log-path '{}' --retries 0 --flake-budget {} --coverage-floor {}",
+        workflow_log, flake_budget, coverage_floor
+    )
+}
+
+fn execution_context() -> &'static str {
+    if std::env::var_os("CI").is_some() {
+        "ci"
+    } else {
+        "local"
+    }
+}
+
+fn failure_class_from_reason_code(reason_code: &str) -> &'static str {
+    match reason_code {
+        "deterministic_failure" => "deterministic_regression",
+        "flake_budget_exceeded" => "flake_budget",
+        "coverage_floor_breach" => "coverage_floor",
+        "workflow_log_validation_failure" => "artifact_log_validation",
+        _ => "scenario_assertion",
+    }
+}
+
+fn suggested_next_action(
+    reason_code: &str,
+    workflow_log: &str,
+    flake_budget: usize,
+    coverage_floor: f64,
+    evidence: Option<&WorkflowFailureEvidence>,
+) -> String {
+    match reason_code {
+        "flake_budget_exceeded" => format!(
+            "Inspect per-attempt logs, confirm deterministic regressions first, then rerun with an explicit retry budget. Replay command: {}",
+            replay_command(workflow_log, flake_budget, coverage_floor)
+        ),
+        "coverage_floor_breach" => format!(
+            "Find missing scenario IDs in {} and add/update workflow corpus entries before rerunning.",
+            workflow_log
+        ),
+        _ => {
+            if let Some(log) = evidence {
+                format!(
+                    "Inspect scenario '{}' step '{}' (fixture '{}') in {} and replay with: {}",
+                    log.scenario_id,
+                    log.step_id,
+                    log.fixture_id,
+                    workflow_log,
+                    replay_command(workflow_log, flake_budget, coverage_floor)
+                )
+            } else {
+                format!(
+                    "Inspect the first failure in {} and replay with: {}",
+                    workflow_log,
+                    replay_command(workflow_log, flake_budget, coverage_floor)
+                )
+            }
+        }
+    }
+}
+
+fn load_first_failed_workflow_evidence(
+    path: &Path,
+) -> Result<Option<WorkflowFailureEvidence>, String> {
+    let raw = fs::read_to_string(path)
+        .map_err(|err| format!("failed reading workflow log {}: {err}", path.display()))?;
+    for (line_no, line) in raw.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let value: Value = serde_json::from_str(line).map_err(|err| {
+            format!(
+                "failed parsing workflow log {} line {}: {err}",
+                path.display(),
+                line_no + 1
+            )
+        })?;
+        if value.get("passed").and_then(Value::as_bool).unwrap_or(true) {
+            continue;
+        }
+
+        let fixture_id = non_empty_field(&value, "fixture_id")
+            .unwrap_or_else(|| format!("unknown_fixture_line_{}", line_no + 1));
+        let scenario_id = non_empty_field(&value, "scenario_id")
+            .unwrap_or_else(|| "unknown_scenario".to_string());
+        let step_id =
+            non_empty_field(&value, "step_id").unwrap_or_else(|| "unknown_step".to_string());
+        let reason_code =
+            non_empty_field(&value, "reason_code").unwrap_or_else(|| "unspecified".to_string());
+        let detail = non_empty_field(&value, "detail").unwrap_or_else(|| "no detail".to_string());
+        let artifact_refs = value
+            .get("artifact_refs")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::trim)
+                    .filter(|item| !item.is_empty())
+                    .map(ToString::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        return Ok(Some(WorkflowFailureEvidence {
+            fixture_id,
+            scenario_id,
+            step_id,
+            reason_code,
+            detail,
+            artifact_refs,
+        }));
+    }
+    Ok(None)
+}
+
+fn non_empty_field(value: &Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(ToString::to_string)
+}
+
+fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed creating {}: {err}", parent.display()))?;
+    }
+    let payload = serde_json::to_string_pretty(value)
+        .map_err(|err| format!("failed serializing json: {err}"))?;
+    fs::write(path, payload).map_err(|err| format!("failed writing {}: {err}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        derive_attempt_log_path, failure_class_from_reason_code,
+        load_first_failed_workflow_evidence,
+    };
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn derive_attempt_log_path_keeps_base_for_first_attempt() {
+        let base = PathBuf::from("/tmp/workflow_scenario_e2e.jsonl");
+        assert_eq!(derive_attempt_log_path(&base, 0), base);
+    }
+
+    #[test]
+    fn derive_attempt_log_path_adds_attempt_suffix() {
+        let base = PathBuf::from("/tmp/workflow_scenario_e2e.jsonl");
+        let actual = derive_attempt_log_path(&base, 2);
+        assert_eq!(
+            actual,
+            PathBuf::from("/tmp/workflow_scenario_e2e.attempt2.jsonl")
+        );
+    }
+
+    #[test]
+    fn load_first_failed_workflow_evidence_returns_first_failed_entry() {
+        let ts_nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let log_path = std::env::temp_dir().join(format!(
+            "workflow_forensics_test_{}_{}.jsonl",
+            std::process::id(),
+            ts_nanos
+        ));
+        let payload = concat!(
+            "{\"scenario_id\":\"happy\",\"step_id\":\"ok\",\"fixture_id\":\"happy::ok\",\"passed\":true,\"reason_code\":\"rc\",\"detail\":\"\",\"artifact_refs\":[\"a\"]}\n",
+            "{\"scenario_id\":\"bad\",\"step_id\":\"step_1\",\"fixture_id\":\"bad::step_1\",\"passed\":false,\"reason_code\":\"bad_reason\",\"detail\":\"boom\",\"artifact_refs\":[\"x\",\"y\"]}\n"
+        );
+        fs::write(&log_path, payload).expect("should write temp workflow log");
+
+        let evidence = load_first_failed_workflow_evidence(&log_path)
+            .expect("should parse workflow log")
+            .expect("should find failed entry");
+        assert_eq!(evidence.scenario_id, "bad");
+        assert_eq!(evidence.step_id, "step_1");
+        assert_eq!(evidence.fixture_id, "bad::step_1");
+        assert_eq!(evidence.reason_code, "bad_reason");
+        assert_eq!(evidence.detail, "boom");
+        assert_eq!(evidence.artifact_refs, vec!["x", "y"]);
+    }
+
+    #[test]
+    fn failure_class_mapping_covers_known_reasons() {
+        assert_eq!(
+            failure_class_from_reason_code("deterministic_failure"),
+            "deterministic_regression"
+        );
+        assert_eq!(
+            failure_class_from_reason_code("flake_budget_exceeded"),
+            "flake_budget"
+        );
+        assert_eq!(
+            failure_class_from_reason_code("coverage_floor_breach"),
+            "coverage_floor"
+        );
+        assert_eq!(
+            failure_class_from_reason_code("unknown_reason"),
+            "scenario_assertion"
+        );
     }
 }

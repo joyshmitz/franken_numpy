@@ -94,6 +94,20 @@ Gate behavior:
 2. Missing seed/reason_code/artifact_refs in required fixture classes fails the suite.
 3. Missing required gate script fails the suite.
 
+## 9. Failure Forensics Artifact Index
+
+`run_workflow_scenario_gate` emits a machine-readable artifact index JSON (`schema_version = 1`) to support one-hop triage from gate failure -> evidence -> replay:
+
+1. `triage.failure_class`: deterministic class (`deterministic_regression`, `flake_budget`, `coverage_floor`, `artifact_log_validation`, or `scenario_assertion`)
+2. `triage.first_bad_evidence`: first failing evidence string (scenario/step/fixture or first gate failure)
+3. `triage.suggested_next_action`: deterministic next diagnostic command
+4. `failure_envelopes[*]`: standardized failure envelope with `reason_code`, `fixture_lineage`, `replay_command`, and `evidence_refs`
+5. `artifacts[*]`: deterministic references for workflow log, fixture corpus, runner script, and gate report
+
+Default output path:
+
+- `artifacts/logs/workflow_scenario_artifact_index_<ts>.json`
+
 ## 8. Workflow Scenario Corpus Requirements
 
 The workflow corpus fixture (`crates/fnp-conformance/fixtures/workflow_scenario_corpus.json`) must:
@@ -124,3 +138,38 @@ RaptorQ applicability note:
 
 - Long-lived bundles (conformance fixtures, benchmark baselines, reproducibility ledgers) require sidecar/scrub/decode-proof artifacts.
 - Ephemeral local gate logs are out of RaptorQ scope unless explicitly promoted to durable artifacts.
+
+## 10. Worked Failure Investigations
+
+Unit/property gate investigation:
+
+```bash
+rch exec -- cargo run -p fnp-conformance --bin run_test_contract_gate -- \
+  --log-path artifacts/logs/test_contract_e2e_manual.jsonl \
+  | tee artifacts/logs/test_contract_gate_report.json
+```
+
+If this fails, inspect missing fields quickly:
+
+```bash
+jq -r '.suites[] | select(.suite=="runtime_policy_log_contract") | .failures[]' \
+  artifacts/logs/test_contract_gate_report.json
+```
+
+Differential gate investigation:
+
+```bash
+rch exec -- cargo run -p fnp-conformance --bin run_ufunc_differential
+jq -r '.failures[:5][] | [.id, .reason] | @tsv' \
+  crates/fnp-conformance/fixtures/oracle_outputs/ufunc_differential_report.json
+```
+
+E2E workflow gate investigation with artifact index:
+
+```bash
+scripts/e2e/run_workflow_scenario_gate.sh \
+  artifacts/logs/workflow_scenario_e2e_manual.jsonl \
+  artifacts/logs/workflow_scenario_reliability_manual.json \
+  artifacts/logs/workflow_scenario_artifact_index_manual.json
+jq '.triage' artifacts/logs/workflow_scenario_artifact_index_manual.json
+```
