@@ -628,4 +628,145 @@ mod tests {
             }
         ));
     }
+
+    #[test]
+    fn broadcast_to_zero_stride_property_grid() {
+        let cases: &[(&[usize], &[usize])] = &[
+            (&[2, 1, 3], &[2, 4, 3]),
+            (&[1, 5], &[7, 5]),
+            (&[3, 1, 1], &[3, 2, 4]),
+            (&[5], &[2, 5]),
+        ];
+
+        for &(src_shape, dst_shape) in cases {
+            let base =
+                NdLayout::contiguous(src_shape.to_vec(), 8, MemoryOrder::C).expect("base layout");
+            let out = base
+                .broadcast_to(dst_shape.to_vec())
+                .expect("broadcast_to should succeed");
+            assert_eq!(out.item_size, base.item_size);
+            assert_eq!(out.shape, dst_shape);
+
+            let offset = dst_shape.len() - src_shape.len();
+            for axis in 0..dst_shape.len() {
+                let expected_stride = if axis < offset {
+                    0
+                } else {
+                    let src_axis = axis - offset;
+                    let src_dim = src_shape[src_axis];
+                    let src_stride = base.strides[src_axis];
+                    if src_dim == dst_shape[axis] {
+                        src_stride
+                    } else {
+                        0
+                    }
+                };
+
+                assert_eq!(
+                    out.strides[axis], expected_stride,
+                    "stride mismatch src_shape={src_shape:?} dst_shape={dst_shape:?} axis={axis}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn as_strided_zero_extent_property_grid() {
+        let base = NdLayout::contiguous(vec![4, 4, 4], 8, MemoryOrder::C).expect("layout");
+        let cases = [
+            (vec![0], vec![8]),
+            (vec![0, 3], vec![0, 8]),
+            (vec![2, 0, 1], vec![64, 16, 8]),
+        ];
+
+        for (shape, strides) in cases {
+            let view = base
+                .as_strided(shape.clone(), strides.clone())
+                .expect("zero-extent view should be accepted");
+            assert_eq!(view.shape, shape);
+            assert_eq!(view.strides, strides);
+        }
+    }
+
+    #[test]
+    fn sliding_window_shape_stride_property_grid() {
+        let cases = [
+            (vec![4, 5], vec![2, 3]),
+            (vec![6, 3], vec![4, 1]),
+            (vec![3, 3, 3], vec![1, 2, 3]),
+        ];
+
+        for (shape, window_shape) in cases {
+            let base = NdLayout::contiguous(shape.clone(), 8, MemoryOrder::C).expect("layout");
+            let view = base
+                .sliding_window_view(window_shape.clone())
+                .expect("window should be valid");
+
+            let mut expected_shape: Vec<usize> = shape
+                .iter()
+                .zip(&window_shape)
+                .map(|(&dim, &window)| dim - window + 1)
+                .collect();
+            expected_shape.extend(window_shape.iter().copied());
+            assert_eq!(view.shape, expected_shape);
+
+            let mut expected_strides = base.strides.clone();
+            expected_strides.extend(base.strides.iter().copied());
+            assert_eq!(view.strides, expected_strides);
+        }
+    }
+
+    #[test]
+    fn broadcast_shape_associativity_property_grid() {
+        let shapes: &[&[usize]] = &[
+            &[],
+            &[1],
+            &[3],
+            &[1, 4],
+            &[2, 1, 4],
+            &[2, 3, 1],
+            &[1, 1, 5, 1],
+        ];
+
+        for a in shapes {
+            for b in shapes {
+                for c in shapes {
+                    let ab_c = broadcast_shape(a, b).and_then(|ab| broadcast_shape(&ab, c));
+                    let a_bc = broadcast_shape(b, c).and_then(|bc| broadcast_shape(a, &bc));
+                    match (ab_c, a_bc) {
+                        (Ok(lhs), Ok(rhs)) => assert_eq!(lhs, rhs, "a={a:?} b={b:?} c={c:?}"),
+                        (Err(_), Err(_)) => {}
+                        (lhs, rhs) => assert_eq!(
+                            lhs.is_ok(),
+                            rhs.is_ok(),
+                            "broadcast associativity mismatch a={a:?} b={b:?} c={c:?}: lhs={lhs:?} rhs={rhs:?}"
+                        ),
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn as_strided_rank_mismatch_property_grid() {
+        let base = NdLayout::contiguous(vec![4, 4], 8, MemoryOrder::C).expect("layout");
+        let shapes = [vec![], vec![1], vec![1, 1], vec![1, 1, 1]];
+        let strides = [vec![], vec![8], vec![8, 8], vec![8, 8, 8]];
+
+        for shape in &shapes {
+            for stride in &strides {
+                if shape.len() == stride.len() {
+                    continue;
+                }
+                let err = base
+                    .as_strided(shape.clone(), stride.clone())
+                    .expect_err("rank mismatch should fail");
+                assert!(matches!(
+                    err,
+                    ShapeError::RankMismatch { expected, actual }
+                        if expected == shape.len() && actual == stride.len()
+                ));
+            }
+        }
+    }
 }

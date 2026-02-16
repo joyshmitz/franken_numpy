@@ -1532,6 +1532,9 @@ mod tests {
         let mut saw_as_strided_check = false;
         let mut saw_broadcast_to_check = false;
         let mut saw_sliding_window_check = false;
+        let mut saw_packet_006_artifact = false;
+        let mut saw_stride_tricks_success = false;
+        let mut saw_stride_tricks_failure = false;
         for line in raw.lines().filter(|line| !line.trim().is_empty()) {
             entry_count += 1;
             let value: Value = serde_json::from_str(line).expect("log line must be valid json");
@@ -1567,6 +1570,34 @@ mod tests {
                     .and_then(Value::as_str)
                     .is_some_and(|s| !s.trim().is_empty())
             );
+            let reason_code = obj
+                .get("reason_code")
+                .and_then(Value::as_str)
+                .expect("reason_code should be string");
+
+            let passed = obj
+                .get("passed")
+                .and_then(Value::as_bool)
+                .expect("passed should be bool");
+
+            if reason_code.contains("stride_tricks") || reason_code.contains("as_strided") {
+                if passed {
+                    saw_stride_tricks_success = true;
+                } else {
+                    saw_stride_tricks_failure = true;
+                }
+            }
+
+            let artifact_refs = obj
+                .get("artifact_refs")
+                .and_then(Value::as_array)
+                .expect("artifact_refs should be array");
+            if artifact_refs.iter().any(|item| {
+                item.as_str()
+                    .is_some_and(|artifact| artifact.contains("FNP-P2C-006"))
+            }) {
+                saw_packet_006_artifact = true;
+            }
 
             let as_strided_checked = obj
                 .get("as_strided_checked")
@@ -1597,6 +1628,18 @@ mod tests {
         assert!(
             saw_sliding_window_check,
             "shape/stride logs should include at least one sliding_window check"
+        );
+        assert!(
+            saw_packet_006_artifact,
+            "shape/stride logs should include packet FNP-P2C-006 artifact references"
+        );
+        assert!(
+            saw_stride_tricks_success,
+            "shape/stride logs should include at least one successful stride-tricks case"
+        );
+        assert!(
+            saw_stride_tricks_failure,
+            "shape/stride logs should include at least one failing stride-tricks case"
         );
         set_shape_stride_log_path(None);
         let _ = fs::remove_file(log_path);
