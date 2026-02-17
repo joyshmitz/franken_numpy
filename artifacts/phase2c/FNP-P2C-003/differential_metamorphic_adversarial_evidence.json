@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "packet_id": "FNP-P2C-003",
+  "subtask_id": "FNP-P2C-003-F",
+  "status": "pass",
+  "summary": {
+    "transfer_differential_total_cases": 10,
+    "transfer_differential_passed_cases": 10,
+    "transfer_differential_failed_cases": 0,
+    "transfer_metamorphic_total_cases": 5,
+    "transfer_metamorphic_passed_cases": 5,
+    "transfer_metamorphic_failed_cases": 0,
+    "transfer_adversarial_total_cases": 6,
+    "transfer_adversarial_passed_cases": 6,
+    "transfer_adversarial_failed_cases": 0
+  },
+  "suites": [
+    {
+      "suite": "transfer_packet003_f_suites",
+      "command": "rch exec -- cargo test -p fnp-conformance transfer_packet003_f_suites_are_green -- --nocapture",
+      "result": "pass",
+      "notes": [
+        "Executes packet-003 differential + metamorphic + adversarial transfer lanes in a deterministic harness test.",
+        "Differential mismatch artifact is emitted at crates/fnp-conformance/fixtures/packet003_transfer/oracle_outputs/iter_differential_report.json."
+      ]
+    }
+  ],
+  "quality_gates": [
+    {
+      "command": "rch exec -- cargo fmt --check",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo check --workspace --all-targets",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo clippy --workspace --all-targets -- -D warnings",
+      "result": "pass"
+    }
+  ],
+  "artifacts": [
+    "crates/fnp-conformance/src/lib.rs",
+    "crates/fnp-conformance/fixtures/packet003_transfer/iter_differential_cases.json",
+    "crates/fnp-conformance/fixtures/packet003_transfer/iter_metamorphic_cases.json",
+    "crates/fnp-conformance/fixtures/packet003_transfer/iter_adversarial_cases.json",
+    "crates/fnp-conformance/fixtures/packet003_transfer/oracle_outputs/iter_differential_report.json",
+    "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json",
+    "artifacts/phase2c/FNP-P2C-003/unit_property_evidence.json",
+    "artifacts/phase2c/FNP-P2C-003/differential_metamorphic_adversarial_evidence.json"
+  ],
+  "notes": [
+    "Packet-003 fixtures preserve replay-required fields (fixture_id via id, seed, mode, env_fingerprint, artifact_refs) on every case.",
+    "Differential mismatch payload is machine-readable and includes expected/actual reason-code fields plus minimal repro artifacts when mismatches occur.",
+    "This packet-F slice wires transfer fixture families and deterministic seeds; packet-G remains responsible for end-to-end replay scenario stitching."
+  ]
+}
