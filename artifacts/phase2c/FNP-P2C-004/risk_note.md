@@ -31,7 +31,7 @@ subsystem: `NDIter traversal/index semantics`
 |---|---|---|---|
 | Fuzz/property | packet-E iterator invariant corpus (planned) | discover malformed constructor/state/seek/overlap edge cases with shrinkable counterexamples | `bd-23m.15.5` |
 | Differential/metamorphic | packet-F nditer/flatiter/index-stream oracle corpus (planned) | enforce strict parity for success/failure classes and traversal/index streams | `bd-23m.15.6` |
-| E2E/replay | packet-G iterator workflow scenarios (planned) | verify strict/hardened replay traceability and policy-forensics linkage | `bd-23m.15.7` |
+| E2E/replay | packet-G iterator workflow scenarios `nditer_packet_replay` + `nditer_packet_hostile_guardrails` | verify strict/hardened replay traceability and policy-forensics linkage | `bd-23m.15.7` |
 
 ## Residual Risks and Compensating Controls
 
@@ -39,9 +39,9 @@ subsystem: `NDIter traversal/index semantics`
 |---|---|---|---|
 | `P2C004-RES-01` | `fnp-iter` is still a stub, so full iterator state-machine parity is not yet implemented. | Keep unsupported iterator semantics fail-closed and block promotion until packet-D boundary skeleton lands. | `bd-23m.15.4` + packet-E baseline tests |
 | `P2C004-RES-02` | Full `op_axes`/`itershape` parity matrix remains partially unpinned in differential fixtures. | Expand contract rows + adversarial fixture taxonomy for complex remap/reduction shapes. | `bd-23m.15.6` |
-| `P2C004-RES-03` | Overlap-policy edge behavior can regress without dedicated replay-path assertions. | Require packet-G overlap replay scenarios with deterministic reason-code linkage. | `bd-23m.15.7` |
+| `P2C004-RES-03` | Overlap-policy edge behavior can regress as scenario breadth grows across parity debt. | Maintain packet-G overlap replay scenarios with deterministic reason-code linkage and add profile-backed regressions checks. | `bd-23m.15.8` |
 | `P2C004-RES-04` | Error-text parity for all iterator edge cases is not yet closure-complete. | Maintain strict class/family parity gates and track message-level drift as explicit parity debt. | packet-I parity sign-off |
-| `P2C004-RES-05` | Hardened budget/calibration thresholds are defined but not yet empirically tuned for full corpus scale. | Enforce fallback trigger to conservative deterministic behavior on drift and re-calibrate from baseline artifacts. | packet-H optimization evidence + packet-I risk closure |
+| `P2C004-RES-05` | Hardened budget/calibration thresholds are now profiled for packet-H hotspot behavior but are not yet tuned for full corpus scale. | Use packet-H profile/isomorphism evidence as calibration baseline and keep conservative fallback trigger active until packet-I sign-off. | packet-H optimization evidence + packet-I risk closure |
 
 ## Budgeted Mode and Decision-Theoretic Controls
 
@@ -71,6 +71,19 @@ subsystem: `NDIter traversal/index semantics`
   - unknown/uncategorized reason-code rate exceeds `0.01%`.
 - Fallback action: force conservative deterministic path (`fail_closed` or `full_validate` only) until recalibration artifacts are produced and validated.
 
+### Packet-H calibration artifact
+
+- Profile baseline/rebaseline: `artifacts/phase2c/FNP-P2C-004/optimization_profile_report.json`.
+- Isomorphism evidence: `artifacts/phase2c/FNP-P2C-004/optimization_profile_isomorphism_evidence.json`.
+- Workflow replay evidence: `artifacts/phase2c/FNP-P2C-004/workflow_scenario_packet004_opt_e2e.jsonl`.
+- Workflow forensics index: `artifacts/phase2c/FNP-P2C-004/workflow_scenario_packet004_opt_artifact_index.json`.
+- Workflow reliability report: `artifacts/phase2c/FNP-P2C-004/workflow_scenario_packet004_opt_reliability.json`.
+- Current packet-H calibration signal:
+  - p95 latency delta `-52.972%`,
+  - p95 throughput delta `+112.638%`,
+  - failure-class drift `0` across packet-H isomorphism checks,
+  - workflow gate replay coverage ratio `1.0` (298/298 scenarios passed).
+
 ## Alien Recommendation Contract Mapping
 
 - Graveyard mappings: `alien_cs_graveyard.md` §0.4, §0.19, §6.12.
@@ -91,11 +104,22 @@ subsystem: `NDIter traversal/index semantics`
 
 ## raptorq_artifacts
 
-- `artifacts/phase2c/FNP-P2C-004/parity_report.raptorq.json` (planned at packet-I)
-- `artifacts/phase2c/FNP-P2C-004/parity_report.decode_proof.json` (planned at packet-I)
+- `artifacts/phase2c/FNP-P2C-004/parity_report.raptorq.json`
+- `artifacts/phase2c/FNP-P2C-004/parity_report.scrub_report.json`
+- `artifacts/phase2c/FNP-P2C-004/parity_report.decode_proof.json`
+- `artifacts/phase2c/FNP-P2C-004/packet_readiness_report.json`
 - `artifacts/raptorq/conformance_bundle_v1.sidecar.json` (program-level baseline reference)
 - `artifacts/raptorq/conformance_bundle_v1.scrub_report.json` (program-level baseline reference)
 - `artifacts/raptorq/conformance_bundle_v1.decode_proof.json` (program-level baseline reference)
+
+## residual_risk_monitoring
+
+owner: `packet-004-maintainers`  
+follow_up_gate: `bd-23m.11 readiness drill + packet-I residual risk review`
+
+follow_up_actions:
+- expand packet-004 workflow scenario breadth for iterator seek, overlap-policy, and hostile flatiter workflows before readiness drill sign-off.
+- recalibrate hardened iterator budget thresholds against the full adversarial iterator corpus and document drift trends.
 
 ## Rollback Handle
 

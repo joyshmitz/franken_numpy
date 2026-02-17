@@ -33,7 +33,7 @@ subsystem: `NPY/NPZ IO contract`
 |---|---|---|---|
 | Fuzz/property | packet-E IO parser/roundtrip corpus (planned) | detect header/schema/pickle/memmap/archive contract violations with shrinkable counterexamples | `bd-23m.20.5` |
 | Differential/metamorphic | packet-F IO oracle/adversarial corpus (planned) | enforce strict parity for parse/write/dispatch/archive failure-class behavior | `bd-23m.20.6` |
-| E2E/replay | packet-G IO workflow scenarios (planned) | verify strict/hardened replay traceability and policy-forensics linkage | `bd-23m.20.7` |
+| E2E/replay | packet-G IO workflow scenarios (`io_packet_replay`, `io_packet_hostile_guardrails`) | verify strict/hardened replay traceability and policy-forensics linkage with step-level logs | `bd-23m.20.7` |
 
 ## Residual Risks and Compensating Controls
 
@@ -42,8 +42,8 @@ subsystem: `NPY/NPZ IO contract`
 | `P2C009-RES-01` | `fnp-io` remains a stub and does not yet implement packet IO boundaries. | keep unsupported IO semantics fail-closed and block parity promotion until packet-D boundary work lands | `bd-23m.20.4` + packet-E baseline tests |
 | `P2C009-RES-02` | packet-scoped unit/property parser/roundtrip corpus is incomplete. | require packet-E suite with deterministic shrink/replay logging before parity claims | `bd-23m.20.5` |
 | `P2C009-RES-03` | differential/adversarial coverage for malformed metadata and archive edges remains incomplete. | enforce packet-F fixture lanes and differential gate coverage | `bd-23m.20.6` |
-| `P2C009-RES-04` | packet-scoped e2e replay for IO ingest/save workflows is incomplete. | add packet-G scenario logs with required structured fields and reason-code linkage | `bd-23m.20.7` |
-| `P2C009-RES-05` | hardened budget/calibration thresholds are defined but not tuned for full adversarial corpus scale. | trigger conservative fallback on drift and recalibrate from packet-H evidence before packet-I sign-off | `bd-23m.20.8` + packet-I closure |
+| `P2C009-RES-04` | packet-scoped e2e replay now covers golden and hostile IO workflows; remaining risk is breadth expansion across additional user journeys. | maintain packet-G scenario logs/artifact index/evidence links and expand scenario matrix before packet-I closure | `bd-23m.20.7` (`artifacts/phase2c/FNP-P2C-009/e2e_replay_forensics_evidence.json`) |
+| `P2C009-RES-05` | hardened budget/calibration thresholds are now profiled for packet-H hotspot behavior but are not yet tuned for full adversarial corpus scale. | use packet-H profile/isomorphism evidence as calibration baseline and keep conservative fallback trigger active until packet-I sign-off | packet-I closure (`artifacts/phase2c/FNP-P2C-009/optimization_profile_isomorphism_evidence.json`) |
 
 ## Budgeted Mode and Decision-Theoretic Controls
 
@@ -75,6 +75,15 @@ subsystem: `NPY/NPZ IO contract`
   - unknown/uncategorized reason-code rate exceeds `0.01%`.
 - Fallback action: force conservative deterministic behavior (`full_validate` or `fail_closed`) until recalibration artifacts are produced and validated.
 
+### Packet-H calibration artifact
+
+- Profile baseline/rebaseline: `artifacts/phase2c/FNP-P2C-009/optimization_profile_report.json`.
+- Isomorphism evidence: `artifacts/phase2c/FNP-P2C-009/optimization_profile_isomorphism_evidence.json`.
+- Current packet-H calibration signal:
+  - p95 latency delta `-45.237%`,
+  - p95 throughput delta `+82.604%`,
+  - failure-class drift `0` across packet-H isomorphism cases.
+
 ## Alien Recommendation Contract Mapping
 
 - Graveyard mappings: `alien_cs_graveyard.md` §0.4, §0.19, §6.12.
@@ -95,11 +104,22 @@ subsystem: `NPY/NPZ IO contract`
 
 ## raptorq_artifacts
 
-- `artifacts/phase2c/FNP-P2C-009/parity_report.raptorq.json` (planned at packet-I)
-- `artifacts/phase2c/FNP-P2C-009/parity_report.decode_proof.json` (planned at packet-I)
+- `artifacts/phase2c/FNP-P2C-009/parity_report.raptorq.json`
+- `artifacts/phase2c/FNP-P2C-009/parity_report.scrub_report.json`
+- `artifacts/phase2c/FNP-P2C-009/parity_report.decode_proof.json`
+- `artifacts/phase2c/FNP-P2C-009/packet_readiness_report.json`
 - `artifacts/raptorq/conformance_bundle_v1.sidecar.json` (program-level baseline reference)
 - `artifacts/raptorq/conformance_bundle_v1.scrub_report.json` (program-level baseline reference)
 - `artifacts/raptorq/conformance_bundle_v1.decode_proof.json` (program-level baseline reference)
+
+## residual_risk_monitoring
+
+owner: `packet-009-maintainers`  
+follow_up_gate: `bd-23m.11 readiness drill + packet-I residual risk review`
+
+follow_up_actions:
+- expand packet-009 workflow scenario breadth beyond current golden/hostile pair before readiness sign-off.
+- recalibrate hardened budget thresholds against full adversarial IO corpus and document drift trends.
 
 ## Rollback Handle
 

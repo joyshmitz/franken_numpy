@@ -46,6 +46,35 @@ Subsystem: `Ufunc dispatch + gufunc signature`
 - EV gate: dispatch optimization levers promoted only when `EV >= 2.0`; otherwise tracked as deferred research.
 - RaptorQ scope: durable packet evidence bundle for `FNP-P2C-005` must include sidecar/scrub/decode-proof links at packet-I closure.
 
+### Packet-H Closure (`bd-23m.16.8`)
+
+- Accepted lever: `P2C005-H-LEVER-001` adds a same-shape fast path in `UFuncArray::elementwise_binary`.
+- Baseline/rebaseline profile artifact: `artifacts/phase2c/FNP-P2C-005/optimization_profile_report.json`.
+- Isomorphism proof artifact: `artifacts/phase2c/FNP-P2C-005/optimization_profile_isomorphism_evidence.json`.
+- Post-change regression evidence:
+  - unit/property lane rerun: `rch exec -- cargo test -p fnp-ufunc` (17/17 pass).
+  - e2e lane rerun: `rch exec -- cargo run -p fnp-conformance --bin run_workflow_scenario_gate -- --log-path artifacts/phase2c/FNP-P2C-005/workflow_scenario_packet005_opt_e2e.jsonl --artifact-index-path artifacts/phase2c/FNP-P2C-005/workflow_scenario_packet005_opt_artifact_index.json --report-path artifacts/phase2c/FNP-P2C-005/workflow_scenario_packet005_opt_reliability.json --retries 0 --flake-budget 0 --coverage-floor 1.0` (298/298 pass, coverage 1.0).
+- Packet-H e2e artifacts:
+  - `artifacts/phase2c/FNP-P2C-005/workflow_scenario_packet005_opt_e2e.jsonl`
+  - `artifacts/phase2c/FNP-P2C-005/workflow_scenario_packet005_opt_artifact_index.json`
+  - `artifacts/phase2c/FNP-P2C-005/workflow_scenario_packet005_opt_reliability.json`
+- Measured deltas: `p50 -69.488%`, `p95 -72.205%`, `p99 -72.102%`, throughput gains `p50 +227.744%`, `p95 +259.779%`.
+- EV outcome: `24.0` (`>= 2.0`), promoted.
+- Isomorphism checks: same-shape, broadcast-row, scalar-broadcast, and shape-error paths all match baseline behavior.
+
+### Packet-I Closure (`bd-23m.16.9`)
+
+- Final evidence index: `artifacts/phase2c/FNP-P2C-005/final_evidence_pack.json`.
+- Packet readiness gate report: `artifacts/phase2c/FNP-P2C-005/packet_readiness_report.json` with `status=ready`.
+- Packet parity summary/gates:
+  - `artifacts/phase2c/FNP-P2C-005/fixture_manifest.json`
+  - `artifacts/phase2c/FNP-P2C-005/parity_gate.yaml`
+  - `artifacts/phase2c/FNP-P2C-005/parity_report.json`
+- Durability artifacts:
+  - `artifacts/phase2c/FNP-P2C-005/parity_report.raptorq.json`
+  - `artifacts/phase2c/FNP-P2C-005/parity_report.scrub_report.json`
+  - `artifacts/phase2c/FNP-P2C-005/parity_report.decode_proof.json`
+
 ## 6. Rollback Handle
 
 If packet-local changes cause compatibility drift, rollback to previous packet boundary baseline by reverting `artifacts/phase2c/FNP-P2C-005/*` and restoring prior `fnp-ufunc` dispatch behavior snapshot from the last green differential report.

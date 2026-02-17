@@ -1,12 +1,12 @@
 {
   "status": "pass",
-  "workflow_log": "artifacts/phase2c/FNP-P2C-009/workflow_scenario_packet009_opt_e2e.jsonl",
-  "replay_command": "cargo run -p fnp-conformance --bin run_workflow_scenario_gate -- --log-path 'artifacts/phase2c/FNP-P2C-009/workflow_scenario_packet009_opt_e2e.jsonl' --retries 0 --flake-budget 0 --coverage-floor 1",
+  "workflow_log": "artifacts/phase2c/FNP-P2C-004/workflow_scenario_packet004_opt_e2e.jsonl",
+  "replay_command": "cargo run -p fnp-conformance --bin run_workflow_scenario_gate -- --log-path 'artifacts/phase2c/FNP-P2C-004/workflow_scenario_packet004_opt_e2e.jsonl' --retries 0 --flake-budget 0 --coverage-floor 1",
   "attempts": [
     {
       "attempt": 0,
       "status": "pass",
-      "workflow_log": "artifacts/phase2c/FNP-P2C-009/workflow_scenario_packet009_opt_e2e.jsonl",
+      "workflow_log": "artifacts/phase2c/FNP-P2C-004/workflow_scenario_packet004_opt_e2e.jsonl",
       "suite": {
         "suite": "workflow_scenarios",
         "case_count": 298,
@@ -24,7 +24,7 @@
     }
   ],
   "reliability": {
-    "retries": 1,
+    "retries": 0,
     "attempts_run": 1,
     "flaky_failures": 0,
     "flake_budget": 0,
@@ -32,12 +32,12 @@
     "coverage_ratio": 1.0,
     "diagnostics": []
   },
-  "report_path": "artifacts/phase2c/FNP-P2C-009/workflow_scenario_packet009_opt_reliability.json",
-  "artifact_index_path": "artifacts/phase2c/FNP-P2C-009/workflow_scenario_packet009_opt_artifact_index.json",
+  "report_path": "artifacts/phase2c/FNP-P2C-004/workflow_scenario_packet004_opt_reliability.json",
+  "artifact_index_path": "artifacts/phase2c/FNP-P2C-004/workflow_scenario_packet004_opt_artifact_index.json",
   "forensics_artifact_index": {
     "schema_version": 1,
     "gate": "run_workflow_scenario_gate",
-    "generated_at_unix_ms": 1771319507469,
+    "generated_at_unix_ms": 1771322532557,
     "status": "pass",
     "execution_context": "local",
     "triage": null,
@@ -46,7 +46,7 @@
       {
         "id": "workflow_log",
         "kind": "jsonl_log",
-        "path": "artifacts/phase2c/FNP-P2C-009/workflow_scenario_packet009_opt_e2e.jsonl",
+        "path": "artifacts/phase2c/FNP-P2C-004/workflow_scenario_packet004_opt_e2e.jsonl",
         "description": "Step-level workflow replay log with pass/fail entries"
       },
       {
@@ -106,7 +106,7 @@
       {
         "id": "reliability_report",
         "kind": "gate_report",
-        "path": "artifacts/phase2c/FNP-P2C-009/workflow_scenario_packet009_opt_reliability.json",
+        "path": "artifacts/phase2c/FNP-P2C-004/workflow_scenario_packet004_opt_reliability.json",
         "description": "Workflow reliability summary report"
       }
     ]

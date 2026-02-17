@@ -43,7 +43,7 @@ subsystem: `ufunc dispatch + gufunc signature`
 | `P2C005-RES-02` | packet-scoped signature/override/reduction property corpus is incomplete. | require packet-E suite with deterministic shrink/replay logging before parity claims | `bd-23m.16.5` |
 | `P2C005-RES-03` | differential coverage for dispatch/type-resolution/loop registry remains incomplete. | enforce packet-F oracle/adversarial fixtures and differential gate coverage | `bd-23m.16.6` |
 | `P2C005-RES-04` | packet-scoped replay forensics for ufunc journey paths are not yet fully encoded. | add packet-G scenario logs with required structured fields and reason-code linkage | `bd-23m.16.7` |
-| `P2C005-RES-05` | hardened budget/calibration thresholds are defined but not tuned for full corpus scale. | trigger conservative fallback on drift and recalibrate from packet-H evidence before packet-I sign-off | `bd-23m.16.8` + packet-I closure |
+| `P2C005-RES-05` | hardened budget/calibration thresholds are now profiled for packet-H hotspot behavior but not tuned for full corpus scale. | use packet-H profile/isomorphism evidence as calibration baseline and keep conservative fallback trigger active until packet-I sign-off | packet-I closure (`artifacts/phase2c/FNP-P2C-005/final_evidence_pack.json`) |
 
 ## Budgeted Mode and Decision-Theoretic Controls
 
@@ -75,6 +75,19 @@ subsystem: `ufunc dispatch + gufunc signature`
   - unknown/uncategorized reason-code rate exceeds `0.01%`.
 - Fallback action: force conservative deterministic behavior (`full_validate` or `fail_closed`) until recalibration artifacts are produced and validated.
 
+### Packet-H calibration artifact
+
+- Profile baseline/rebaseline: `artifacts/phase2c/FNP-P2C-005/optimization_profile_report.json`.
+- Isomorphism evidence: `artifacts/phase2c/FNP-P2C-005/optimization_profile_isomorphism_evidence.json`.
+- Workflow replay evidence: `artifacts/phase2c/FNP-P2C-005/workflow_scenario_packet005_opt_e2e.jsonl`.
+- Workflow forensics index: `artifacts/phase2c/FNP-P2C-005/workflow_scenario_packet005_opt_artifact_index.json`.
+- Workflow reliability report: `artifacts/phase2c/FNP-P2C-005/workflow_scenario_packet005_opt_reliability.json`.
+- Current packet-H calibration signal:
+  - p95 latency delta `-72.205%`,
+  - p95 throughput delta `+259.779%`,
+  - failure-class drift `0` across packet-H isomorphism checks,
+  - workflow gate replay coverage ratio `1.0` (298/298 scenarios passed).
+
 ## Alien Recommendation Contract Mapping
 
 - Graveyard mappings: `alien_cs_graveyard.md` §0.4, §0.19, §6.12.
@@ -95,11 +108,22 @@ subsystem: `ufunc dispatch + gufunc signature`
 
 ## raptorq_artifacts
 
-- `artifacts/phase2c/FNP-P2C-005/parity_report.raptorq.json` (planned at packet-I)
-- `artifacts/phase2c/FNP-P2C-005/parity_report.decode_proof.json` (planned at packet-I)
+- `artifacts/phase2c/FNP-P2C-005/parity_report.raptorq.json`
+- `artifacts/phase2c/FNP-P2C-005/parity_report.scrub_report.json`
+- `artifacts/phase2c/FNP-P2C-005/parity_report.decode_proof.json`
+- `artifacts/phase2c/FNP-P2C-005/packet_readiness_report.json`
 - `artifacts/raptorq/conformance_bundle_v1.sidecar.json` (program-level baseline reference)
 - `artifacts/raptorq/conformance_bundle_v1.scrub_report.json` (program-level baseline reference)
 - `artifacts/raptorq/conformance_bundle_v1.decode_proof.json` (program-level baseline reference)
+
+## residual_risk_monitoring
+
+owner: `packet-005-maintainers`  
+follow_up_gate: `bd-23m.11 readiness drill + packet-I residual risk review`
+
+follow_up_actions:
+- expand packet-005 workflow scenario breadth for override and gufunc edge families before readiness sign-off.
+- recalibrate hardened dispatch/type-resolution budgets against the full adversarial ufunc corpus and document drift trends.
 
 ## Rollback Handle
 

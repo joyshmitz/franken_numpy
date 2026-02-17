@@ -31,15 +31,17 @@ Subsystem: `linalg bridge first wave`
 | `P2C008-U01` | Exact tolerance/conditioning boundaries for near-singular cases may differ across backend realizations. | high | `bd-23m.19.2` | contract table pins tolerance-class rules and differential fixtures enforce class stability. |
 | `P2C008-U02` | Full backend abstraction for lapack-lite vs future Rust/native backend needs explicit compatibility policy. | high | `bd-23m.19.4` | implementation plan defines backend seam and fail-closed fallback behavior for unsupported backend classes. |
 | `P2C008-U03` | Differential corpus for non-convergence and mixed-dtype linalg edge cases is now implemented through packet-F fixtures and gate wiring. | closed | `bd-23m.19.6` | closed by packet-F fixture lanes in `crates/fnp-conformance/fixtures/linalg_*_cases.json` and conformance suite integration in `crates/fnp-conformance/src/lib.rs`. |
-| `P2C008-U04` | E2E replay and forensic linkage for linalg-first workflows is not yet packet-specific. | medium | `bd-23m.19.7` | packet-G scenarios encode step-level replay logs and artifact cross-links. |
+| `P2C008-U04` | closed: packet-scoped E2E replay and forensic linkage is now wired for linalg workflows. | closed | `bd-23m.19.7` | closed by `linalg_packet_replay` + `linalg_packet_hostile_guardrails` scenarios, `scripts/e2e/run_linalg_contract_journey.sh`, and packet-G evidence artifacts. |
+| `P2C008-U05` | closed: packet-H optimization/profile lane for linalg shape validation was implemented with behavior-isomorphism proof. | closed | `bd-23m.19.8` | closed by rank-aware `validate_matrix_shape` fast paths in `crates/fnp-linalg/src/lib.rs`, `generate_packet008_optimization_report`, and packet-H optimization evidence artifacts. |
 
-## 4. Planned Verification Hooks
+## 4. Verification Hooks
 
 | Verification lane | Planned hook | Artifact target |
 |---|---|---|
 | Unit/property | solver/decomposition/spectral/tolerance law suites with shrinkable counterexamples | `crates/fnp-conformance/fixtures/linalg_property_cases.json` (planned), structured JSONL logs |
 | Differential/metamorphic/adversarial | packet-F harness checks singular/non-convergence/tolerance-edge/backend-policy classes | `crates/fnp-conformance/src/lib.rs` (`run_linalg_differential_suite`, `run_linalg_metamorphic_suite`, `run_linalg_adversarial_suite`), `crates/fnp-conformance/fixtures/linalg_differential_cases.json`, `crates/fnp-conformance/fixtures/linalg_metamorphic_cases.json`, `crates/fnp-conformance/fixtures/linalg_adversarial_cases.json` |
-| E2E | linalg workflow scenarios chained with upstream/downstream packet behaviors | `scripts/e2e/run_linalg_bridge_journey.sh` (planned) |
+| E2E | linalg workflow scenarios chained with upstream/downstream packet behaviors | `scripts/e2e/run_linalg_contract_journey.sh`, `artifacts/logs/workflow_scenario_packet008_{e2e,reliability,artifact_index}.json`, `artifacts/phase2c/FNP-P2C-008/workflow_scenario_packet008_opt_{e2e,reliability,artifact_index}.json` |
+| Optimization/isomorphism | packet-H profile-first single-lever optimization with parity-preserving verification | `crates/fnp-conformance/src/bin/generate_packet008_optimization_report.rs`, `artifacts/phase2c/FNP-P2C-008/optimization_profile_report.json`, `artifacts/phase2c/FNP-P2C-008/optimization_profile_isomorphism_evidence.json` |
 | Structured logging | enforce mandatory packet logging schema for all linalg suites and gates | `artifacts/contracts/test_logging_contract_v1.json`, `scripts/e2e/run_test_contract_gate.sh` |
 
 ## 5. Method-Stack Artifacts and EV Gate
@@ -47,6 +49,7 @@ Subsystem: `linalg bridge first wave`
 - Alien decision contract: solver/decomposition policy mediation must log state, action, and expected-loss rationale.
 - Optimization gate: no linalg optimization is accepted without baseline/profile + single-lever + isomorphism proof artifact.
 - EV gate: linalg optimization levers are promoted only when `EV >= 2.0`; otherwise tracked as deferred research debt.
+- Packet-H closure evidence: `artifacts/phase2c/FNP-P2C-008/optimization_profile_report.json` and `artifacts/phase2c/FNP-P2C-008/optimization_profile_isomorphism_evidence.json` show EV promotion (`24.0`) with no behavior drift.
 - RaptorQ scope: packet `FNP-P2C-008` durable evidence bundle must include sidecar/scrub/decode-proof links at packet-I closure.
 
 ## 6. Rollback Handle

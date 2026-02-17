@@ -38,8 +38,8 @@ Subsystem: `NPY/NPZ IO contract`
 | Verification lane | Planned hook | Artifact target |
 |---|---|---|
 | Unit/property | header parse corpus + roundtrip laws + pickle policy gates + archive key contracts | `crates/fnp-conformance/fixtures/io_property_cases.json` (planned), structured JSONL logs |
-| Differential/metamorphic/adversarial | extend differential harness with malformed header, roundtrip, and archive adversarial fixtures | `crates/fnp-conformance/src/io_differential.rs` (planned), `crates/fnp-conformance/fixtures/io_adversarial_cases.json` (planned) |
-| E2E | IO workflow scenarios chaining load/save/savez into downstream compute/replay paths | `scripts/e2e/run_io_contract_journey.sh` (planned) |
+| Differential/metamorphic/adversarial | fixture-driven IO differential/metamorphic/adversarial suite execution with reason-code mismatch artifacts | `crates/fnp-conformance/fixtures/io_differential_cases.json`, `crates/fnp-conformance/fixtures/io_metamorphic_cases.json`, `crates/fnp-conformance/fixtures/io_adversarial_cases.json`, `crates/fnp-conformance/fixtures/oracle_outputs/io_differential_report.json` |
+| E2E | packet-009 workflow scenarios replaying golden and hostile IO lanes with step-level forensics logging | `scripts/e2e/run_io_contract_journey.sh`, `scripts/e2e/run_workflow_scenario_gate.sh`, `crates/fnp-conformance/fixtures/workflow_scenario_corpus.json` scenarios `io_packet_replay` / `io_packet_hostile_guardrails`, `artifacts/phase2c/FNP-P2C-009/e2e_replay_forensics_evidence.json` |
 | Structured logging | enforce mandatory logging fields for all packet IO tests and gates | `artifacts/contracts/test_logging_contract_v1.json`, `scripts/e2e/run_test_contract_gate.sh` |
 
 ## 5. Method-Stack Artifacts and EV Gate
@@ -48,6 +48,28 @@ Subsystem: `NPY/NPZ IO contract`
 - Optimization gate: no IO parsing/perf optimization is accepted without baseline/profile + single-lever + isomorphism proof artifact.
 - EV gate: IO optimization levers are promoted only when `EV >= 2.0`; otherwise tracked as deferred research debt.
 - RaptorQ scope: packet `FNP-P2C-009` durable evidence bundle must include sidecar/scrub/decode-proof links at packet-I closure.
+
+### Packet-H Closure (`bd-23m.20.8`)
+
+- Accepted lever: `P2C009-H-LEVER-001` replaced `BTreeSet` with `HashSet` for NPZ member uniqueness tracking in `synthesize_npz_member_names`.
+- Baseline/rebaseline profile artifact: `artifacts/phase2c/FNP-P2C-009/optimization_profile_report.json`.
+- Isomorphism proof artifact: `artifacts/phase2c/FNP-P2C-009/optimization_profile_isomorphism_evidence.json`.
+- Measured deltas: `p50 -48.925%`, `p95 -45.237%`, `p99 -38.036%`, throughput gains `p50 +95.792%`, `p95 +82.604%`.
+- EV outcome: `24.0` (`>= 2.0`), promoted.
+- Ordering/tie-break invariants preserved: positional `arr_N` emission then keyword insertion order; duplicate and empty-keyword error pathways unchanged.
+
+### Packet-I Closure (`bd-23m.20.9`)
+
+- Final evidence index: `artifacts/phase2c/FNP-P2C-009/final_evidence_pack.json`.
+- Packet readiness gate report: `artifacts/phase2c/FNP-P2C-009/packet_readiness_report.json` with `status=ready`.
+- Packet parity summary/gates:
+  - `artifacts/phase2c/FNP-P2C-009/fixture_manifest.json`
+  - `artifacts/phase2c/FNP-P2C-009/parity_gate.yaml`
+  - `artifacts/phase2c/FNP-P2C-009/parity_report.json`
+- Durability artifacts:
+  - `artifacts/phase2c/FNP-P2C-009/parity_report.raptorq.json`
+  - `artifacts/phase2c/FNP-P2C-009/parity_report.scrub_report.json`
+  - `artifacts/phase2c/FNP-P2C-009/parity_report.decode_proof.json`
 
 ## 6. Rollback Handle
 

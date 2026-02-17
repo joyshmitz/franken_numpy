@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "bundle_id": "fnp_p2c008_parity_bundle_v1",
+  "generated_at_unix_ms": 1771338555669,
+  "status": "ok",
+  "expected_hash": "e2a8fdb3b7bdecce2c8d99d1cb74ce666407d40e278af130f9c9c6c48df220ab",
+  "decoded_hash": "e2a8fdb3b7bdecce2c8d99d1cb74ce666407d40e278af130f9c9c6c48df220ab",
+  "full_decode_match": true,
+  "recovery_decode_match": true,
+  "symbols_total": 905,
+  "symbols_used_full": 905,
+  "symbols_used_recovery": 904
+}

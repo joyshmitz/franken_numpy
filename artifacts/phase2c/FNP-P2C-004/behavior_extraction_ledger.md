@@ -36,7 +36,7 @@ Subsystem: `NDIter traversal/index semantics`
 | `P2C004-U02` | Full parity for `op_axes`/`itershape` interactions (especially complex reductions and mixed-broadcast remaps) is not encoded in Rust contracts. | high | `bd-23m.15.2` | Contract table captures complete preconditions/postconditions/error taxonomy for op_axes and shaped iteration. |
 | `P2C004-U03` | Hardened policy for overlap-sensitive iterator operations (`copy_if_overlap`, writeback-like flows) lacks packet-scoped threat controls. | high | `bd-23m.15.3` | Threat model explicitly defines fail-closed/full-validate boundaries and required audit reason codes. |
 | `P2C004-U04` | Differential/adversarial corpus does not yet cover iterator-seeking and flatiter indexing edge matrix. | high | `bd-23m.15.6` | Add oracle-backed iterator fixture suites for seek bounds, op_axes errors, and flatiter indexing/assignment families. |
-| `P2C004-U05` | Workflow replay artifacts do not currently include packet-specific nditer/flatiter journey traces. | medium | `bd-23m.15.7` | Add e2e scenarios with step-level logs and links to iterator unit/differential fixture IDs. |
+| `P2C004-U05` | Packet-specific nditer/flatiter workflow journey traces are now present in the workflow corpus and require ongoing expansion as parity debt closes. | medium | `bd-23m.15.8` | Maintain and extend `nditer_packet_replay` + `nditer_packet_hostile_guardrails` scenarios with step-level logs and iterator fixture links. |
 | `P2C004-U06` | Exact parity for ndindex/ndenumerate non-integer-dimension/type-error nuances is not yet pinned in Rust tests. | medium | `bd-23m.15.5` | Unit/property suite asserts shape-validation and stream-equivalence behavior against legacy expectations. |
 
 ## 4. Planned Verification Hooks
@@ -45,7 +45,7 @@ Subsystem: `NDIter traversal/index semantics`
 |---|---|---|
 | Unit/property | Introduce iterator-state tests for constructor flags, seek transitions, index-mode coherence, and no-broadcast checks | `crates/fnp-iter/src/lib.rs` + packet-E test modules (`bd-23m.15.5`) |
 | Differential/metamorphic/adversarial | Build fixture corpus for nditer/flatiter/ndindex/ndenumerate behavior classes and compare against legacy oracle | `crates/fnp-conformance/fixtures/` + packet-F harness additions (`bd-23m.15.6`) |
-| E2E | Add workflow scenarios that exercise iterator construction -> traversal -> seek/reset -> flat assignment paths in strict/hardened modes | `scripts/e2e/run_workflow_scenario_gate.sh` + `artifacts/logs/` (`bd-23m.15.7`) |
+| E2E | `workflow_scenario_corpus.json` scenarios `nditer_packet_replay` and `nditer_packet_hostile_guardrails` exercise iterator construction/overlap/indexing guardrails with strict/hardened replay outputs | `scripts/e2e/run_workflow_scenario_gate.sh` + `artifacts/logs/` (`bd-23m.15.7`) |
 | Structured logging | Enforce `fixture_id`, `seed`, `mode`, `env_fingerprint`, `artifact_refs`, `reason_code` on iterator test/e2e outputs | `artifacts/contracts/test_logging_contract_v1.json`, conformance gate outputs |
 
 ## 5. Method-Stack Artifacts and EV Gate
@@ -54,6 +54,36 @@ Subsystem: `NDIter traversal/index semantics`
 - Optimization gate: iterator performance changes require baseline/profile + single-lever change + behavior-isomorphism proof.
 - EV gate: optimization levers ship only when `EV >= 2.0`; otherwise remain explicit deferred debt.
 - RaptorQ scope: packet-I closure artifacts must include sidecar/scrub/decode-proof linkage for durable evidence bundles.
+
+### Packet-H Closure (`bd-23m.15.8`)
+
+- Accepted lever: `P2C004-H-LEVER-001` replaced iterator/filter bool-mask counting with a branchless, unrolled accumulator in `fnp-iter`.
+- Baseline/rebaseline profile artifact: `artifacts/phase2c/FNP-P2C-004/optimization_profile_report.json`.
+- Isomorphism proof artifact: `artifacts/phase2c/FNP-P2C-004/optimization_profile_isomorphism_evidence.json`.
+- Post-change regression evidence:
+  - unit/property lane rerun: `rch exec -- cargo test -p fnp-iter` (13/13 pass).
+  - e2e lane rerun: `rch exec -- cargo run -p fnp-conformance --bin run_workflow_scenario_gate -- --log-path artifacts/phase2c/FNP-P2C-004/workflow_scenario_packet004_opt_e2e.jsonl --artifact-index-path artifacts/phase2c/FNP-P2C-004/workflow_scenario_packet004_opt_artifact_index.json --report-path artifacts/phase2c/FNP-P2C-004/workflow_scenario_packet004_opt_reliability.json --retries 0 --flake-budget 0 --coverage-floor 1.0` (298/298 pass, coverage 1.0).
+- Packet-H e2e artifacts:
+  - `artifacts/phase2c/FNP-P2C-004/workflow_scenario_packet004_opt_e2e.jsonl`
+  - `artifacts/phase2c/FNP-P2C-004/workflow_scenario_packet004_opt_artifact_index.json`
+  - `artifacts/phase2c/FNP-P2C-004/workflow_scenario_packet004_opt_reliability.json`
+- Measured deltas: `p50 -55.666%`, `p95 -52.972%`, `p99 -55.056%`, throughput gains `p50 +125.561%`, `p95 +112.638%`.
+- EV outcome: `24.0` (`>= 2.0`), promoted.
+- Isomorphism checks: all-true bool-mask, sparse bool-mask, length-mismatch error, and fancy out-of-bounds error paths match baseline behavior.
+
+### Packet-I Closure (`bd-23m.15.9`)
+
+- Final evidence index: `artifacts/phase2c/FNP-P2C-004/final_evidence_pack.json`.
+- Packet readiness gate report: `artifacts/phase2c/FNP-P2C-004/packet_readiness_report.json` with `status=ready`.
+- Packet parity summary/gates:
+  - `artifacts/phase2c/FNP-P2C-004/fixture_manifest.json`
+  - `artifacts/phase2c/FNP-P2C-004/parity_gate.yaml`
+  - `artifacts/phase2c/FNP-P2C-004/parity_report.json`
+- Durability artifacts:
+  - `artifacts/phase2c/FNP-P2C-004/parity_report.raptorq.json`
+  - `artifacts/phase2c/FNP-P2C-004/parity_report.scrub_report.json`
+  - `artifacts/phase2c/FNP-P2C-004/parity_report.decode_proof.json`
+- Final parity signals: `strict_parity=1.0`, `hardened_parity=1.0`, `compatibility_drift_hash=sha256:42d4d5ee58ce841e0bb6bbc052ac3f17477eff852ac7cfb10e387844a5e41545`.
 
 ## 6. Rollback Handle
 

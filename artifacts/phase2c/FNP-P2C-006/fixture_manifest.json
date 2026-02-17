@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "packet_id": "FNP-P2C-006",
+  "oracle_tests": [
+    "legacy_numpy_code/numpy/numpy/lib/tests/test_stride_tricks.py",
+    "legacy_numpy_code/numpy/numpy/_core/tests/test_nditer.py",
+    "legacy_numpy_code/numpy/numpy/_core/tests/test_shape_base.py"
+  ],
+  "fixtures": [
+    {
+      "id": "p2c006_shape_stride_differential",
+      "input_path": "crates/fnp-conformance/fixtures/shape_stride_cases.json",
+      "oracle_case_id": "shape_stride_differential_cases_contract"
+    },
+    {
+      "id": "p2c006_shape_stride_metamorphic",
+      "input_path": "crates/fnp-conformance/fixtures/shape_stride_cases.json",
+      "oracle_case_id": "shape_stride_metamorphic_cases_contract"
+    },
+    {
+      "id": "p2c006_shape_stride_adversarial",
+      "input_path": "crates/fnp-conformance/fixtures/shape_stride_cases.json",
+      "oracle_case_id": "shape_stride_adversarial_cases_contract"
+    },
+    {
+      "id": "p2c006_stride_workflow_scenarios",
+      "input_path": "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json",
+      "oracle_case_id": "stride_tricks_packet_workflow_contract"
+    }
+  ]
+}

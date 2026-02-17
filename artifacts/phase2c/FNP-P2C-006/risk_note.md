@@ -37,6 +37,48 @@ subsystem: `stride-tricks and broadcasting API`
 | `P2C006-RES-02` | High-arity broadcast behavior (`>64` inputs) may drift without dedicated oracle corpora. | add targeted differential corpus and high-arity metamorphic invariants | `bd-23m.17.6` |
 | `P2C006-RES-03` | Warning-level compatibility around `broadcast_arrays` writeability path remains subtle/version-sensitive. | lock class/family parity in contract rows and capture explicit reason codes in replay logs | `bd-23m.17.5` + `bd-23m.17.6` |
 | `P2C006-RES-04` | Overlap-risk policy for dangerous stride views may regress without integration-level replay. | require packet-G e2e forensics scenarios and strict/hardened comparison logs | `bd-23m.17.7` |
+| `P2C006-RES-05` | Hardened budget/calibration thresholds are now profiled for packet-H hotspot behavior but are not yet tuned for full adversarial corpus scale. | use packet-H profile/isomorphism evidence as calibration baseline and keep conservative fallback trigger active until packet-I sign-off | packet-I closure (`artifacts/phase2c/FNP-P2C-006/packet_readiness_report.json`) |
+
+## Budgeted Mode and Decision-Theoretic Controls
+
+### Explicit bounded caps (hardened policy path)
+
+| control | cap | deterministic exhaustion behavior |
+|---|---|---|
+| broadcast rank merge depth | `<= 1024` dimensions per merge request | `fail_closed` with `broadcast_shapes_incompatible` |
+| high-arity broadcast operands | `<= 4096` operands per request | `fail_closed` with `broadcast_shapes_incompatible` |
+| overlap-risk validations | `<= 256` overlap decisions per request | `fail_closed` with `as_strided_contract_violation` |
+| policy override evaluations | `<= 16` override checks per request | exhaust to conservative default (`fail_closed`) with `override_budget_exhausted` |
+| packet-local audit payload | `<= 64 MiB` structured event payload | truncate optional diagnostics while preserving mandatory fields |
+
+### Expected-loss model
+
+| state | action set | primary loss if wrong |
+|---|---|---|
+| ambiguous broadcast merge semantics | `{merge, reject}` | invalid shape accepted and propagated through downstream iterator paths |
+| overlap-risk stride view | `{allow_view, reject_view}` | alias-unsafe write/read behavior admitted |
+| warning-level broadcast writeability compatibility | `{legacy_compat_path, reject}` | user-visible warning/error-class drift from legacy behavior |
+| unknown metadata class | `{fail_closed}` | undefined policy semantics admitted into runtime path |
+
+### Calibration and fallback trigger
+
+- Trigger fallback when either condition is true:
+  - strict vs hardened failure-class drift exceeds `0.1%`, or
+  - unknown/uncategorized reason-code rate exceeds `0.01%`.
+- Fallback action: force conservative deterministic behavior (`full_validate` or `fail_closed`) until recalibration artifacts are produced and validated.
+
+### Packet-H calibration artifact
+
+- Profile baseline/rebaseline: `artifacts/phase2c/FNP-P2C-006/optimization_profile_report.json`.
+- Isomorphism evidence: `artifacts/phase2c/FNP-P2C-006/optimization_profile_isomorphism_evidence.json`.
+- Workflow replay evidence: `artifacts/phase2c/FNP-P2C-006/workflow_scenario_packet006_opt_e2e.jsonl`.
+- Workflow forensics index: `artifacts/phase2c/FNP-P2C-006/workflow_scenario_packet006_opt_artifact_index.json`.
+- Workflow reliability report: `artifacts/phase2c/FNP-P2C-006/workflow_scenario_packet006_opt_reliability.json`.
+- Current packet-H calibration signal:
+  - p95 latency delta `-40.331%`,
+  - p95 throughput delta `+67.590%`,
+  - failure-class drift `0` across packet-H isomorphism checks,
+  - workflow gate replay coverage ratio `1.0` (298/298 scenarios passed).
 
 ## oracle_tests
 
@@ -46,12 +88,27 @@ subsystem: `stride-tricks and broadcasting API`
 
 ## raptorq_artifacts
 
-- `artifacts/phase2c/FNP-P2C-006/parity_report.raptorq.json` (planned at packet-I)
-- `artifacts/phase2c/FNP-P2C-006/parity_report.decode_proof.json` (planned at packet-I)
+- `artifacts/phase2c/FNP-P2C-006/parity_report.raptorq.json`
+- `artifacts/phase2c/FNP-P2C-006/parity_report.scrub_report.json`
+- `artifacts/phase2c/FNP-P2C-006/parity_report.decode_proof.json`
+- `artifacts/phase2c/FNP-P2C-006/packet_readiness_report.json`
 - `artifacts/raptorq/conformance_bundle_v1.sidecar.json` (program-level baseline reference)
 - `artifacts/raptorq/conformance_bundle_v1.scrub_report.json` (program-level baseline reference)
 - `artifacts/raptorq/conformance_bundle_v1.decode_proof.json` (program-level baseline reference)
 
+## residual_risk_monitoring
+
+owner: `packet-006-maintainers`  
+follow_up_gate: `bd-23m.11 readiness drill + packet-I residual risk review`
+
+follow_up_actions:
+- expand packet-006 workflow scenario breadth for broadcast/stride hostile journeys before readiness sign-off.
+- recalibrate hardened broadcast/stride budget thresholds against the full adversarial corpus and document drift trends.
+
 ## Rollback Handle
 
-If packet threat controls regress compatibility guarantees, revert `artifacts/phase2c/FNP-P2C-006/risk_note.md` and restore the last green risk baseline tied to security gate evidence.
+- Rollback command path: `git restore --source <last-green-commit> -- artifacts/phase2c/FNP-P2C-006/risk_note.md`
+- Baseline comparator to beat/restore:
+  - last green `rch exec -- cargo run -p fnp-conformance --bin validate_phase2c_packet -- --packet-id FNP-P2C-006` packet report,
+  - plus last green security/test/workflow gate artifacts tied to packet `FNP-P2C-006`.
+- If comparator is not met, restore risk-note baseline and re-run packet gates before reattempting policy changes.

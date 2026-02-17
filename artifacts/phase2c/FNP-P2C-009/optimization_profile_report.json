@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "packet_id": "FNP-P2C-009",
+  "subtask_id": "FNP-P2C-009-H",
+  "generated_at_unix_ms": 1771318948353,
+  "environment_fingerprint": "os=linux arch=x86_64 cpus=128 rustc=rustc 1.95.0-nightly (a423f68a0 2026-02-13)",
+  "reproducibility_command": "cargo run -p fnp-conformance --bin generate_packet009_optimization_report",
+  "lever": {
+    "id": "P2C009-H-LEVER-001",
+    "description": "Replace NPZ member uniqueness structure from BTreeSet to HashSet in synthesis path",
+    "rationale": "Member-name uniqueness checks are membership-heavy and do not require sorted iteration; HashSet reduces lookup cost while preserving deterministic name emission order in output vector.",
+    "risk_note": "Behavioral risk is low because set ordering is not externally observed; output ordering still follows positional then keyword insertion sequence.",
+    "rollback_command": "git checkout -- crates/fnp-io/src/lib.rs"
+  },
+  "baseline_profile": {
+    "implementation": "baseline_btreeset",
+    "runs": 60,
+    "members_per_run": 3072,
+    "percentiles": {
+      "p50_ms": 2.407917,
+      "p95_ms": 2.925365,
+      "p99_ms": 3.123516,
+      "min_ms": 2.374084,
+      "max_ms": 3.183328
+    },
+    "throughput_members_per_sec_p50": 1275791.482845962,
+    "throughput_members_per_sec_p95": 1050125.3689710514
+  },
+  "rebaseline_profile": {
+    "implementation": "rebaseline_hashset",
+    "runs": 60,
+    "members_per_run": 3072,
+    "percentiles": {
+      "p50_ms": 1.229832,
+      "p95_ms": 1.6020290000000001,
+      "p99_ms": 1.935462,
+      "min_ms": 1.197091,
+      "max_ms": 2.550284
+    },
+    "throughput_members_per_sec_p50": 2497902.1524891206,
+    "throughput_members_per_sec_p95": 1917568.2837202072
+  },
+  "delta": {
+    "p50_delta_percent": -48.92548206603466,
+    "p95_delta_percent": -45.23661149976157,
+    "p99_delta_percent": -38.03579043616232,
+    "throughput_gain_percent_p50": 95.79235212614404,
+    "throughput_gain_percent_p95": 82.6037481219129
+  },
+  "ev": {
+    "impact": 4.0,
+    "confidence": 4.0,
+    "reuse": 3.0,
+    "effort": 2.0,
+    "adoption_friction": 1.0,
+    "score": 24.0,
+    "promoted": true
+  },
+  "isomorphism_checks": [
+    {
+      "case_id": "case_valid_small",
+      "status": "pass",
+      "details": "baseline and optimized outputs matched"
+    },
+    {
+      "case_id": "case_valid_large",
+      "status": "pass",
+      "details": "baseline and optimized outputs matched"
+    },
+    {
+      "case_id": "case_duplicate_keyword",
+      "status": "pass",
+      "details": "baseline and optimized outputs matched"
+    },
+    {
+      "case_id": "case_empty_keyword",
+      "status": "pass",
+      "details": "baseline and optimized outputs matched"
+    }
+  ]
+}

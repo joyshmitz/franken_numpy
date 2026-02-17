@@ -51,6 +51,36 @@ Subsystem: `Stride-tricks and broadcasting API`
 - EV gate: optimization levers promoted only when `EV >= 2.0`; otherwise tracked as deferred parity debt.
 - RaptorQ scope: packet closure (`bd-23m.17.9`) must include sidecar/scrub/decode-proof for final evidence bundle.
 
+### Packet-H Closure (`bd-23m.17.8`)
+
+- Accepted lever: `P2C006-H-LEVER-001` adds identical-shape and same-rank fast paths in `broadcast_shape`.
+- Baseline/rebaseline profile artifact: `artifacts/phase2c/FNP-P2C-006/optimization_profile_report.json`.
+- Isomorphism proof artifact: `artifacts/phase2c/FNP-P2C-006/optimization_profile_isomorphism_evidence.json`.
+- Post-change regression evidence:
+  - unit/property lane rerun: `rch exec -- cargo test -p fnp-ndarray` (34/34 pass).
+  - e2e lane rerun: `rch exec -- cargo run -p fnp-conformance --bin run_workflow_scenario_gate -- --log-path artifacts/phase2c/FNP-P2C-006/workflow_scenario_packet006_opt_e2e.jsonl --artifact-index-path artifacts/phase2c/FNP-P2C-006/workflow_scenario_packet006_opt_artifact_index.json --report-path artifacts/phase2c/FNP-P2C-006/workflow_scenario_packet006_opt_reliability.json --retries 0 --flake-budget 0 --coverage-floor 1.0` (298/298 pass, coverage 1.0).
+- Packet-H e2e artifacts:
+  - `artifacts/phase2c/FNP-P2C-006/workflow_scenario_packet006_opt_e2e.jsonl`
+  - `artifacts/phase2c/FNP-P2C-006/workflow_scenario_packet006_opt_artifact_index.json`
+  - `artifacts/phase2c/FNP-P2C-006/workflow_scenario_packet006_opt_reliability.json`
+- Measured deltas: `p50 -39.003%`, `p95 -40.331%`, `p99 -44.177%`, throughput gains `p50 +63.944%`, `p95 +67.590%`.
+- EV outcome: `24.0` (`>= 2.0`), promoted.
+- Isomorphism checks: identical-shape, same-rank axiswise merge, rank-mismatch merge, and incompatible-shape rejection paths match baseline behavior.
+
+### Packet-I Closure (`bd-23m.17.9`)
+
+- Final evidence index: `artifacts/phase2c/FNP-P2C-006/final_evidence_pack.json`.
+- Packet readiness gate report: `artifacts/phase2c/FNP-P2C-006/packet_readiness_report.json` with `status=ready`.
+- Packet parity summary/gates:
+  - `artifacts/phase2c/FNP-P2C-006/fixture_manifest.json`
+  - `artifacts/phase2c/FNP-P2C-006/parity_gate.yaml`
+  - `artifacts/phase2c/FNP-P2C-006/parity_report.json`
+- Durability artifacts:
+  - `artifacts/phase2c/FNP-P2C-006/parity_report.raptorq.json`
+  - `artifacts/phase2c/FNP-P2C-006/parity_report.scrub_report.json`
+  - `artifacts/phase2c/FNP-P2C-006/parity_report.decode_proof.json`
+- Final parity signals: `strict_parity=1.0`, `hardened_parity=1.0`, `compatibility_drift_hash=sha256:f2ac7bc69c9f6c16f4593c9dac0e38255d8f7c90918768ce46908845708e13ae`.
+
 ## 6. Rollback Handle
 
 If packet-local behavior drift is detected, rollback to the previous packet baseline by reverting `artifacts/phase2c/FNP-P2C-006/*` and restoring the last green stride/broadcast conformance report set.

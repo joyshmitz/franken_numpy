@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "packet_id": "FNP-P2C-008",
+  "subtask_id": "FNP-P2C-008-H",
+  "generated_at_unix_ms": 1771338272832,
+  "environment_fingerprint": "os=linux arch=x86_64 cpus=128 rustc=rustc 1.95.0-nightly (a423f68a0 2026-02-13)",
+  "reproducibility_command": "cargo run -p fnp-conformance --bin generate_packet008_optimization_report",
+  "lever": {
+    "id": "P2C008-H-LEVER-001",
+    "description": "Add rank-aware fast paths in validate_matrix_shape batch-lane validation",
+    "rationale": "Linalg entrypoints frequently validate rank-2/rank-3/rank-4 shapes; short-circuiting these common ranks avoids iterator/try_fold overhead while preserving identical validation semantics.",
+    "risk_note": "Optimization only changes internal control flow for batch-lane multiplication; reason-code families and error-class outcomes remain unchanged.",
+    "rollback_command": "git restore --source <last-green-commit> -- crates/fnp-linalg/src/lib.rs"
+  },
+  "baseline_profile": {
+    "implementation": "baseline_generic_try_fold",
+    "runs": 100,
+    "validations_per_run": 24000,
+    "percentiles": {
+      "p50_ms": 1.152529,
+      "p95_ms": 1.535155,
+      "p99_ms": 1.590529,
+      "min_ms": 1.140035,
+      "max_ms": 1.637487
+    },
+    "throughput_validations_per_sec_p50": 20823771.028755024,
+    "throughput_validations_per_sec_p95": 15633600.515908817
+  },
+  "rebaseline_profile": {
+    "implementation": "rebaseline_rank_fast_paths",
+    "runs": 100,
+    "validations_per_run": 24000,
+    "percentiles": {
+      "p50_ms": 0.422502,
+      "p95_ms": 0.5681539999999999,
+      "p99_ms": 0.638977,
+      "min_ms": 0.414667,
+      "max_ms": 0.665296
+    },
+    "throughput_validations_per_sec_p50": 56804464.83093571,
+    "throughput_validations_per_sec_p95": 42242068.17165769
+  },
+  "delta": {
+    "p50_delta_percent": -63.34131288670394,
+    "p95_delta_percent": -62.990447218684764,
+    "p99_delta_percent": -59.82613331790869,
+    "throughput_gain_percent_p50": 172.7866376963896,
+    "throughput_gain_percent_p95": 170.20050901692153
+  },
+  "ev": {
+    "impact": 4.0,
+    "confidence": 4.0,
+    "reuse": 3.0,
+    "effort": 2.0,
+    "adoption_friction": 1.0,
+    "score": 24.0,
+    "promoted": true
+  },
+  "isomorphism_checks": [
+    {
+      "case_id": "case_rank2_valid",
+      "status": "pass",
+      "details": "baseline and optimized outputs matched"
+    },
+    {
+      "case_id": "case_rank3_valid",
+      "status": "pass",
+      "details": "baseline and optimized outputs matched"
+    },
+    {
+      "case_id": "case_rank4_valid",
+      "status": "pass",
+      "details": "baseline and optimized outputs matched"
+    },
+    {
+      "case_id": "case_rank_lt_2",
+      "status": "pass",
+      "details": "baseline and optimized outputs matched"
+    },
+    {
+      "case_id": "case_budget_overflow",
+      "status": "pass",
+      "details": "baseline and optimized outputs matched"
+    },
+    {
+      "case_id": "case_mul_overflow",
+      "status": "pass",
+      "details": "baseline and optimized outputs matched"
+    }
+  ]
+}

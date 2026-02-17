@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "packet_id": "FNP-P2C-004",
+  "subtask_id": "FNP-P2C-004-F",
+  "status": "pass",
+  "summary": {
+    "iter_differential_total_cases": 9,
+    "iter_differential_passed_cases": 9,
+    "iter_differential_failed_cases": 0,
+    "iter_metamorphic_total_cases": 5,
+    "iter_metamorphic_passed_cases": 5,
+    "iter_metamorphic_failed_cases": 0,
+    "iter_adversarial_total_cases": 6,
+    "iter_adversarial_passed_cases": 6,
+    "iter_adversarial_failed_cases": 0
+  },
+  "suites": [
+    {
+      "suite": "iter_packet004_f_suites",
+      "command": "rch exec -- cargo test -p fnp-conformance iter_packet004_f_suites_are_green -- --nocapture",
+      "result": "pass",
+      "notes": [
+        "Runs packet-004 differential/metamorphic/adversarial suite trio via fnp-conformance test harness.",
+        "Differential mismatch artifact is written at crates/fnp-conformance/fixtures/oracle_outputs/iter_differential_report.json."
+      ]
+    },
+    {
+      "suite": "test_contract_gate_wiring",
+      "command": "rch exec -- cargo run -p fnp-conformance --bin run_test_contract_gate -- --retries 0",
+      "result": "blocked",
+      "notes": [
+        "Gate binary now compiles with iterator suites wired into run_gate_suites.",
+        "Execution is currently blocked by pre-existing missing fixture file: crates/fnp-conformance/fixtures/rng_metamorphic_cases.json."
+      ]
+    }
+  ],
+  "quality_gates": [
+    {
+      "command": "cargo fmt --check",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo check --workspace --all-targets",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo clippy --workspace --all-targets -- -D warnings",
+      "result": "pass"
+    }
+  ],
+  "artifacts": [
+    "crates/fnp-conformance/src/lib.rs",
+    "crates/fnp-conformance/src/bin/run_test_contract_gate.rs",
+    "crates/fnp-conformance/src/bin/run_security_gate.rs",
+    "crates/fnp-conformance/fixtures/iter_differential_cases.json",
+    "crates/fnp-conformance/fixtures/iter_metamorphic_cases.json",
+    "crates/fnp-conformance/fixtures/iter_adversarial_cases.json",
+    "crates/fnp-conformance/fixtures/oracle_outputs/iter_differential_report.json",
+    "crates/fnp-conformance/fixtures/README.md",
+    "artifacts/phase2c/FNP-P2C-004/differential_metamorphic_adversarial_evidence.json",
+    "artifacts/phase2c/FNP-P2C-004/unit_property_evidence.json",
+    "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+  ],
+  "notes": [
+    "Mismatch records include machine-readable expected_reason_code/actual_reason_code plus minimal_repro_artifacts in iter differential reports.",
+    "All packet-004 iterator fixture families include deterministic seed, mode, env_fingerprint, reason_code, and artifact_refs for replay and triage.",
+    "Artifact refs intentionally cross-link packet-E evidence (unit_property_evidence) and packet-G workflow scenario corpus for downstream replay continuity."
+  ]
+}

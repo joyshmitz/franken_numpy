@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "packet_id": "FNP-P2C-005",
+  "subtask_id": "FNP-P2C-005-H",
+  "status": "pass",
+  "optimization_lever": {
+    "id": "P2C005-H-LEVER-001",
+    "description": "Add same-shape fast path for ufunc elementwise_binary",
+    "rationale": "When shapes already match, direct zipped iteration avoids broadcast odometer bookkeeping overhead.",
+    "risk_note": "Fast path only applies to exact shape equality and preserves operation semantics, dtype promotion, and error contracts.",
+    "rollback_command": "git restore --source <last-green-commit> -- crates/fnp-ufunc/src/lib.rs"
+  },
+  "benchmark_delta": {
+    "p50_delta_percent": -69.48840324059114,
+    "p95_delta_percent": -72.20519373248113,
+    "p99_delta_percent": -72.10191277276711,
+    "throughput_gain_percent_p50": 227.7442370142855,
+    "throughput_gain_percent_p95": 259.7794459782238
+  },
+  "ev_gate": {
+    "formula": "(Impact * Confidence * Reuse) / (Effort * AdoptionFriction)",
+    "threshold": 2.0,
+    "impact": 4.0,
+    "confidence": 4.0,
+    "reuse": 3.0,
+    "effort": 2.0,
+    "adoption_friction": 1.0,
+    "score": 24.0,
+    "promoted": true
+  },
+  "isomorphism": {
+    "cases_total": 4,
+    "cases_passed": 4,
+    "cases_failed": 0,
+    "ordering_tiebreak_note": "Fast path executes only when lhs/rhs shapes are equal; all broadcast, scalar, and error paths remain behavior-isomorphic to the baseline implementation.",
+    "checks": [
+      {
+        "case_id": "case_same_shape_add",
+        "status": "pass",
+        "details": "baseline and optimized outputs matched"
+      },
+      {
+        "case_id": "case_broadcast_row",
+        "status": "pass",
+        "details": "baseline and optimized outputs matched"
+      },
+      {
+        "case_id": "case_scalar_broadcast",
+        "status": "pass",
+        "details": "baseline and optimized outputs matched"
+      },
+      {
+        "case_id": "case_shape_error",
+        "status": "pass",
+        "details": "baseline and optimized outputs matched"
+      }
+    ]
+  },
+  "quality_gates": [
+    {
+      "command": "cargo fmt --check",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo check --workspace --all-targets",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo clippy --workspace --all-targets -- -D warnings",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo test -p fnp-ufunc",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo run -p fnp-conformance --bin generate_packet005_optimization_report",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo run -p fnp-conformance --bin run_workflow_scenario_gate -- --log-path artifacts/phase2c/FNP-P2C-005/workflow_scenario_packet005_opt_e2e.jsonl --artifact-index-path artifacts/phase2c/FNP-P2C-005/workflow_scenario_packet005_opt_artifact_index.json --report-path artifacts/phase2c/FNP-P2C-005/workflow_scenario_packet005_opt_reliability.json --retries 0 --flake-budget 0 --coverage-floor 1.0",
+      "result": "pass"
+    }
+  ],
+  "artifacts": [
+    "crates/fnp-ufunc/src/lib.rs",
+    "crates/fnp-conformance/src/bin/generate_packet005_optimization_report.rs",
+    "artifacts/phase2c/FNP-P2C-005/optimization_profile_report.json",
+    "artifacts/phase2c/FNP-P2C-005/optimization_profile_isomorphism_evidence.json",
+    "artifacts/phase2c/FNP-P2C-005/workflow_scenario_packet005_opt_e2e.jsonl",
+    "artifacts/phase2c/FNP-P2C-005/workflow_scenario_packet005_opt_artifact_index.json",
+    "artifacts/phase2c/FNP-P2C-005/workflow_scenario_packet005_opt_reliability.json"
+  ],
+  "notes": [
+    "Profile report captures baseline/rebaseline distributions with environment fingerprint and reproducibility command.",
+    "Isomorphism checks cover same-shape fast path behavior, broadcast behavior, scalar broadcast behavior, and shape-error parity.",
+    "Optimization accepted under EV gate with score 24.0 and no observed behavior drift.",
+    "Post-change workflow scenario gate rerun passed with 298/298 cases and coverage_ratio=1.0."
+  ]
+}

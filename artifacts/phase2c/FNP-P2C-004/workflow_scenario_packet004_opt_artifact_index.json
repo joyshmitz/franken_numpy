@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "gate": "run_workflow_scenario_gate",
-  "generated_at_unix_ms": 1771319507469,
+  "generated_at_unix_ms": 1771322532557,
   "status": "pass",
   "execution_context": "local",
   "triage": null,
@@ -10,7 +10,7 @@
     {
       "id": "workflow_log",
       "kind": "jsonl_log",
-      "path": "artifacts/phase2c/FNP-P2C-009/workflow_scenario_packet009_opt_e2e.jsonl",
+      "path": "artifacts/phase2c/FNP-P2C-004/workflow_scenario_packet004_opt_e2e.jsonl",
       "description": "Step-level workflow replay log with pass/fail entries"
     },
     {
@@ -70,7 +70,7 @@
     {
       "id": "reliability_report",
       "kind": "gate_report",
-      "path": "artifacts/phase2c/FNP-P2C-009/workflow_scenario_packet009_opt_reliability.json",
+      "path": "artifacts/phase2c/FNP-P2C-004/workflow_scenario_packet004_opt_reliability.json",
       "description": "Workflow reliability summary report"
     }
   ]

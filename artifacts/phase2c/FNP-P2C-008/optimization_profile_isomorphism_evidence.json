@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "packet_id": "FNP-P2C-008",
+  "subtask_id": "FNP-P2C-008-H",
+  "status": "pass",
+  "optimization_lever": {
+    "id": "P2C008-H-LEVER-001",
+    "description": "Add rank-aware fast paths in validate_matrix_shape batch-lane validation",
+    "rationale": "Linalg entrypoints frequently validate rank-2/rank-3/rank-4 shapes; short-circuiting these common ranks avoids iterator/try_fold overhead while preserving identical validation semantics.",
+    "risk_note": "Optimization only changes internal control flow for batch-lane multiplication; reason-code families and error-class outcomes remain unchanged.",
+    "rollback_command": "git restore --source <last-green-commit> -- crates/fnp-linalg/src/lib.rs"
+  },
+  "benchmark_delta": {
+    "p50_delta_percent": -63.34131288670394,
+    "p95_delta_percent": -62.990447218684764,
+    "p99_delta_percent": -59.82613331790869,
+    "throughput_gain_percent_p50": 172.7866376963896,
+    "throughput_gain_percent_p95": 170.20050901692153
+  },
+  "ev_gate": {
+    "formula": "(Impact * Confidence * Reuse) / (Effort * AdoptionFriction)",
+    "threshold": 2.0,
+    "impact": 4.0,
+    "confidence": 4.0,
+    "reuse": 3.0,
+    "effort": 2.0,
+    "adoption_friction": 1.0,
+    "score": 24.0,
+    "promoted": true
+  },
+  "isomorphism": {
+    "cases_total": 6,
+    "cases_passed": 6,
+    "cases_failed": 0,
+    "ordering_tiebreak_note": "Rank-aware fast paths only bypass generic try_fold for rank-2/3/4 batch-lane multiplication; rows/cols validation, overflow handling, and budget-fail behavior remain behavior-isomorphic.",
+    "checks": [
+      {
+        "case_id": "case_rank2_valid",
+        "status": "pass",
+        "details": "baseline and optimized outputs matched"
+      },
+      {
+        "case_id": "case_rank3_valid",
+        "status": "pass",
+        "details": "baseline and optimized outputs matched"
+      },
+      {
+        "case_id": "case_rank4_valid",
+        "status": "pass",
+        "details": "baseline and optimized outputs matched"
+      },
+      {
+        "case_id": "case_rank_lt_2",
+        "status": "pass",
+        "details": "baseline and optimized outputs matched"
+      },
+      {
+        "case_id": "case_budget_overflow",
+        "status": "pass",
+        "details": "baseline and optimized outputs matched"
+      },
+      {
+        "case_id": "case_mul_overflow",
+        "status": "pass",
+        "details": "baseline and optimized outputs matched"
+      }
+    ]
+  },
+  "quality_gates": [
+    {
+      "command": "cargo fmt --check",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo check --workspace --all-targets",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo clippy --workspace --all-targets -- -D warnings",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo test -p fnp-linalg",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo run -p fnp-conformance --bin generate_packet008_optimization_report",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo run -p fnp-conformance --bin run_test_contract_gate",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo run -p fnp-conformance --bin run_security_gate",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo run -p fnp-conformance --bin run_workflow_scenario_gate -- --log-path artifacts/phase2c/FNP-P2C-008/workflow_scenario_packet008_opt_e2e.jsonl --artifact-index-path artifacts/phase2c/FNP-P2C-008/workflow_scenario_packet008_opt_artifact_index.json --report-path artifacts/phase2c/FNP-P2C-008/workflow_scenario_packet008_opt_reliability.json --retries 1 --flake-budget 0 --coverage-floor 1.0",
+      "result": "pass"
+    }
+  ],
+  "artifacts": [
+    "crates/fnp-linalg/src/lib.rs",
+    "crates/fnp-conformance/src/bin/generate_packet008_optimization_report.rs",
+    "artifacts/phase2c/FNP-P2C-008/optimization_profile_report.json",
+    "artifacts/phase2c/FNP-P2C-008/optimization_profile_isomorphism_evidence.json",
+    "artifacts/phase2c/FNP-P2C-008/workflow_scenario_packet008_opt_e2e.jsonl",
+    "artifacts/phase2c/FNP-P2C-008/workflow_scenario_packet008_opt_reliability.json",
+    "artifacts/phase2c/FNP-P2C-008/workflow_scenario_packet008_opt_artifact_index.json"
+  ],
+  "notes": [
+    "Profile report captures baseline/rebaseline distributions with environment fingerprint and reproducibility command.",
+    "Isomorphism checks passed for valid ranks, rank<2 failure, budget overflow, and multiplication overflow cases.",
+    "Optimization accepted under EV gate with score 24.0 >= 2.0 and no observed behavior drift.",
+    "Post-change workflow scenario gate rerun passed with 355/355 cases and coverage_ratio=1.0."
+  ]
+}

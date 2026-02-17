@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "packet_id": "FNP-P2C-009",
+  "oracle_tests": [
+    "legacy_numpy_code/numpy/numpy/lib/tests/test_format.py",
+    "legacy_numpy_code/numpy/numpy/lib/tests/test_io.py",
+    "legacy_numpy_code/numpy/numpy/lib/_format_impl.py",
+    "legacy_numpy_code/numpy/numpy/lib/_npyio_impl.py"
+  ],
+  "fixtures": [
+    {
+      "id": "p2c009_io_differential",
+      "input_path": "crates/fnp-conformance/fixtures/io_differential_cases.json",
+      "oracle_case_id": "io_differential_cases_contract"
+    },
+    {
+      "id": "p2c009_io_metamorphic",
+      "input_path": "crates/fnp-conformance/fixtures/io_metamorphic_cases.json",
+      "oracle_case_id": "io_metamorphic_cases_contract"
+    },
+    {
+      "id": "p2c009_io_adversarial",
+      "input_path": "crates/fnp-conformance/fixtures/io_adversarial_cases.json",
+      "oracle_case_id": "io_adversarial_cases_contract"
+    },
+    {
+      "id": "p2c009_io_workflow_scenarios",
+      "input_path": "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json",
+      "oracle_case_id": "io_packet_workflow_contract"
+    }
+  ]
+}

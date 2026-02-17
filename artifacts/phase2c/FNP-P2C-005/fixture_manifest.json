@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "packet_id": "FNP-P2C-005",
+  "oracle_tests": [
+    "legacy_numpy_code/numpy/numpy/_core/tests/test_ufunc.py",
+    "legacy_numpy_code/numpy/numpy/_core/tests/test_umath.py",
+    "legacy_numpy_code/numpy/numpy/_core/tests/test_overrides.py",
+    "legacy_numpy_code/numpy/numpy/_core/tests/test_multiarray.py"
+  ],
+  "fixtures": [
+    {
+      "id": "p2c005_ufunc_differential",
+      "input_path": "crates/fnp-conformance/fixtures/ufunc_input_cases.json",
+      "oracle_case_id": "ufunc_input_cases_contract"
+    },
+    {
+      "id": "p2c005_ufunc_metamorphic",
+      "input_path": "crates/fnp-conformance/fixtures/ufunc_metamorphic_cases.json",
+      "oracle_case_id": "ufunc_metamorphic_cases_contract"
+    },
+    {
+      "id": "p2c005_ufunc_adversarial",
+      "input_path": "crates/fnp-conformance/fixtures/ufunc_adversarial_cases.json",
+      "oracle_case_id": "ufunc_adversarial_cases_contract"
+    },
+    {
+      "id": "p2c005_ufunc_workflow_scenarios",
+      "input_path": "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json",
+      "oracle_case_id": "ufunc_packet_workflow_contract"
+    }
+  ]
+}

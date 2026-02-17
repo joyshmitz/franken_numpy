@@ -33,7 +33,7 @@ subsystem: `linalg bridge first wave`
 |---|---|---|---|
 | Fuzz/property | packet-E linalg invariant corpus (planned) | detect solver/decomposition/spectral/tolerance contract violations with shrinkable counterexamples | `bd-23m.19.5` |
 | Differential/metamorphic | packet-F linalg oracle/adversarial corpus (implemented) | enforce strict parity for linalg output/failure-class behavior across golden and hostile cases | `bd-23m.19.6` |
-| E2E/replay | packet-G linalg workflow scenarios (planned) | verify strict/hardened replay traceability and policy-forensics linkage | `bd-23m.19.7` |
+| E2E/replay | packet-G linalg workflow scenarios (implemented) | verify strict/hardened replay traceability and policy-forensics linkage through packet-scoped replay logs and forensics artifact indexes | `bd-23m.19.7` |
 
 ## Residual Risks and Compensating Controls
 
@@ -42,8 +42,8 @@ subsystem: `linalg bridge first wave`
 | `P2C008-RES-01` | `fnp-linalg` is still skeletal for the full packet boundary surface. | keep unsupported semantics fail-closed and block parity promotion until packet-D boundary work lands | `bd-23m.19.4` + packet-E baseline tests |
 | `P2C008-RES-02` | packet-scoped unit/property linalg corpus is incomplete. | require packet-E suite with deterministic shrink/replay logging before parity claims | `bd-23m.19.5` |
 | `P2C008-RES-03` | closed: differential/adversarial coverage for singular/non-convergence/tolerance-edge classes is now wired into packet-F suites and gates. | maintain packet-F fixture lanes and differential gate coverage (`linalg_differential`, `linalg_metamorphic`, `linalg_adversarial`). | `bd-23m.19.6` |
-| `P2C008-RES-04` | packet-scoped e2e replay for linalg journeys is incomplete. | add packet-G scenario logs with required structured fields and reason-code linkage | `bd-23m.19.7` |
-| `P2C008-RES-05` | hardened budget/calibration thresholds are defined but not tuned for full linalg corpus scale. | trigger conservative fallback on drift and recalibrate from packet-H evidence before packet-I sign-off | `bd-23m.19.8` + packet-I closure |
+| `P2C008-RES-04` | closed: packet-scoped e2e replay for linalg journeys is implemented and audited. | maintain packet-G workflow scenarios + wrapper script and keep `workflow_scenario_packet008_opt_{e2e,reliability,artifact_index}` artifacts fresh with gate runs. | `bd-23m.19.7` |
+| `P2C008-RES-05` | closed: hardened budget/calibration thresholds were revalidated using packet-H baseline/rebaseline profiling and behavior-isomorphism checks. | maintain packet-H optimization evidence (`optimization_profile_report.json`, `optimization_profile_isomorphism_evidence.json`) and re-run fallback trigger checks during packet-I closure. | `bd-23m.19.8` |
 
 ## Budgeted Mode and Decision-Theoretic Controls
 
@@ -73,7 +73,7 @@ subsystem: `linalg bridge first wave`
 - Trigger fallback when either condition is true:
   - strict vs hardened packet failure-class drift exceeds `0.1%`, or
   - unknown/uncategorized reason-code rate exceeds `0.01%`.
-- Fallback action: force conservative deterministic behavior (`full_validate` or `fail_closed`) until recalibration artifacts are produced and validated.
+- Fallback action: force conservative deterministic behavior (`full_validate` or `fail_closed`) until recalibration artifacts are produced and validated (`artifacts/phase2c/FNP-P2C-008/optimization_profile_report.json`, `artifacts/phase2c/FNP-P2C-008/optimization_profile_isomorphism_evidence.json`).
 
 ## Alien Recommendation Contract Mapping
 
@@ -84,7 +84,7 @@ subsystem: `linalg bridge first wave`
   - ordering/tie-break note,
   - before/after golden parity checks,
   - reproducible benchmark delta artifact.
-- Hotspot evidence requirement for non-doc follow-on work: attach baseline/profile artifacts before changing linalg policy/optimization behavior (or document profiler-unavailable fallback).
+- Hotspot evidence requirement for non-doc follow-on work: satisfied for packet-H via `artifacts/phase2c/FNP-P2C-008/optimization_profile_report.json`; future policy/optimization changes must refresh this evidence (or document profiler-unavailable fallback).
 
 ## oracle_tests
 
