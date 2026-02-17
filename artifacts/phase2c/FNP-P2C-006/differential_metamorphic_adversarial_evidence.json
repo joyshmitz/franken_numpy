@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "packet_id": "FNP-P2C-006",
+  "subtask_id": "FNP-P2C-006-F",
+  "status": "pass",
+  "summary": {
+    "shape_stride_differential_total_cases": 10,
+    "shape_stride_differential_passed_cases": 10,
+    "shape_stride_differential_failed_cases": 0,
+    "shape_stride_metamorphic_checks": 26,
+    "shape_stride_metamorphic_passed": 26,
+    "shape_stride_metamorphic_failed": 0,
+    "shape_stride_adversarial_checks": 7,
+    "shape_stride_adversarial_passed": 7,
+    "shape_stride_adversarial_failed": 0
+  },
+  "suites": [
+    {
+      "suite": "shape_stride_differential",
+      "command": "rch exec -- cargo test -p fnp-conformance shape_stride_packet006_f_suites_are_green",
+      "result": "pass",
+      "notes": [
+        "Differential mismatch report emitted at crates/fnp-conformance/fixtures/oracle_outputs/shape_stride_differential_report.json.",
+        "Mismatch count is zero for current golden/adversarial shape-stride corpus."
+      ]
+    },
+    {
+      "suite": "shape_stride_metamorphic",
+      "command": "rch exec -- cargo test -p fnp-conformance shape_stride_packet006_f_suites_are_green",
+      "result": "pass"
+    },
+    {
+      "suite": "shape_stride_adversarial",
+      "command": "rch exec -- cargo test -p fnp-conformance shape_stride_packet006_f_suites_are_green",
+      "result": "pass"
+    }
+  ],
+  "quality_gates": [
+    {
+      "command": "rch exec -- cargo fmt --check",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo check --workspace --all-targets",
+      "result": "pass",
+      "notes": [
+        "RCH attempted remote execution and failed open to local execution due remote preflight shell parse error."
+      ]
+    },
+    {
+      "command": "rch exec -- cargo clippy --workspace --all-targets -- -D warnings",
+      "result": "pass",
+      "notes": [
+        "RCH attempted remote execution and failed open to local execution due remote preflight shell parse error."
+      ]
+    }
+  ],
+  "artifacts": [
+    "crates/fnp-conformance/src/lib.rs",
+    "crates/fnp-conformance/src/bin/run_test_contract_gate.rs",
+    "crates/fnp-conformance/src/bin/run_security_gate.rs",
+    "crates/fnp-conformance/fixtures/shape_stride_cases.json",
+    "crates/fnp-conformance/fixtures/oracle_outputs/shape_stride_differential_report.json",
+    "artifacts/phase2c/FNP-P2C-006/differential_metamorphic_adversarial_evidence.json"
+  ],
+  "notes": [
+    "Packet FNP-P2C-006 now has dedicated differential/metamorphic/adversarial conformance suites wired into both test-contract and security gate suite runners.",
+    "High-rank broadcast fixture coverage was added for stride-tricks parity risk closure (broadcast_high_rank_contract).",
+    "Failure records include fixture_id, seed, mode, reason_code, env_fingerprint, and artifact_refs in suite failure payloads for replay triage."
+  ]
+}

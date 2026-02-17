@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 #[derive(Debug, Clone)]
@@ -638,6 +638,25 @@ struct UFuncDifferentialReportArtifact {
 }
 
 #[derive(Debug, Serialize)]
+struct ShapeStrideDifferentialMismatch {
+    fixture_id: String,
+    seed: u64,
+    mode: String,
+    reason_code: String,
+    message: String,
+    artifact_refs: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ShapeStrideDifferentialReportArtifact {
+    suite: &'static str,
+    total_cases: usize,
+    passed_cases: usize,
+    failed_cases: usize,
+    mismatches: Vec<ShapeStrideDifferentialMismatch>,
+}
+
+#[derive(Debug, Serialize)]
 struct RngDifferentialMismatch {
     fixture_id: String,
     seed: u64,
@@ -706,12 +725,23 @@ pub fn run_smoke(config: &HarnessConfig) -> HarnessReport {
     }
 }
 
-pub fn run_shape_stride_suite(config: &HarnessConfig) -> Result<SuiteReport, String> {
-    let path = config.fixture_root.join("shape_stride_cases.json");
+fn load_shape_stride_cases(fixture_root: &Path) -> Result<Vec<ShapeStrideFixtureCase>, String> {
+    let path = fixture_root.join("shape_stride_cases.json");
     let raw = fs::read_to_string(&path)
         .map_err(|err| format!("failed reading {}: {err}", path.display()))?;
-    let cases: Vec<ShapeStrideFixtureCase> =
-        serde_json::from_str(&raw).map_err(|err| format!("invalid json: {err}"))?;
+    serde_json::from_str(&raw).map_err(|err| format!("invalid json: {err}"))
+}
+
+fn parse_shape_stride_order(case_id: &str, stride_order: &str) -> Result<MemoryOrder, String> {
+    match stride_order {
+        "C" => Ok(MemoryOrder::C),
+        "F" => Ok(MemoryOrder::F),
+        bad => Err(format!("{case_id}: invalid stride_order={bad}")),
+    }
+}
+
+pub fn run_shape_stride_suite(config: &HarnessConfig) -> Result<SuiteReport, String> {
+    let cases = load_shape_stride_cases(&config.fixture_root)?;
 
     let mut report = SuiteReport {
         suite: "shape_stride",
@@ -762,14 +792,11 @@ pub fn run_shape_stride_suite(config: &HarnessConfig) -> Result<SuiteReport, Str
             }
         }
 
-        let order = match case.stride_order.as_str() {
-            "C" => MemoryOrder::C,
-            "F" => MemoryOrder::F,
-            bad => {
+        let order = match parse_shape_stride_order(&case.id, &case.stride_order) {
+            Ok(order) => order,
+            Err(err) => {
                 ok = false;
-                report
-                    .failures
-                    .push(format!("{}: invalid stride_order={bad}", case.id));
+                report.failures.push(err);
                 MemoryOrder::C
             }
         };
@@ -1005,6 +1032,519 @@ pub fn run_shape_stride_suite(config: &HarnessConfig) -> Result<SuiteReport, Str
             passed: ok,
         };
         maybe_append_shape_stride_log(&log_entry)?;
+    }
+
+    Ok(report)
+}
+
+fn parse_fixture_id_from_failure_line(failure: &str) -> Option<&str> {
+    failure
+        .split_once(':')
+        .map(|(fixture_id, _)| fixture_id.trim())
+        .filter(|fixture_id| !fixture_id.is_empty())
+}
+
+pub fn run_shape_stride_differential_suite(config: &HarnessConfig) -> Result<SuiteReport, String> {
+    let suite = run_shape_stride_suite(config)?;
+    let cases = load_shape_stride_cases(&config.fixture_root)?;
+    let mode = if config.strict_mode {
+        "strict".to_string()
+    } else {
+        "hardened".to_string()
+    };
+    let case_lookup = cases
+        .into_iter()
+        .map(|case| {
+            (
+                case.id,
+                (
+                    case.seed,
+                    normalize_reason_code(&case.reason_code),
+                    normalize_artifact_refs(case.artifact_refs),
+                ),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    let mismatches = suite
+        .failures
+        .iter()
+        .map(|failure| {
+            let fixture_id = parse_fixture_id_from_failure_line(failure)
+                .unwrap_or("unknown_fixture")
+                .to_string();
+            let (seed, reason_code, artifact_refs) =
+                case_lookup.get(&fixture_id).cloned().unwrap_or_else(|| {
+                    (
+                        0,
+                        "shape_stride_contract_violation".to_string(),
+                        vec![
+                            "artifacts/phase2c/FNP-P2C-006/contract_table.md".to_string(),
+                            "artifacts/phase2c/FNP-P2C-006/risk_note.md".to_string(),
+                        ],
+                    )
+                });
+            ShapeStrideDifferentialMismatch {
+                fixture_id,
+                seed,
+                mode: mode.clone(),
+                reason_code,
+                message: failure.clone(),
+                artifact_refs,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let artifact = ShapeStrideDifferentialReportArtifact {
+        suite: "shape_stride_differential",
+        total_cases: suite.case_count,
+        passed_cases: suite.pass_count,
+        failed_cases: suite.case_count.saturating_sub(suite.pass_count),
+        mismatches,
+    };
+    let artifact_path = config
+        .fixture_root
+        .join("oracle_outputs/shape_stride_differential_report.json");
+    if let Some(parent) = artifact_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed creating {}: {err}", parent.display()))?;
+    }
+    let payload = serde_json::to_string_pretty(&artifact)
+        .map_err(|err| format!("failed serializing shape-stride differential report: {err}"))?;
+    fs::write(&artifact_path, payload.as_bytes())
+        .map_err(|err| format!("failed writing {}: {err}", artifact_path.display()))?;
+
+    Ok(SuiteReport {
+        suite: "shape_stride_differential",
+        case_count: suite.case_count,
+        pass_count: suite.pass_count,
+        failures: suite.failures,
+    })
+}
+
+pub fn run_shape_stride_metamorphic_suite(config: &HarnessConfig) -> Result<SuiteReport, String> {
+    let cases = load_shape_stride_cases(&config.fixture_root)?;
+    let mut report = SuiteReport {
+        suite: "shape_stride_metamorphic",
+        case_count: 0,
+        pass_count: 0,
+        failures: Vec::new(),
+    };
+    let mode = if config.strict_mode {
+        "strict".to_string()
+    } else {
+        "hardened".to_string()
+    };
+
+    for case in cases {
+        let reason_code = normalize_reason_code(&case.reason_code);
+        let env_fingerprint = normalize_env_fingerprint(&case.env_fingerprint);
+        let artifact_refs = normalize_artifact_refs(case.artifact_refs.clone());
+        let broadcast_forward = broadcast_shape(&case.lhs, &case.rhs);
+        let broadcast_reverse = broadcast_shape(&case.rhs, &case.lhs);
+        let commutative_ok = match (&broadcast_forward, &broadcast_reverse) {
+            (Ok(lhs_rhs), Ok(rhs_lhs)) => lhs_rhs == rhs_lhs,
+            (Err(_), Err(_)) => true,
+            _ => false,
+        };
+        record_suite_check(
+            &mut report,
+            commutative_ok,
+            format!(
+                "{}: seed={} mode={} reason_code={} env_fingerprint={} artifact_refs={} broadcast commutativity failed forward={broadcast_forward:?} reverse={broadcast_reverse:?}",
+                case.id,
+                case.seed,
+                mode,
+                reason_code,
+                env_fingerprint,
+                artifact_refs.join(",")
+            ),
+        );
+
+        if let Some(expected) = &case.expected_broadcast {
+            let identity = broadcast_shape(expected, &[1usize]);
+            let identity_ok = identity.as_ref().is_ok_and(|actual| actual == expected);
+            record_suite_check(
+                &mut report,
+                identity_ok,
+                format!(
+                    "{}: seed={} mode={} reason_code={} env_fingerprint={} artifact_refs={} broadcast identity failed expected={expected:?} actual={identity:?}",
+                    case.id,
+                    case.seed,
+                    mode,
+                    reason_code,
+                    env_fingerprint,
+                    artifact_refs.join(",")
+                ),
+            );
+        }
+
+        let order = match parse_shape_stride_order(&case.id, &case.stride_order) {
+            Ok(order) => order,
+            Err(err) => {
+                record_suite_check(
+                    &mut report,
+                    false,
+                    format!(
+                        "{}: seed={} mode={} reason_code={} env_fingerprint={} artifact_refs={} {}",
+                        case.id,
+                        case.seed,
+                        mode,
+                        reason_code,
+                        env_fingerprint,
+                        artifact_refs.join(","),
+                        err
+                    ),
+                );
+                continue;
+            }
+        };
+
+        let base = match NdLayout::contiguous(
+            case.stride_shape.clone(),
+            case.stride_item_size,
+            order,
+        ) {
+            Ok(layout) => layout,
+            Err(err) => {
+                record_suite_check(
+                    &mut report,
+                    false,
+                    format!(
+                        "{}: seed={} mode={} reason_code={} env_fingerprint={} artifact_refs={} failed to build base layout for metamorphic checks: {}",
+                        case.id,
+                        case.seed,
+                        mode,
+                        reason_code,
+                        env_fingerprint,
+                        artifact_refs.join(","),
+                        err
+                    ),
+                );
+                continue;
+            }
+        };
+
+        if let Some(broadcast_to_case) = &case.broadcast_to
+            && broadcast_to_case.expected_error_contains.is_none()
+        {
+            let first = base.broadcast_to(broadcast_to_case.shape.clone());
+            let second = base.broadcast_to(broadcast_to_case.shape.clone());
+            let deterministic_ok = matches!((&first, &second), (Ok(lhs), Ok(rhs)) if lhs == rhs);
+            record_suite_check(
+                &mut report,
+                deterministic_ok,
+                format!(
+                    "{}: seed={} mode={} reason_code={} env_fingerprint={} artifact_refs={} broadcast_to determinism failed first={first:?} second={second:?}",
+                    case.id,
+                    case.seed,
+                    mode,
+                    reason_code,
+                    env_fingerprint,
+                    artifact_refs.join(",")
+                ),
+            );
+        }
+
+        if let Some(as_strided_case) = &case.as_strided
+            && as_strided_case.expected_error_contains.is_none()
+        {
+            let first = base.as_strided(
+                as_strided_case.shape.clone(),
+                as_strided_case.strides.clone(),
+            );
+            let second = base.as_strided(
+                as_strided_case.shape.clone(),
+                as_strided_case.strides.clone(),
+            );
+            let deterministic_ok = matches!((&first, &second), (Ok(lhs), Ok(rhs)) if lhs == rhs);
+            record_suite_check(
+                &mut report,
+                deterministic_ok,
+                format!(
+                    "{}: seed={} mode={} reason_code={} env_fingerprint={} artifact_refs={} as_strided determinism failed first={first:?} second={second:?}",
+                    case.id,
+                    case.seed,
+                    mode,
+                    reason_code,
+                    env_fingerprint,
+                    artifact_refs.join(",")
+                ),
+            );
+        }
+
+        if let Some(sliding_window_case) = &case.sliding_window
+            && sliding_window_case.expected_error_contains.is_none()
+        {
+            let first = base.sliding_window_view(sliding_window_case.window_shape.clone());
+            let second = base.sliding_window_view(sliding_window_case.window_shape.clone());
+            let deterministic_ok = matches!((&first, &second), (Ok(lhs), Ok(rhs)) if lhs == rhs);
+            record_suite_check(
+                &mut report,
+                deterministic_ok,
+                format!(
+                    "{}: seed={} mode={} reason_code={} env_fingerprint={} artifact_refs={} sliding_window determinism failed first={first:?} second={second:?}",
+                    case.id,
+                    case.seed,
+                    mode,
+                    reason_code,
+                    env_fingerprint,
+                    artifact_refs.join(",")
+                ),
+            );
+
+            let relation_ok = first.as_ref().is_ok_and(|view| {
+                let ndim = base.shape.len();
+                if view.shape.len() != ndim * 2 {
+                    return false;
+                }
+                base.shape
+                    .iter()
+                    .zip(sliding_window_case.window_shape.iter())
+                    .enumerate()
+                    .all(|(axis, (dim, window))| {
+                        *window > 0
+                            && *window <= *dim
+                            && view.shape[axis] == dim.saturating_sub(*window).saturating_add(1)
+                    })
+            });
+            record_suite_check(
+                &mut report,
+                relation_ok,
+                format!(
+                    "{}: seed={} mode={} reason_code={} env_fingerprint={} artifact_refs={} sliding_window relation check failed result={first:?}",
+                    case.id,
+                    case.seed,
+                    mode,
+                    reason_code,
+                    env_fingerprint,
+                    artifact_refs.join(",")
+                ),
+            );
+        }
+    }
+
+    Ok(report)
+}
+
+pub fn run_shape_stride_adversarial_suite(config: &HarnessConfig) -> Result<SuiteReport, String> {
+    let cases = load_shape_stride_cases(&config.fixture_root)?;
+    let mut report = SuiteReport {
+        suite: "shape_stride_adversarial",
+        case_count: 0,
+        pass_count: 0,
+        failures: Vec::new(),
+    };
+    let mode = if config.strict_mode {
+        "strict".to_string()
+    } else {
+        "hardened".to_string()
+    };
+
+    for case in cases {
+        let reason_code = normalize_reason_code(&case.reason_code);
+        let env_fingerprint = normalize_env_fingerprint(&case.env_fingerprint);
+        let artifact_refs = normalize_artifact_refs(case.artifact_refs.clone());
+
+        if case.expected_broadcast.is_none() {
+            record_suite_check(
+                &mut report,
+                broadcast_shape(&case.lhs, &case.rhs).is_err(),
+                format!(
+                    "{}: seed={} mode={} reason_code={} env_fingerprint={} artifact_refs={} expected broadcast failure for adversarial case but call succeeded",
+                    case.id,
+                    case.seed,
+                    mode,
+                    reason_code,
+                    env_fingerprint,
+                    artifact_refs.join(",")
+                ),
+            );
+        }
+
+        let order = match parse_shape_stride_order(&case.id, &case.stride_order) {
+            Ok(order) => order,
+            Err(err) => {
+                record_suite_check(
+                    &mut report,
+                    false,
+                    format!(
+                        "{}: seed={} mode={} reason_code={} env_fingerprint={} artifact_refs={} {}",
+                        case.id,
+                        case.seed,
+                        mode,
+                        reason_code,
+                        env_fingerprint,
+                        artifact_refs.join(","),
+                        err
+                    ),
+                );
+                continue;
+            }
+        };
+        let base = match NdLayout::contiguous(
+            case.stride_shape.clone(),
+            case.stride_item_size,
+            order,
+        ) {
+            Ok(layout) => layout,
+            Err(err) => {
+                record_suite_check(
+                    &mut report,
+                    false,
+                    format!(
+                        "{}: seed={} mode={} reason_code={} env_fingerprint={} artifact_refs={} failed to build base layout for adversarial checks: {}",
+                        case.id,
+                        case.seed,
+                        mode,
+                        reason_code,
+                        env_fingerprint,
+                        artifact_refs.join(","),
+                        err
+                    ),
+                );
+                continue;
+            }
+        };
+
+        if let Some(as_strided_case) = &case.as_strided
+            && let Some(needle) = &as_strided_case.expected_error_contains
+        {
+            match base.as_strided(
+                as_strided_case.shape.clone(),
+                as_strided_case.strides.clone(),
+            ) {
+                Ok(view) => {
+                    record_suite_check(
+                        &mut report,
+                        false,
+                        format!(
+                            "{}: seed={} mode={} reason_code={} env_fingerprint={} artifact_refs={} expected as_strided error containing '{}' but got view={view:?}",
+                            case.id,
+                            case.seed,
+                            mode,
+                            reason_code,
+                            env_fingerprint,
+                            artifact_refs.join(","),
+                            needle
+                        ),
+                    );
+                }
+                Err(err) => {
+                    let matched = err
+                        .to_string()
+                        .to_lowercase()
+                        .contains(&needle.to_lowercase());
+                    record_suite_check(
+                        &mut report,
+                        matched,
+                        format!(
+                            "{}: seed={} mode={} reason_code={} env_fingerprint={} artifact_refs={} expected as_strided error containing '{}' but got '{}'",
+                            case.id,
+                            case.seed,
+                            mode,
+                            reason_code,
+                            env_fingerprint,
+                            artifact_refs.join(","),
+                            needle,
+                            err
+                        ),
+                    );
+                }
+            }
+        }
+
+        if let Some(broadcast_to_case) = &case.broadcast_to
+            && let Some(needle) = &broadcast_to_case.expected_error_contains
+        {
+            match base.broadcast_to(broadcast_to_case.shape.clone()) {
+                Ok(view) => {
+                    record_suite_check(
+                        &mut report,
+                        false,
+                        format!(
+                            "{}: seed={} mode={} reason_code={} env_fingerprint={} artifact_refs={} expected broadcast_to error containing '{}' but got view={view:?}",
+                            case.id,
+                            case.seed,
+                            mode,
+                            reason_code,
+                            env_fingerprint,
+                            artifact_refs.join(","),
+                            needle
+                        ),
+                    );
+                }
+                Err(err) => {
+                    let matched = err
+                        .to_string()
+                        .to_lowercase()
+                        .contains(&needle.to_lowercase());
+                    record_suite_check(
+                        &mut report,
+                        matched,
+                        format!(
+                            "{}: seed={} mode={} reason_code={} env_fingerprint={} artifact_refs={} expected broadcast_to error containing '{}' but got '{}'",
+                            case.id,
+                            case.seed,
+                            mode,
+                            reason_code,
+                            env_fingerprint,
+                            artifact_refs.join(","),
+                            needle,
+                            err
+                        ),
+                    );
+                }
+            }
+        }
+
+        if let Some(sliding_window_case) = &case.sliding_window
+            && let Some(needle) = &sliding_window_case.expected_error_contains
+        {
+            match base.sliding_window_view(sliding_window_case.window_shape.clone()) {
+                Ok(view) => {
+                    record_suite_check(
+                        &mut report,
+                        false,
+                        format!(
+                            "{}: seed={} mode={} reason_code={} env_fingerprint={} artifact_refs={} expected sliding_window_view error containing '{}' but got view={view:?}",
+                            case.id,
+                            case.seed,
+                            mode,
+                            reason_code,
+                            env_fingerprint,
+                            artifact_refs.join(","),
+                            needle
+                        ),
+                    );
+                }
+                Err(err) => {
+                    let matched = err
+                        .to_string()
+                        .to_lowercase()
+                        .contains(&needle.to_lowercase());
+                    record_suite_check(
+                        &mut report,
+                        matched,
+                        format!(
+                            "{}: seed={} mode={} reason_code={} env_fingerprint={} artifact_refs={} expected sliding_window_view error containing '{}' but got '{}'",
+                            case.id,
+                            case.seed,
+                            mode,
+                            reason_code,
+                            env_fingerprint,
+                            artifact_refs.join(","),
+                            needle,
+                            err
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    if report.case_count == 0 {
+        return Err("shape_stride_adversarial produced zero checks".to_string());
     }
 
     Ok(report)
@@ -2742,6 +3282,9 @@ pub fn run_crash_signature_regression_suite(config: &HarnessConfig) -> Result<Su
 pub fn run_all_core_suites(config: &HarnessConfig) -> Result<Vec<SuiteReport>, String> {
     Ok(vec![
         run_shape_stride_suite(config)?,
+        run_shape_stride_differential_suite(config)?,
+        run_shape_stride_metamorphic_suite(config)?,
+        run_shape_stride_adversarial_suite(config)?,
         run_dtype_promotion_suite(config)?,
         run_runtime_policy_suite(config)?,
         run_runtime_policy_adversarial_suite(config)?,
@@ -3595,9 +4138,11 @@ mod tests {
         run_dtype_promotion_suite, run_io_adversarial_suite, run_linalg_adversarial_suite,
         run_linalg_differential_suite, run_linalg_metamorphic_suite, run_rng_adversarial_suite,
         run_rng_differential_suite, run_rng_metamorphic_suite,
-        run_runtime_policy_adversarial_suite, run_shape_stride_suite, run_smoke,
-        run_ufunc_adversarial_suite, run_ufunc_differential_suite, run_ufunc_metamorphic_suite,
-        set_dtype_promotion_log_path, set_shape_stride_log_path,
+        run_runtime_policy_adversarial_suite, run_shape_stride_adversarial_suite,
+        run_shape_stride_differential_suite, run_shape_stride_metamorphic_suite,
+        run_shape_stride_suite, run_smoke, run_ufunc_adversarial_suite,
+        run_ufunc_differential_suite, run_ufunc_metamorphic_suite, set_dtype_promotion_log_path,
+        set_shape_stride_log_path,
     };
     use fnp_iter::{
         RuntimeMode as IterRuntimeMode, TRANSFER_PACKET_REASON_CODES, TransferLogRecord,
@@ -3633,6 +4178,35 @@ mod tests {
         let suite =
             run_runtime_policy_adversarial_suite(&cfg).expect("adversarial suite should run");
         assert!(suite.all_passed(), "failures={:?}", suite.failures);
+    }
+
+    #[test]
+    fn shape_stride_packet006_f_suites_are_green() {
+        let cfg = HarnessConfig::default_paths();
+
+        let differential = run_shape_stride_differential_suite(&cfg)
+            .expect("shape-stride differential suite should run");
+        assert!(
+            differential.all_passed(),
+            "failures={:?}",
+            differential.failures
+        );
+
+        let metamorphic = run_shape_stride_metamorphic_suite(&cfg)
+            .expect("shape-stride metamorphic suite should run");
+        assert!(
+            metamorphic.all_passed(),
+            "failures={:?}",
+            metamorphic.failures
+        );
+
+        let adversarial =
+            run_shape_stride_adversarial_suite(&cfg).expect("shape-stride adversarial suite");
+        assert!(
+            adversarial.all_passed(),
+            "failures={:?}",
+            adversarial.failures
+        );
     }
 
     #[test]
