@@ -690,6 +690,25 @@ fn build_forensics_artifact_index(
                 .to_string(),
         },
         ArtifactIndexEntry {
+            id: "rng_differential_cases".to_string(),
+            kind: "fixture_collection".to_string(),
+            path: "crates/fnp-conformance/fixtures/rng_differential_cases.json".to_string(),
+            description: "RNG differential fixture cases linked from workflow scenarios"
+                .to_string(),
+        },
+        ArtifactIndexEntry {
+            id: "rng_metamorphic_cases".to_string(),
+            kind: "fixture_collection".to_string(),
+            path: "crates/fnp-conformance/fixtures/rng_metamorphic_cases.json".to_string(),
+            description: "RNG metamorphic fixture cases linked from workflow scenarios".to_string(),
+        },
+        ArtifactIndexEntry {
+            id: "rng_adversarial_cases".to_string(),
+            kind: "fixture_collection".to_string(),
+            path: "crates/fnp-conformance/fixtures/rng_adversarial_cases.json".to_string(),
+            description: "RNG adversarial fixture cases linked from workflow scenarios".to_string(),
+        },
+        ArtifactIndexEntry {
             id: "workflow_runner_script".to_string(),
             kind: "replay_script".to_string(),
             path: "scripts/e2e/run_workflow_scenario_gate.sh".to_string(),
@@ -702,10 +721,22 @@ fn build_forensics_artifact_index(
             description: "Packet-008 workflow replay wrapper script".to_string(),
         },
         ArtifactIndexEntry {
+            id: "shape_packet_workflow_script".to_string(),
+            kind: "replay_script".to_string(),
+            path: "scripts/e2e/run_shape_contract_journey.sh".to_string(),
+            description: "Packet-001 workflow replay wrapper script".to_string(),
+        },
+        ArtifactIndexEntry {
             id: "io_packet_workflow_script".to_string(),
             kind: "replay_script".to_string(),
             path: "scripts/e2e/run_io_contract_journey.sh".to_string(),
             description: "Packet-009 workflow replay wrapper script".to_string(),
+        },
+        ArtifactIndexEntry {
+            id: "rng_packet_workflow_script".to_string(),
+            kind: "replay_script".to_string(),
+            path: "scripts/e2e/run_rng_contract_journey.sh".to_string(),
+            description: "Packet-007 workflow replay wrapper script".to_string(),
         },
     ];
     if let Some(path) = context.report_path {

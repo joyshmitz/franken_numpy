@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "packet_id": "FNP-P2C-007",
+  "subtask_id": "FNP-P2C-007-F",
+  "status": "pass",
+  "summary": {
+    "rng_differential_total_cases": 7,
+    "rng_differential_passed_cases": 7,
+    "rng_differential_failed_cases": 0,
+    "rng_metamorphic_total_cases": 3,
+    "rng_metamorphic_passed_cases": 3,
+    "rng_metamorphic_failed_cases": 0,
+    "rng_adversarial_total_cases": 4,
+    "rng_adversarial_passed_cases": 4,
+    "rng_adversarial_failed_cases": 0
+  },
+  "suites": [
+    {
+      "suite": "fnp_conformance_rng_tests",
+      "command": "rch exec -- cargo test -p fnp-conformance rng_ -- --nocapture",
+      "result": "pass",
+      "pass_count": 3,
+      "fail_count": 0,
+      "notes": [
+        "Validated packet-007 RNG differential/metamorphic/adversarial suite trio in fnp-conformance tests.",
+        "Differential mismatch artifact is emitted at crates/fnp-conformance/fixtures/oracle_outputs/rng_differential_report.json."
+      ]
+    },
+    {
+      "suite": "test_contract_gate_wiring",
+      "command": "rch exec -- cargo run -p fnp-conformance --bin run_test_contract_gate -- --report-path /tmp/fnp_test_contract_gate_rng_packet007.json --retries 0 --flake-budget 0 --coverage-floor 1.0",
+      "result": "pass",
+      "notes": [
+        "Gate runner includes rng_differential/rng_metamorphic/rng_adversarial suites in run_gate_suites.",
+        "Local materialized report: artifacts/phase2c/FNP-P2C-007/test_contract_gate_report_rng_packet007.json."
+      ]
+    },
+    {
+      "suite": "security_gate_wiring",
+      "command": "rch exec -- cargo run -p fnp-conformance --bin run_security_gate -- --report-path /tmp/fnp_security_gate_rng_packet007.json --retries 0 --flake-budget 0 --coverage-floor 1.0",
+      "result": "pass",
+      "notes": [
+        "Security gate includes rng_differential/rng_metamorphic/rng_adversarial suites.",
+        "Local materialized report: artifacts/phase2c/FNP-P2C-007/security_gate_report_rng_packet007.json."
+      ]
+    }
+  ],
+  "quality_gates": [
+    {
+      "command": "rch exec -- cargo test -p fnp-conformance rng_ -- --nocapture",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo run -p fnp-conformance --bin run_test_contract_gate -- --report-path /tmp/fnp_test_contract_gate_rng_packet007.json --retries 0 --flake-budget 0 --coverage-floor 1.0",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo run -p fnp-conformance --bin run_security_gate -- --report-path /tmp/fnp_security_gate_rng_packet007.json --retries 0 --flake-budget 0 --coverage-floor 1.0",
+      "result": "pass"
+    }
+  ],
+  "artifacts": [
+    "crates/fnp-conformance/fixtures/rng_differential_cases.json",
+    "crates/fnp-conformance/fixtures/rng_metamorphic_cases.json",
+    "crates/fnp-conformance/fixtures/rng_adversarial_cases.json",
+    "crates/fnp-conformance/fixtures/oracle_outputs/rng_differential_report.json",
+    "crates/fnp-conformance/src/lib.rs",
+    "crates/fnp-conformance/src/bin/run_test_contract_gate.rs",
+    "crates/fnp-conformance/src/bin/run_security_gate.rs",
+    "artifacts/phase2c/FNP-P2C-007/unit_property_evidence.json",
+    "artifacts/phase2c/FNP-P2C-007/differential_metamorphic_adversarial_evidence.json",
+    "artifacts/phase2c/FNP-P2C-007/test_contract_gate_report_rng_packet007.json",
+    "artifacts/phase2c/FNP-P2C-007/security_gate_report_rng_packet007.json",
+    "artifacts/logs/test_contract_e2e_1771342153114.jsonl",
+    "artifacts/logs/runtime_policy_e2e_1771342153125.jsonl"
+  ],
+  "notes": [
+    "RNG fixture families include deterministic seed, mode, env_fingerprint, reason_code, and artifact_refs for replay and triage.",
+    "Mismatch records remain machine-readable through expected_reason_code/actual_reason_code lanes in RNG differential fixtures and reports.",
+    "Packet-F artifact refs cross-link packet-E evidence to preserve traceability for packet-G replay/forensics work."
+  ]
+}

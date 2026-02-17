@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "packet_id": "FNP-P2C-001",
+  "subtask_id": "FNP-P2C-001-F",
+  "status": "pass",
+  "summary": {
+    "shape_stride_differential_total_cases": 10,
+    "shape_stride_differential_passed_cases": 10,
+    "shape_stride_differential_failed_cases": 0,
+    "shape_stride_metamorphic_total_checks": 26,
+    "shape_stride_metamorphic_passed_checks": 26,
+    "shape_stride_metamorphic_failed_checks": 0,
+    "shape_stride_adversarial_total_checks": 7,
+    "shape_stride_adversarial_passed_checks": 7,
+    "shape_stride_adversarial_failed_checks": 0
+  },
+  "suites": [
+    {
+      "suite": "shape_stride_packet_f_suites",
+      "command": "rch exec -- cargo test -p fnp-conformance shape_stride_packet006_f_suites_are_green -- --nocapture",
+      "result": "pass",
+      "notes": [
+        "Executes packet-F shape/stride differential + metamorphic + adversarial lanes in a single deterministic harness test.",
+        "Differential mismatch artifact is emitted to crates/fnp-conformance/fixtures/oracle_outputs/shape_stride_differential_report.json."
+      ]
+    },
+    {
+      "suite": "test_contract_gate_shape_stride_wiring",
+      "command": "target/debug/run_test_contract_gate --report-path /tmp/fnp_test_contract_gate_report_001f.json --retries 0 --flake-budget 0 --coverage-floor 1.0",
+      "result": "pass",
+      "notes": [
+        "Gate report includes shape_stride_differential=10/10, shape_stride_metamorphic=26/26, shape_stride_adversarial=7/7.",
+        "Gate-run logs preserve required replay fields: fixture_id, seed, mode, env_fingerprint, artifact_refs, reason_code."
+      ]
+    },
+    {
+      "suite": "security_gate_shape_stride_wiring",
+      "command": "target/debug/run_security_gate --report-path /tmp/fnp_security_gate_report_001f.json --retries 0 --flake-budget 0 --coverage-floor 1.0",
+      "result": "pass",
+      "notes": [
+        "Security gate report confirms packet-F shape_stride suites are wired into hardened fail-closed policy checks."
+      ]
+    }
+  ],
+  "quality_gates": [
+    {
+      "command": "rch exec -- cargo test -p fnp-conformance shape_stride_packet006_f_suites_are_green -- --nocapture",
+      "result": "pass"
+    },
+    {
+      "command": "target/debug/run_test_contract_gate --report-path /tmp/fnp_test_contract_gate_report_001f.json --retries 0 --flake-budget 0 --coverage-floor 1.0",
+      "result": "pass"
+    },
+    {
+      "command": "target/debug/run_security_gate --report-path /tmp/fnp_security_gate_report_001f.json --retries 0 --flake-budget 0 --coverage-floor 1.0",
+      "result": "pass"
+    }
+  ],
+  "artifacts": [
+    "crates/fnp-conformance/src/lib.rs",
+    "crates/fnp-conformance/src/bin/run_test_contract_gate.rs",
+    "crates/fnp-conformance/src/bin/run_security_gate.rs",
+    "crates/fnp-conformance/fixtures/shape_stride_cases.json",
+    "crates/fnp-conformance/fixtures/oracle_outputs/shape_stride_differential_report.json",
+    "/tmp/fnp_test_contract_gate_report_001f.json",
+    "/tmp/fnp_security_gate_report_001f.json",
+    "artifacts/phase2c/FNP-P2C-001/unit_property_evidence.json",
+    "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json",
+    "artifacts/phase2c/FNP-P2C-001/differential_metamorphic_adversarial_evidence.json"
+  ],
+  "notes": [
+    "Mismatch records remain machine-readable via reason-code contracts in shape_stride_differential_report.json and preserve minimal repro linkage.",
+    "Packet-F output now cross-links packet-E unit/property evidence and packet-G workflow corpus scaffolding for replay continuity.",
+    "Residual gap tracked by packet-G remains scenario implementation depth, not packet-F fixture/gate wiring."
+  ]
+}

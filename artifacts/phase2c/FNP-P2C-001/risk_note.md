@@ -24,16 +24,21 @@ subsystem: `shape/reshape legality`
 | lane | fixture family | objective | owner bead |
 |---|---|---|---|
 | Fuzz/property | packet-E shape-stride property corpus (planned) | discover malformed/overflow boundary counterexamples with deterministic shrinking | `bd-23m.12.5` |
-| Differential/metamorphic | packet-F reshape/broadcast oracle fixtures (planned) | enforce strict parity for failure classes and broadcast legality outcomes | `bd-23m.12.6` |
-| E2E/replay | packet-G reshape workflow scenarios (planned) | ensure fail-closed and hardened traces remain reproducible with forensics links | `bd-23m.12.7` |
+| Differential/metamorphic | packet-F reshape/broadcast oracle fixtures (implemented) | enforce strict parity for failure classes and broadcast legality outcomes | `bd-23m.12.6` |
+| E2E/replay | packet-G reshape workflow scenarios (implemented) | ensure fail-closed and hardened traces remain reproducible with forensics links | `bd-23m.12.7` |
 
 ## Residual Risks and Compensating Controls
 
 | residual_id | residual risk | compensating controls | closure gate |
 |---|---|---|---|
 | `P2C001-RES-01` | Full no-copy alias-preserving reshape parity not yet implemented | keep alias-sensitive transitions fail-closed until packet-D implementation lands | `bd-23m.12.4` complete + packet validator evidence update |
-| `P2C001-RES-02` | Error-text parity across all reshape mismatch variants not yet fully differential-tested | enforce error-class parity gates and expand oracle fixture taxonomy | `bd-23m.12.6` strict drift gate green |
-| `P2C001-RES-03` | High-cardinality workload policy caps may require calibration tuning | admission guard caps + audit review + deterministic fallback trigger | packet-H optimization + packet-I parity/risk sign-off |
+| `P2C001-RES-02` | closed: packet-F differential/metamorphic/adversarial suites now gate reshape/broadcast mismatch class stability with deterministic reason-code reporting | maintain packet-F fixture lanes and gate evidence in `artifacts/phase2c/FNP-P2C-001/differential_metamorphic_adversarial_evidence.json` | `bd-23m.12.6` |
+| `P2C001-RES-03` | closed: hardened workload-cap calibration was revalidated using packet-H baseline/rebaseline profiling and behavior-isomorphism checks. | maintain packet-H optimization evidence (`optimization_profile_report.json`, `optimization_profile_isomorphism_evidence.json`) and re-run fallback trigger checks during packet-I closure. | `bd-23m.12.8` |
+
+## Calibration/Fallback Trigger
+
+- Trigger fallback when strict vs hardened failure-class drift exceeds `0.1%` or unknown/uncategorized reason-code rate exceeds `0.01%`.
+- Fallback action: force conservative deterministic behavior (`full_validate` or `fail_closed`) until recalibration artifacts are regenerated and validated (`artifacts/phase2c/FNP-P2C-001/optimization_profile_report.json`, `artifacts/phase2c/FNP-P2C-001/optimization_profile_isomorphism_evidence.json`).
 
 ## oracle_tests
 

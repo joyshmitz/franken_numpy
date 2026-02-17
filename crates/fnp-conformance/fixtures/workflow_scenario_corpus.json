@@ -48,16 +48,134 @@
     },
     "gaps": [
       {
-        "bead_id": "bd-23m.12.7",
-        "owner": "bd-23m.12.7",
-        "priority": "p1",
-        "description": "Add reshape-heavy workflow steps once packet FNP-P2C-001 G-stage scenarios land."
-      },
-      {
         "bead_id": "bd-23m.13.7",
         "owner": "bd-23m.13.7",
         "priority": "p1",
         "description": "Expand mixed-dtype workflow coverage once packet FNP-P2C-002 G-stage scenarios land."
+      }
+    ]
+  },
+  {
+    "id": "shape_reshape_packet_replay",
+    "category": "high_frequency",
+    "description": "Packet FNP-P2C-001 golden workflow covering reshape/broadcast legality replay in strict and hardened modes.",
+    "seed": 5501,
+    "env_fingerprint": "linux-x86_64-rust2024",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-001/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-001/differential_metamorphic_adversarial_evidence.json",
+      "scripts/e2e/run_shape_contract_journey.sh"
+    ],
+    "reason_code": "shape_reshape_replay_golden_path",
+    "strict": {
+      "expected_status": "pass"
+    },
+    "hardened": {
+      "expected_status": "pass"
+    },
+    "steps": [
+      {
+        "id": "step_shape_broadcast_rank_ok",
+        "kind": "shape_stride_case",
+        "case_id": "broadcast_rank_mismatch_ok"
+      },
+      {
+        "id": "step_shape_broadcast_fortran_ok",
+        "kind": "shape_stride_case",
+        "case_id": "broadcast_rank_mismatch_fortran"
+      },
+      {
+        "id": "step_shape_zero_extent_view_ok",
+        "kind": "shape_stride_case",
+        "case_id": "stride_tricks_zero_extent_view"
+      },
+      {
+        "id": "step_policy_allow_known_good",
+        "kind": "runtime_policy",
+        "case_id": "strict_known_good",
+        "expected_action_strict": "allow",
+        "expected_action_hardened": "allow"
+      }
+    ],
+    "links": {
+      "differential_fixture_ids": [
+        "broadcast_rank_mismatch_ok",
+        "broadcast_rank_mismatch_fortran",
+        "stride_tricks_zero_extent_view"
+      ],
+      "e2e_script_paths": [
+        "scripts/e2e/run_shape_contract_journey.sh",
+        "scripts/e2e/run_test_contract_gate.sh"
+      ]
+    },
+    "gaps": [
+      {
+        "bead_id": "bd-23m.12.8",
+        "owner": "bd-23m.12.8",
+        "priority": "p1",
+        "description": "Profile and optimize packet-001 reshape/broadcast replay with explicit isomorphism evidence."
+      },
+      {
+        "bead_id": "bd-23m.12.9",
+        "owner": "bd-23m.12.9",
+        "priority": "p1",
+        "description": "Attach packet-001 workflow replay outputs into the final parity and durability evidence bundle."
+      }
+    ]
+  },
+  {
+    "id": "shape_reshape_packet_hostile_guardrails",
+    "category": "adversarial",
+    "description": "Packet FNP-P2C-001 hostile workflow proving broadcast/stride mismatch failures stay replayable while unknown wire metadata remains fail-closed.",
+    "seed": 5502,
+    "env_fingerprint": "linux-x86_64-rust2024",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-001/contract_table.md",
+      "crates/fnp-conformance/fixtures/shape_stride_cases.json",
+      "scripts/e2e/run_shape_contract_journey.sh"
+    ],
+    "reason_code": "shape_reshape_hostile_guardrails",
+    "strict": {
+      "expected_status": "fail_closed"
+    },
+    "hardened": {
+      "expected_status": "fail_closed"
+    },
+    "steps": [
+      {
+        "id": "step_shape_incompatible_broadcast",
+        "kind": "shape_stride_case",
+        "case_id": "broadcast_incompatible"
+      },
+      {
+        "id": "step_shape_rank_mismatch_rejected",
+        "kind": "shape_stride_case",
+        "case_id": "stride_tricks_rank_mismatch_error"
+      },
+      {
+        "id": "step_wire_unknown_class_fail_closed",
+        "kind": "runtime_policy_wire",
+        "case_id": "wire_unknown_class_fail_closed",
+        "expected_action_strict": "fail_closed",
+        "expected_action_hardened": "fail_closed"
+      }
+    ],
+    "links": {
+      "differential_fixture_ids": [
+        "broadcast_incompatible",
+        "stride_tricks_rank_mismatch_error"
+      ],
+      "e2e_script_paths": [
+        "scripts/e2e/run_shape_contract_journey.sh",
+        "scripts/e2e/run_security_policy_gate.sh"
+      ]
+    },
+    "gaps": [
+      {
+        "bead_id": "bd-23m.12.9",
+        "owner": "bd-23m.12.9",
+        "priority": "p1",
+        "description": "Cross-link hostile replay logs and diagnostics into packet-001 final evidence index."
       }
     ]
   },
@@ -532,6 +650,150 @@
         "owner": "bd-23m.15.9",
         "priority": "p1",
         "description": "Link hostile packet-004 iterator workflow diagnostics into the final evidence index."
+      }
+    ]
+  },
+  {
+    "id": "rng_packet_replay",
+    "category": "high_frequency",
+    "description": "Packet FNP-P2C-007 golden workflow covering deterministic seed stream, jump witness, and state-restore replay in strict/hardened modes.",
+    "seed": 6001,
+    "env_fingerprint": "linux-x86_64-rust2024",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-007/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-007/differential_metamorphic_adversarial_evidence.json",
+      "crates/fnp-conformance/fixtures/rng_differential_cases.json",
+      "scripts/e2e/run_rng_contract_journey.sh"
+    ],
+    "reason_code": "rng_packet_replay_golden_path",
+    "strict": {
+      "expected_status": "pass"
+    },
+    "hardened": {
+      "expected_status": "pass"
+    },
+    "steps": [
+      {
+        "id": "step_rng_same_seed_stream",
+        "kind": "rng_fixture_case",
+        "case_id": "rng_same_seed_stream_witness",
+        "fixture_set": "differential"
+      },
+      {
+        "id": "step_rng_jump_equivalence",
+        "kind": "rng_fixture_case",
+        "case_id": "rng_jump_ahead_equivalence_witness",
+        "fixture_set": "differential"
+      },
+      {
+        "id": "step_rng_state_restore_replay",
+        "kind": "rng_fixture_case",
+        "case_id": "rng_state_restore_replay_witness",
+        "fixture_set": "differential"
+      },
+      {
+        "id": "step_policy_allow_known_good",
+        "kind": "runtime_policy",
+        "case_id": "strict_known_good",
+        "expected_action_strict": "allow",
+        "expected_action_hardened": "allow"
+      }
+    ],
+    "links": {
+      "differential_fixture_ids": [
+        "rng_same_seed_stream_witness",
+        "rng_jump_ahead_equivalence_witness",
+        "rng_state_restore_replay_witness",
+        "rng_jump_partition_additivity"
+      ],
+      "e2e_script_paths": [
+        "scripts/e2e/run_rng_contract_journey.sh",
+        "scripts/e2e/run_workflow_scenario_gate.sh"
+      ]
+    },
+    "gaps": [
+      {
+        "bead_id": "bd-23m.18.8",
+        "owner": "bd-23m.18.8",
+        "priority": "p1",
+        "description": "Profile packet-007 RNG workflow replay hotspots and emit isomorphism evidence for optimization levers."
+      },
+      {
+        "bead_id": "bd-23m.18.9",
+        "owner": "bd-23m.18.9",
+        "priority": "p1",
+        "description": "Integrate packet-007 RNG workflow replay outputs into final parity and durability evidence bundle."
+      }
+    ]
+  },
+  {
+    "id": "rng_packet_hostile_guardrails",
+    "category": "adversarial",
+    "description": "Packet FNP-P2C-007 hostile workflow proving bounded RNG guardrails remain replayable while unknown wire metadata stays fail-closed.",
+    "seed": 6002,
+    "env_fingerprint": "linux-x86_64-rust2024",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-007/contract_table.md",
+      "crates/fnp-conformance/fixtures/rng_adversarial_cases.json",
+      "scripts/e2e/run_rng_contract_journey.sh"
+    ],
+    "reason_code": "rng_packet_hostile_guardrails",
+    "strict": {
+      "expected_status": "fail_closed"
+    },
+    "hardened": {
+      "expected_status": "fail_closed"
+    },
+    "steps": [
+      {
+        "id": "step_rng_bounded_zero_rejected",
+        "kind": "rng_fixture_case",
+        "case_id": "rng_bounded_zero_rejected",
+        "fixture_set": "adversarial"
+      },
+      {
+        "id": "step_rng_jump_budget_guardrail",
+        "kind": "rng_fixture_case",
+        "case_id": "rng_jump_budget_exceeded_guardrail",
+        "fixture_set": "adversarial"
+      },
+      {
+        "id": "step_rng_state_schema_guardrail",
+        "kind": "rng_fixture_case",
+        "case_id": "rng_state_schema_budget_exceeded_guardrail",
+        "fixture_set": "adversarial"
+      },
+      {
+        "id": "step_wire_unknown_mode_fail_closed",
+        "kind": "runtime_policy_wire",
+        "case_id": "wire_unknown_mode_fail_closed",
+        "expected_action_strict": "fail_closed",
+        "expected_action_hardened": "fail_closed"
+      }
+    ],
+    "links": {
+      "differential_fixture_ids": [
+        "rng_bounded_zero_rejected",
+        "rng_jump_budget_exceeded_guardrail",
+        "rng_state_schema_budget_exceeded_guardrail"
+      ],
+      "e2e_script_paths": [
+        "scripts/e2e/run_rng_contract_journey.sh",
+        "scripts/e2e/run_security_policy_gate.sh"
+      ]
+    },
+    "gaps": [
+      {
+        "bead_id": "bd-23m.18.8",
+        "owner": "bd-23m.18.8",
+        "priority": "p1",
+        "description": "Add hotspot and latency profiling for hostile packet-007 RNG workflow replay."
+      },
+      {
+        "bead_id": "bd-23m.18.9",
+        "owner": "bd-23m.18.9",
+        "priority": "p1",
+        "description": "Link hostile packet-007 RNG workflow diagnostics into final packet evidence indexing."
       }
     ]
   },

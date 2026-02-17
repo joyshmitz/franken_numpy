@@ -1,0 +1,301 @@
+{
+  "status": "pass",
+  "runtime_policy_log": "/data/projects/franken_numpy/crates/fnp-conformance/../../artifacts/logs/test_contract_e2e_1771342153114.jsonl",
+  "attempts": [
+    {
+      "attempt": 0,
+      "status": "pass",
+      "runtime_policy_log": "/data/projects/franken_numpy/crates/fnp-conformance/../../artifacts/logs/test_contract_e2e_1771342153114.jsonl",
+      "suites": [
+        {
+          "suite": "test_contracts",
+          "case_count": 1033,
+          "pass_count": 1033,
+          "failures": []
+        },
+        {
+          "suite": "runtime_policy",
+          "case_count": 4,
+          "pass_count": 4,
+          "failures": []
+        },
+        {
+          "suite": "runtime_policy_adversarial",
+          "case_count": 3,
+          "pass_count": 3,
+          "failures": []
+        },
+        {
+          "suite": "shape_stride_differential",
+          "case_count": 10,
+          "pass_count": 10,
+          "failures": []
+        },
+        {
+          "suite": "shape_stride_metamorphic",
+          "case_count": 26,
+          "pass_count": 26,
+          "failures": []
+        },
+        {
+          "suite": "shape_stride_adversarial",
+          "case_count": 7,
+          "pass_count": 7,
+          "failures": []
+        },
+        {
+          "suite": "iter_differential",
+          "case_count": 9,
+          "pass_count": 9,
+          "failures": []
+        },
+        {
+          "suite": "iter_metamorphic",
+          "case_count": 5,
+          "pass_count": 5,
+          "failures": []
+        },
+        {
+          "suite": "iter_adversarial",
+          "case_count": 6,
+          "pass_count": 6,
+          "failures": []
+        },
+        {
+          "suite": "ufunc_differential",
+          "case_count": 10,
+          "pass_count": 10,
+          "failures": []
+        },
+        {
+          "suite": "ufunc_metamorphic",
+          "case_count": 3,
+          "pass_count": 3,
+          "failures": []
+        },
+        {
+          "suite": "ufunc_adversarial",
+          "case_count": 3,
+          "pass_count": 3,
+          "failures": []
+        },
+        {
+          "suite": "rng_differential",
+          "case_count": 7,
+          "pass_count": 7,
+          "failures": []
+        },
+        {
+          "suite": "rng_metamorphic",
+          "case_count": 3,
+          "pass_count": 3,
+          "failures": []
+        },
+        {
+          "suite": "rng_adversarial",
+          "case_count": 4,
+          "pass_count": 4,
+          "failures": []
+        },
+        {
+          "suite": "linalg_differential",
+          "case_count": 8,
+          "pass_count": 8,
+          "failures": []
+        },
+        {
+          "suite": "linalg_metamorphic",
+          "case_count": 3,
+          "pass_count": 3,
+          "failures": []
+        },
+        {
+          "suite": "linalg_adversarial",
+          "case_count": 9,
+          "pass_count": 9,
+          "failures": []
+        },
+        {
+          "suite": "io_differential",
+          "case_count": 8,
+          "pass_count": 8,
+          "failures": []
+        },
+        {
+          "suite": "io_metamorphic",
+          "case_count": 6,
+          "pass_count": 6,
+          "failures": []
+        },
+        {
+          "suite": "io_adversarial",
+          "case_count": 8,
+          "pass_count": 8,
+          "failures": []
+        },
+        {
+          "suite": "crash_signature_regression",
+          "case_count": 7,
+          "pass_count": 7,
+          "failures": []
+        },
+        {
+          "suite": "runtime_policy_log_contract",
+          "case_count": 61,
+          "pass_count": 61,
+          "failures": []
+        }
+      ]
+    }
+  ],
+  "suites": [
+    {
+      "suite": "test_contracts",
+      "case_count": 1033,
+      "pass_count": 1033,
+      "failures": []
+    },
+    {
+      "suite": "runtime_policy",
+      "case_count": 4,
+      "pass_count": 4,
+      "failures": []
+    },
+    {
+      "suite": "runtime_policy_adversarial",
+      "case_count": 3,
+      "pass_count": 3,
+      "failures": []
+    },
+    {
+      "suite": "shape_stride_differential",
+      "case_count": 10,
+      "pass_count": 10,
+      "failures": []
+    },
+    {
+      "suite": "shape_stride_metamorphic",
+      "case_count": 26,
+      "pass_count": 26,
+      "failures": []
+    },
+    {
+      "suite": "shape_stride_adversarial",
+      "case_count": 7,
+      "pass_count": 7,
+      "failures": []
+    },
+    {
+      "suite": "iter_differential",
+      "case_count": 9,
+      "pass_count": 9,
+      "failures": []
+    },
+    {
+      "suite": "iter_metamorphic",
+      "case_count": 5,
+      "pass_count": 5,
+      "failures": []
+    },
+    {
+      "suite": "iter_adversarial",
+      "case_count": 6,
+      "pass_count": 6,
+      "failures": []
+    },
+    {
+      "suite": "ufunc_differential",
+      "case_count": 10,
+      "pass_count": 10,
+      "failures": []
+    },
+    {
+      "suite": "ufunc_metamorphic",
+      "case_count": 3,
+      "pass_count": 3,
+      "failures": []
+    },
+    {
+      "suite": "ufunc_adversarial",
+      "case_count": 3,
+      "pass_count": 3,
+      "failures": []
+    },
+    {
+      "suite": "rng_differential",
+      "case_count": 7,
+      "pass_count": 7,
+      "failures": []
+    },
+    {
+      "suite": "rng_metamorphic",
+      "case_count": 3,
+      "pass_count": 3,
+      "failures": []
+    },
+    {
+      "suite": "rng_adversarial",
+      "case_count": 4,
+      "pass_count": 4,
+      "failures": []
+    },
+    {
+      "suite": "linalg_differential",
+      "case_count": 8,
+      "pass_count": 8,
+      "failures": []
+    },
+    {
+      "suite": "linalg_metamorphic",
+      "case_count": 3,
+      "pass_count": 3,
+      "failures": []
+    },
+    {
+      "suite": "linalg_adversarial",
+      "case_count": 9,
+      "pass_count": 9,
+      "failures": []
+    },
+    {
+      "suite": "io_differential",
+      "case_count": 8,
+      "pass_count": 8,
+      "failures": []
+    },
+    {
+      "suite": "io_metamorphic",
+      "case_count": 6,
+      "pass_count": 6,
+      "failures": []
+    },
+    {
+      "suite": "io_adversarial",
+      "case_count": 8,
+      "pass_count": 8,
+      "failures": []
+    },
+    {
+      "suite": "crash_signature_regression",
+      "case_count": 7,
+      "pass_count": 7,
+      "failures": []
+    },
+    {
+      "suite": "runtime_policy_log_contract",
+      "case_count": 61,
+      "pass_count": 61,
+      "failures": []
+    }
+  ],
+  "reliability": {
+    "retries": 0,
+    "attempts_run": 1,
+    "flaky_failures": 0,
+    "flake_budget": 0,
+    "coverage_floor": 1.0,
+    "coverage_ratio": 1.0,
+    "diagnostics": []
+  },
+  "report_path": "artifacts/phase2c/FNP-P2C-007/test_contract_gate_report_rng_packet007.json"
+}

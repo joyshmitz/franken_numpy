@@ -7,14 +7,24 @@
   ],
   "fixtures": [
     {
-      "id": "p2c001_shape_stride_core",
+      "id": "p2c001_shape_stride_differential",
       "input_path": "crates/fnp-conformance/fixtures/shape_stride_cases.json",
-      "oracle_case_id": "shape_stride_core_contract"
+      "oracle_case_id": "shape_stride_differential_cases_contract"
     },
     {
-      "id": "p2c001_runtime_policy_shape_boundary",
-      "input_path": "crates/fnp-conformance/fixtures/runtime_policy_cases.json",
-      "oracle_case_id": "shape_policy_boundary_contract"
+      "id": "p2c001_shape_stride_metamorphic",
+      "input_path": "crates/fnp-conformance/fixtures/shape_stride_cases.json",
+      "oracle_case_id": "shape_stride_metamorphic_cases_contract"
+    },
+    {
+      "id": "p2c001_shape_stride_adversarial",
+      "input_path": "crates/fnp-conformance/fixtures/shape_stride_cases.json",
+      "oracle_case_id": "shape_stride_adversarial_cases_contract"
+    },
+    {
+      "id": "p2c001_shape_workflow_scenarios",
+      "input_path": "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json",
+      "oracle_case_id": "shape_packet_workflow_contract"
     }
   ]
 }

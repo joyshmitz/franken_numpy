@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "packet_id": "FNP-P2C-001",
+  "subtask_id": "FNP-P2C-001-H",
+  "generated_at_unix_ms": 1771340122700,
+  "environment_fingerprint": "os=linux arch=x86_64 cpus=128 rustc=rustc 1.95.0-nightly (a423f68a0 2026-02-13)",
+  "reproducibility_command": "cargo run -p fnp-conformance --bin generate_packet001_optimization_report",
+  "lever": {
+    "id": "P2C001-H-LEVER-001",
+    "description": "Leverage same-rank/identical-shape fast paths in broadcast_shape",
+    "rationale": "Shape/reshape legality paths repeatedly merge same-rank shapes; bypassing reverse-index lookups and reverse() reduces per-call overhead while preserving merge semantics.",
+    "risk_note": "Optimization only changes internal shape-merge control flow; incompatibility detection and error-class outcomes remain unchanged.",
+    "rollback_command": "git restore --source <last-green-commit> -- crates/fnp-ndarray/src/lib.rs"
+  },
+  "baseline_profile": {
+    "implementation": "baseline_reverse_index_path",
+    "runs": 90,
+    "elements_per_run": 20480,
+    "percentiles": {
+      "p50_ms": 4.865406,
+      "p95_ms": 5.465720999999999,
+      "p99_ms": 6.184426,
+      "min_ms": 4.684077,
+      "max_ms": 6.68892
+    },
+    "throughput_elements_per_sec_p50": 4209309.562244138,
+    "throughput_elements_per_sec_p95": 3746989.646928557
+  },
+  "rebaseline_profile": {
+    "implementation": "rebaseline_same_rank_fast_path",
+    "runs": 90,
+    "elements_per_run": 20480,
+    "percentiles": {
+      "p50_ms": 2.931928,
+      "p95_ms": 3.486386,
+      "p99_ms": 3.607793,
+      "min_ms": 2.892795,
+      "max_ms": 3.8778580000000002
+    },
+    "throughput_elements_per_sec_p50": 6985164.710729595,
+    "throughput_elements_per_sec_p95": 5874277.833837102
+  },
+  "delta": {
+    "p50_delta_percent": -39.73929411029624,
+    "p95_delta_percent": -36.21361207423503,
+    "p99_delta_percent": -41.66325217570717,
+    "throughput_gain_percent_p50": 65.94561667271502,
+    "throughput_gain_percent_p95": 56.77326033319316
+  },
+  "ev": {
+    "impact": 4.0,
+    "confidence": 4.0,
+    "reuse": 3.0,
+    "effort": 2.0,
+    "adoption_friction": 1.0,
+    "score": 24.0,
+    "promoted": true
+  },
+  "isomorphism_checks": [
+    {
+      "case_id": "case_identical_shape",
+      "status": "pass",
+      "details": "baseline and optimized outputs matched"
+    },
+    {
+      "case_id": "case_same_rank_axiswise",
+      "status": "pass",
+      "details": "baseline and optimized outputs matched"
+    },
+    {
+      "case_id": "case_rank_mismatch",
+      "status": "pass",
+      "details": "baseline and optimized outputs matched"
+    },
+    {
+      "case_id": "case_incompatible_shape",
+      "status": "pass",
+      "details": "baseline and optimized outputs matched"
+    }
+  ]
+}

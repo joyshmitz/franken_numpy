@@ -62,6 +62,6 @@
   ],
   "notes": [
     "Structured log fields enforced: fixture_id, seed, mode, env_fingerprint, artifact_refs, reason_code.",
-    "Beads closure remains blocked by bd-23m.23 despite packet-E implementation evidence."
+    "Original reliability-gate blocker bd-23m.23 is now closed; packet-E evidence is closure-ready."
   ]
 }

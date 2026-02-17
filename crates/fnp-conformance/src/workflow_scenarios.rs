@@ -2,6 +2,7 @@
 
 use crate::ufunc_differential::{UFuncInputCase, execute_input_case, load_input_cases};
 use crate::{HarnessConfig, SuiteReport};
+use fnp_random::{DeterministicRng, RandomError};
 use fnp_runtime::{
     CompatibilityClass, DecisionAction, RuntimeMode, decide_compatibility,
     decide_compatibility_from_wire,
@@ -91,6 +92,11 @@ enum WorkflowStep {
         case_id: String,
         fixture_set: String,
     },
+    RngFixtureCase {
+        id: String,
+        case_id: String,
+        fixture_set: String,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -108,6 +114,55 @@ struct PolicyWireFixtureCase {
     class_raw: String,
     risk_score: f64,
     threshold: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RngDifferentialFixtureCase {
+    id: String,
+    operation: String,
+    #[serde(default)]
+    seed: u64,
+    #[serde(default)]
+    reason_code: String,
+    #[serde(default)]
+    expected_reason_code: String,
+    #[serde(default)]
+    alt_seed: u64,
+    #[serde(default)]
+    draws: usize,
+    #[serde(default)]
+    upper_bound: u64,
+    #[serde(default)]
+    steps: u64,
+    #[serde(default)]
+    prefix_draws: usize,
+    #[serde(default)]
+    replay_draws: usize,
+    #[serde(default)]
+    fill_len: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RngMetamorphicFixtureCase {
+    id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RngAdversarialFixtureCase {
+    id: String,
+    operation: String,
+    expected_error_contains: String,
+    expected_reason_code: String,
+    #[serde(default)]
+    seed: u64,
+    #[serde(default)]
+    alt_seed: u64,
+    #[serde(default)]
+    draws: usize,
+    #[serde(default)]
+    steps: u64,
+    #[serde(default)]
+    reason_code: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -184,6 +239,9 @@ pub fn run_user_workflow_scenario_suite(config: &HarnessConfig) -> Result<SuiteR
     )?;
     let iter_differential_cases = load_iter_differential_case_map(&config.fixture_root)?;
     let iter_adversarial_cases = load_iter_adversarial_case_map(&config.fixture_root)?;
+    let rng_differential_cases = load_rng_differential_case_map(&config.fixture_root)?;
+    let rng_metamorphic_cases = load_rng_metamorphic_case_map(&config.fixture_root)?;
+    let rng_adversarial_cases = load_rng_adversarial_case_map(&config.fixture_root)?;
     let io_differential_cases = load_io_differential_case_map(&config.fixture_root)?;
     let io_adversarial_cases = load_io_adversarial_case_map(&config.fixture_root)?;
     let linalg_differential_cases = load_linalg_differential_case_map(&config.fixture_root)?;
@@ -260,12 +318,15 @@ pub fn run_user_workflow_scenario_suite(config: &HarnessConfig) -> Result<SuiteR
                     || shape_stride_cases.contains_key(fixture_id.as_str())
                     || iter_differential_cases.contains_key(fixture_id.as_str())
                     || iter_adversarial_cases.contains_key(fixture_id.as_str())
+                    || rng_differential_cases.contains_key(fixture_id.as_str())
+                    || rng_metamorphic_cases.contains_key(fixture_id.as_str())
+                    || rng_adversarial_cases.contains_key(fixture_id.as_str())
                     || io_differential_cases.contains_key(fixture_id.as_str())
                     || io_adversarial_cases.contains_key(fixture_id.as_str())
                     || linalg_differential_cases.contains_key(fixture_id.as_str())
                     || linalg_adversarial_cases.contains_key(fixture_id.as_str()),
                 format!(
-                    "{}: differential fixture id not found in ufunc_input_cases.json, shape_stride_cases.json, iter_differential_cases.json, iter_adversarial_cases.json, io_differential_cases.json, io_adversarial_cases.json, linalg_differential_cases.json, or linalg_adversarial_cases.json: {}",
+                    "{}: differential fixture id not found in ufunc_input_cases.json, shape_stride_cases.json, iter_differential_cases.json, iter_adversarial_cases.json, rng_differential_cases.json, rng_metamorphic_cases.json, rng_adversarial_cases.json, io_differential_cases.json, io_adversarial_cases.json, linalg_differential_cases.json, or linalg_adversarial_cases.json: {}",
                     scenario.id, fixture_id
                 ),
             );
@@ -329,6 +390,8 @@ pub fn run_user_workflow_scenario_suite(config: &HarnessConfig) -> Result<SuiteR
             &wire_cases,
             &iter_differential_cases,
             &iter_adversarial_cases,
+            &rng_differential_cases,
+            &rng_adversarial_cases,
             &io_differential_cases,
             &io_adversarial_cases,
             &linalg_differential_cases,
@@ -343,6 +406,8 @@ pub fn run_user_workflow_scenario_suite(config: &HarnessConfig) -> Result<SuiteR
             &wire_cases,
             &iter_differential_cases,
             &iter_adversarial_cases,
+            &rng_differential_cases,
+            &rng_adversarial_cases,
             &io_differential_cases,
             &io_adversarial_cases,
             &linalg_differential_cases,
@@ -486,6 +551,66 @@ fn load_iter_adversarial_case_map(
     Ok(map)
 }
 
+fn load_rng_differential_case_map(
+    fixture_root: &Path,
+) -> Result<BTreeMap<String, RngDifferentialFixtureCase>, String> {
+    let path = fixture_root.join("rng_differential_cases.json");
+    let raw = fs::read_to_string(&path)
+        .map_err(|err| format!("failed reading {}: {err}", path.display()))?;
+    let cases: Vec<RngDifferentialFixtureCase> = serde_json::from_str(&raw)
+        .map_err(|err| format!("invalid json {}: {err}", path.display()))?;
+    let mut map = BTreeMap::new();
+    for case in cases {
+        if map.insert(case.id.clone(), case).is_some() {
+            return Err(format!(
+                "duplicate rng differential fixture id in {}",
+                path.display()
+            ));
+        }
+    }
+    Ok(map)
+}
+
+fn load_rng_metamorphic_case_map(
+    fixture_root: &Path,
+) -> Result<BTreeMap<String, RngMetamorphicFixtureCase>, String> {
+    let path = fixture_root.join("rng_metamorphic_cases.json");
+    let raw = fs::read_to_string(&path)
+        .map_err(|err| format!("failed reading {}: {err}", path.display()))?;
+    let cases: Vec<RngMetamorphicFixtureCase> = serde_json::from_str(&raw)
+        .map_err(|err| format!("invalid json {}: {err}", path.display()))?;
+    let mut map = BTreeMap::new();
+    for case in cases {
+        if map.insert(case.id.clone(), case).is_some() {
+            return Err(format!(
+                "duplicate rng metamorphic fixture id in {}",
+                path.display()
+            ));
+        }
+    }
+    Ok(map)
+}
+
+fn load_rng_adversarial_case_map(
+    fixture_root: &Path,
+) -> Result<BTreeMap<String, RngAdversarialFixtureCase>, String> {
+    let path = fixture_root.join("rng_adversarial_cases.json");
+    let raw = fs::read_to_string(&path)
+        .map_err(|err| format!("failed reading {}: {err}", path.display()))?;
+    let cases: Vec<RngAdversarialFixtureCase> = serde_json::from_str(&raw)
+        .map_err(|err| format!("invalid json {}: {err}", path.display()))?;
+    let mut map = BTreeMap::new();
+    for case in cases {
+        if map.insert(case.id.clone(), case).is_some() {
+            return Err(format!(
+                "duplicate rng adversarial fixture id in {}",
+                path.display()
+            ));
+        }
+    }
+    Ok(map)
+}
+
 fn load_io_differential_case_map(
     fixture_root: &Path,
 ) -> Result<BTreeMap<String, crate::IoDifferentialCase>, String> {
@@ -606,6 +731,8 @@ fn execute_mode(
     wire_cases: &BTreeMap<String, PolicyWireFixtureCase>,
     iter_differential_cases: &BTreeMap<String, crate::IterDifferentialCase>,
     iter_adversarial_cases: &BTreeMap<String, crate::IterAdversarialCase>,
+    rng_differential_cases: &BTreeMap<String, RngDifferentialFixtureCase>,
+    rng_adversarial_cases: &BTreeMap<String, RngAdversarialFixtureCase>,
     io_differential_cases: &BTreeMap<String, crate::IoDifferentialCase>,
     io_adversarial_cases: &BTreeMap<String, crate::IoAdversarialCase>,
     linalg_differential_cases: &BTreeMap<String, crate::LinalgDifferentialCase>,
@@ -926,6 +1053,77 @@ fn execute_mode(
                     failures.push(format!("{fixture_id}: {failure_detail}"));
                 }
             }
+            WorkflowStep::RngFixtureCase {
+                id,
+                case_id,
+                fixture_set,
+            } => {
+                let fixture_id = format!("{}::{}", scenario.id, id);
+                let (expected, actual, passed, detail) = match fixture_set.as_str() {
+                    "differential" => {
+                        if let Some(case) = rng_differential_cases.get(case_id.as_str()) {
+                            let result = execute_rng_differential_step(case);
+                            (result.expected, result.actual, result.passed, result.detail)
+                        } else {
+                            (
+                                String::new(),
+                                "missing_case".to_string(),
+                                false,
+                                format!("rng differential case id '{}' not found", case_id),
+                            )
+                        }
+                    }
+                    "adversarial" => {
+                        if let Some(case) = rng_adversarial_cases.get(case_id.as_str()) {
+                            let result = execute_rng_adversarial_step(case);
+                            (result.expected, result.actual, result.passed, result.detail)
+                        } else {
+                            (
+                                String::new(),
+                                "missing_case".to_string(),
+                                false,
+                                format!("rng adversarial case id '{}' not found", case_id),
+                            )
+                        }
+                    }
+                    other => (
+                        String::new(),
+                        "unsupported_fixture_set".to_string(),
+                        false,
+                        format!(
+                            "unsupported rng fixture_set '{}' (expected differential|adversarial)",
+                            other
+                        ),
+                    ),
+                };
+
+                let entry = WorkflowScenarioLogEntry {
+                    suite: "workflow_scenarios",
+                    fixture_id: fixture_id.clone(),
+                    seed: scenario.seed,
+                    mode: mode_name.clone(),
+                    env_fingerprint: scenario.env_fingerprint.clone(),
+                    artifact_refs: scenario.artifact_refs.clone(),
+                    reason_code: scenario.reason_code.clone(),
+                    scenario_id: scenario.id.clone(),
+                    step_id: id.clone(),
+                    step_kind: "rng_fixture_case".to_string(),
+                    expected,
+                    actual,
+                    passed,
+                    detail: detail.clone(),
+                };
+                maybe_append_workflow_log(&entry)?;
+
+                if !passed {
+                    let failure_detail = if detail.is_empty() {
+                        "rng fixture step failed".to_string()
+                    } else {
+                        detail
+                    };
+                    failures.push(format!("{fixture_id}: {failure_detail}"));
+                }
+            }
             WorkflowStep::IoFixtureCase {
                 id,
                 case_id,
@@ -1085,6 +1283,285 @@ fn execute_mode(
         actual_status,
         failures,
     })
+}
+
+const DEFAULT_RNG_DRAWS: usize = 128;
+const DEFAULT_RNG_REPLAY_DRAWS: usize = 32;
+const DEFAULT_RNG_PREFIX_DRAWS: usize = 8;
+const DEFAULT_RNG_JUMP_STEPS: u64 = 32;
+const RNG_MAX_JUMP_OPS: u64 = 1024;
+const RNG_MAX_STATE_SCHEMA_FIELDS: u64 = 4096;
+
+fn execute_rng_differential_step(case: &RngDifferentialFixtureCase) -> IterStepResult {
+    let reason_code = crate::normalize_reason_code(&case.reason_code);
+    let expected_reason_code = if case.expected_reason_code.trim().is_empty() {
+        reason_code.clone()
+    } else {
+        case.expected_reason_code.trim().to_string()
+    };
+
+    match execute_rng_differential_operation(case) {
+        Ok(()) => IterStepResult {
+            expected: format!("ok reason_code={expected_reason_code}"),
+            actual: format!("ok reason_code={reason_code}"),
+            passed: reason_code == expected_reason_code,
+            detail: if reason_code == expected_reason_code {
+                String::new()
+            } else {
+                format!(
+                    "success reason-code mismatch expected={} actual={}",
+                    expected_reason_code, reason_code
+                )
+            },
+        },
+        Err((actual_reason_code, message)) => IterStepResult {
+            expected: format!("ok reason_code={expected_reason_code}"),
+            actual: format!("error:{message} reason_code={actual_reason_code}"),
+            passed: false,
+            detail: format!(
+                "expected successful rng differential operation '{}' but it failed",
+                case.operation
+            ),
+        },
+    }
+}
+
+fn execute_rng_adversarial_step(case: &RngAdversarialFixtureCase) -> IterStepResult {
+    let expected_reason_code = if case.expected_reason_code.trim().is_empty() {
+        crate::normalize_reason_code(&case.reason_code)
+    } else {
+        case.expected_reason_code.trim().to_string()
+    };
+    let expected_error = case.expected_error_contains.to_lowercase();
+
+    match execute_rng_adversarial_operation(case) {
+        Ok(()) => IterStepResult {
+            expected: format!(
+                "error_contains:{} reason_code={expected_reason_code}",
+                case.expected_error_contains
+            ),
+            actual: format!(
+                "ok reason_code={}",
+                crate::normalize_reason_code(&case.reason_code)
+            ),
+            passed: false,
+            detail: format!(
+                "expected rng adversarial operation '{}' to fail but it succeeded",
+                case.operation
+            ),
+        },
+        Err((actual_reason_code, message)) => {
+            let message_matches = message.to_lowercase().contains(&expected_error);
+            let reason_matches = actual_reason_code == expected_reason_code;
+            IterStepResult {
+                expected: format!(
+                    "error_contains:{} reason_code={expected_reason_code}",
+                    case.expected_error_contains
+                ),
+                actual: format!("error:{message} reason_code={actual_reason_code}"),
+                passed: message_matches && reason_matches,
+                detail: if message_matches && reason_matches {
+                    String::new()
+                } else if !message_matches {
+                    format!(
+                        "expected error containing '{}' but got '{}'",
+                        case.expected_error_contains, message
+                    )
+                } else {
+                    format!(
+                        "expected reason_code={} actual_reason_code={}",
+                        expected_reason_code, actual_reason_code
+                    )
+                },
+            }
+        }
+    }
+}
+
+fn execute_rng_differential_operation(
+    case: &RngDifferentialFixtureCase,
+) -> Result<(), (String, String)> {
+    match case.operation.as_str() {
+        "same_seed_stream" => {
+            let draws = case.draws.max(DEFAULT_RNG_DRAWS);
+            let mut lhs = DeterministicRng::new(case.seed);
+            let mut rhs = DeterministicRng::new(case.seed);
+            for index in 0..draws {
+                if lhs.next_u64() != rhs.next_u64() {
+                    return Err((
+                        "rng_reproducibility_witness_failed".to_string(),
+                        format!("same-seed stream mismatch at draw {index}"),
+                    ));
+                }
+            }
+            Ok(())
+        }
+        "different_seed_diverges" => {
+            let draws = case.draws.max(DEFAULT_RNG_DRAWS);
+            let alt_seed = if case.alt_seed == 0 {
+                case.seed.wrapping_add(1)
+            } else {
+                case.alt_seed
+            };
+            let mut lhs = DeterministicRng::new(case.seed);
+            let mut rhs = DeterministicRng::new(alt_seed);
+            let diverged = (0..draws).any(|_| lhs.next_u64() != rhs.next_u64());
+            if diverged {
+                Ok(())
+            } else {
+                Err((
+                    "rng_reproducibility_witness_failed".to_string(),
+                    "distinct seeds did not diverge within draw budget".to_string(),
+                ))
+            }
+        }
+        "jump_ahead_equivalence" => {
+            let steps = case.steps.max(DEFAULT_RNG_JUMP_STEPS);
+            let mut jumped = DeterministicRng::new(case.seed);
+            let mut stepped = DeterministicRng::new(case.seed);
+            jumped.jump_ahead(steps);
+            for _ in 0..steps {
+                let _ = stepped.next_u64();
+            }
+            if jumped.next_u64() == stepped.next_u64() {
+                Ok(())
+            } else {
+                Err((
+                    "rng_jump_contract_violation".to_string(),
+                    "jump-ahead witness diverged from stepped advancement".to_string(),
+                ))
+            }
+        }
+        "state_restore_replay" => {
+            let prefix_draws = case.prefix_draws.max(DEFAULT_RNG_PREFIX_DRAWS);
+            let replay_draws = case.replay_draws.max(DEFAULT_RNG_REPLAY_DRAWS);
+            let mut source = DeterministicRng::new(case.seed);
+            for _ in 0..prefix_draws {
+                let _ = source.next_u64();
+            }
+            let (seed, counter) = source.state();
+            let mut restored = DeterministicRng::from_state(seed, counter);
+            for index in 0..replay_draws {
+                if source.next_u64() != restored.next_u64() {
+                    return Err((
+                        "rng_state_restore_contract".to_string(),
+                        format!("restored sequence diverged at replay draw {index}"),
+                    ));
+                }
+            }
+            Ok(())
+        }
+        "bounded_u64_grid" => {
+            let draws = case.draws.max(DEFAULT_RNG_DRAWS);
+            let mut rng = DeterministicRng::new(case.seed);
+            for index in 0..draws {
+                let value = rng
+                    .bounded_u64(case.upper_bound)
+                    .map_err(map_random_error_to_rng_step)?;
+                if value >= case.upper_bound {
+                    return Err((
+                        "rng_bounded_output_contract".to_string(),
+                        format!("bounded sample exceeded upper bound at draw {index}"),
+                    ));
+                }
+            }
+            Ok(())
+        }
+        "next_f64_unit_interval" => {
+            let draws = case.draws.max(DEFAULT_RNG_DRAWS);
+            let mut rng = DeterministicRng::new(case.seed);
+            for index in 0..draws {
+                let sample = rng.next_f64();
+                if !(0.0..1.0).contains(&sample) {
+                    return Err((
+                        "rng_float_range_contract".to_string(),
+                        format!("next_f64 sample outside [0,1) at draw {index}: {sample}"),
+                    ));
+                }
+            }
+            Ok(())
+        }
+        "fill_len_contract" => {
+            let mut rng = DeterministicRng::new(case.seed);
+            let values = rng.fill_u64(case.fill_len);
+            if values.len() == case.fill_len {
+                Ok(())
+            } else {
+                Err((
+                    "rng_fill_length_contract".to_string(),
+                    format!(
+                        "fill_u64 length mismatch expected={} actual={}",
+                        case.fill_len,
+                        values.len()
+                    ),
+                ))
+            }
+        }
+        other => Err((
+            "rng_policy_unknown_metadata".to_string(),
+            format!("unsupported rng differential operation {other}"),
+        )),
+    }
+}
+
+fn execute_rng_adversarial_operation(
+    case: &RngAdversarialFixtureCase,
+) -> Result<(), (String, String)> {
+    match case.operation.as_str() {
+        "bounded_zero_rejected" => {
+            let mut rng = DeterministicRng::new(case.seed);
+            rng.bounded_u64(0)
+                .map(|_| ())
+                .map_err(map_random_error_to_rng_step)
+        }
+        "forced_repro_witness_mismatch" => {
+            let draws = case.draws.max(DEFAULT_RNG_REPLAY_DRAWS);
+            let alt_seed = if case.alt_seed == 0 {
+                case.seed.wrapping_add(1)
+            } else {
+                case.alt_seed
+            };
+            let mut lhs = DeterministicRng::new(case.seed);
+            let mut rhs = DeterministicRng::new(alt_seed);
+            for _ in 0..draws {
+                if lhs.next_u64() != rhs.next_u64() {
+                    return Err((
+                        "rng_reproducibility_witness_failed".to_string(),
+                        "reproducibility witness mismatch between paired streams".to_string(),
+                    ));
+                }
+            }
+            Ok(())
+        }
+        "jump_budget_exceeded" => {
+            if case.steps > RNG_MAX_JUMP_OPS {
+                Err((
+                    "rng_jump_contract_violation".to_string(),
+                    "jump operations exceeded bounded budget".to_string(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+        "state_schema_budget_exceeded" => {
+            if case.steps > RNG_MAX_STATE_SCHEMA_FIELDS {
+                Err((
+                    "rng_state_schema_invalid".to_string(),
+                    "state schema entries exceeded bounded budget".to_string(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+        other => Err((
+            "rng_policy_unknown_metadata".to_string(),
+            format!("unsupported rng adversarial operation {other}"),
+        )),
+    }
+}
+
+fn map_random_error_to_rng_step(error: RandomError) -> (String, String) {
+    (error.reason_code().to_string(), error.to_string())
 }
 
 fn flat_index_len_hint(index: &crate::IterFlatIndexFixtureInput) -> usize {

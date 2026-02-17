@@ -31,8 +31,8 @@ subsystem: `RNG core and constructor contract`
 | lane | fixture family | objective | owner bead |
 |---|---|---|---|
 | Fuzz/property | packet-E RNG invariant corpus (planned) | detect constructor/state/spawn/jump determinism and schema edge violations | `bd-23m.18.5` |
-| Differential/metamorphic | packet-F RNG oracle corpus (planned) | enforce strict parity for constructor/state/jump witness classes | `bd-23m.18.6` |
-| E2E/replay | packet-G RNG workflow scenarios (planned) | verify strict/hardened replay traceability and seed lineage forensics | `bd-23m.18.7` |
+| Differential/metamorphic | packet-F RNG oracle corpus (implemented) | enforce strict parity for constructor/state/jump witness classes with gate-wired suite evidence | `bd-23m.18.6` |
+| E2E/replay | packet-G RNG workflow scenarios (implemented) | verify strict/hardened replay traceability and seed lineage forensics with packet-local artifact indexing and deterministic replay commands | `bd-23m.18.7` |
 
 ## Residual Risks and Compensating Controls
 
@@ -40,9 +40,9 @@ subsystem: `RNG core and constructor contract`
 |---|---|---|---|
 | `P2C007-RES-01` | `fnp-random` has no concrete constructor/state/spawn/jump implementation yet. | keep unsupported RNG semantics fail-closed and block promotion until packet-D lands | `bd-23m.18.4` + packet-E baseline tests |
 | `P2C007-RES-02` | deterministic-seed witness suites are not yet encoded in packet-scoped tests. | require packet-E witness suites before parity claims | `bd-23m.18.5` |
-| `P2C007-RES-03` | RNG differential oracle coverage for state schema and jump semantics is incomplete. | add packet-F fixture families and strict/hardened differential gates | `bd-23m.18.6` |
-| `P2C007-RES-04` | replay forensics for seed lineage is not yet packet-specific. | enforce packet-G scenario logging with required structured fields | `bd-23m.18.7` |
-| `P2C007-RES-05` | hardened budget/calibration thresholds are defined but not empirically tuned for full RNG corpus scale. | trigger conservative fallback on drift; recalibrate using packet-H evidence | `bd-23m.18.8` + packet-I closure |
+| `P2C007-RES-03` | closed: RNG differential oracle coverage for state schema/jump semantics is implemented and gate-verified. | maintain packet-F fixture families and strict/hardened differential gates; update evidence when fixture families expand | `bd-23m.18.6` closure evidence in `artifacts/phase2c/FNP-P2C-007/differential_metamorphic_adversarial_evidence.json` |
+| `P2C007-RES-04` | closed: replay forensics for seed lineage is packet-specific for `FNP-P2C-007`. | maintain packet-G scenario logging fields and packet-local workflow artifact index linkage in closure evidence | `bd-23m.18.7` closure evidence in `artifacts/phase2c/FNP-P2C-007/e2e_replay_forensics_evidence.json` |
+| `P2C007-RES-05` | closed: hardened budget/calibration thresholds were revalidated using packet-H baseline/rebaseline profiling and behavior-isomorphism checks. | maintain packet-H optimization evidence (`optimization_profile_report.json`, `optimization_profile_isomorphism_evidence.json`) and re-run fallback trigger checks during packet-I closure. | `bd-23m.18.8` |
 
 ## Budgeted Mode and Decision-Theoretic Controls
 
@@ -71,7 +71,7 @@ subsystem: `RNG core and constructor contract`
 - Trigger fallback when either condition is true:
   - strict vs hardened RNG failure-class drift rate exceeds `0.1%`, or
   - unknown/uncategorized RNG reason-code rate exceeds `0.01%`.
-- Fallback action: force conservative deterministic path (`full_validate` or `fail_closed`) until recalibration artifacts are produced and validated.
+- Fallback action: force conservative deterministic path (`full_validate` or `fail_closed`) until recalibration artifacts are produced and validated (`artifacts/phase2c/FNP-P2C-007/optimization_profile_report.json`, `artifacts/phase2c/FNP-P2C-007/optimization_profile_isomorphism_evidence.json`).
 
 ## Alien Recommendation Contract Mapping
 
@@ -82,7 +82,7 @@ subsystem: `RNG core and constructor contract`
   - ordering/tie-break note,
   - before/after golden parity checks,
   - reproducible benchmark delta artifact.
-- Hotspot evidence requirement for non-doc follow-on work: attach baseline/profile artifacts before changing RNG policy/optimization behavior (or document profiler-unavailable fallback).
+- Hotspot evidence requirement for non-doc follow-on work: satisfied for packet-H via `artifacts/phase2c/FNP-P2C-007/optimization_profile_report.json`; future policy/optimization changes must refresh this evidence (or document profiler-unavailable fallback).
 
 ## oracle_tests
 
@@ -93,8 +93,11 @@ subsystem: `RNG core and constructor contract`
 
 ## raptorq_artifacts
 
-- `artifacts/phase2c/FNP-P2C-007/parity_report.raptorq.json` (planned at packet-I)
-- `artifacts/phase2c/FNP-P2C-007/parity_report.decode_proof.json` (planned at packet-I)
+- `artifacts/phase2c/FNP-P2C-007/parity_report.raptorq.json`
+- `artifacts/phase2c/FNP-P2C-007/parity_report.scrub_report.json`
+- `artifacts/phase2c/FNP-P2C-007/parity_report.decode_proof.json`
+- `artifacts/phase2c/FNP-P2C-007/final_evidence_pack.json`
+- `artifacts/phase2c/FNP-P2C-007/packet_readiness_report.json`
 - `artifacts/raptorq/conformance_bundle_v1.sidecar.json` (program-level baseline reference)
 - `artifacts/raptorq/conformance_bundle_v1.scrub_report.json` (program-level baseline reference)
 - `artifacts/raptorq/conformance_bundle_v1.decode_proof.json` (program-level baseline reference)

@@ -1,0 +1,128 @@
+{
+  "schema_version": 1,
+  "packet_id": "FNP-P2C-007",
+  "subtask_id": "FNP-P2C-007-H",
+  "status": "pass",
+  "optimization_lever": {
+    "id": "P2C007-H-LEVER-001",
+    "description": "Use precomputed RNG fixture ID maps for workflow-step dispatch",
+    "rationale": "Packet-007 workflow replay repeatedly resolves fixture IDs for strict/hardened scenario steps; replacing linear scans with precomputed HashMap lookups removes O(n) per-step lookup overhead while preserving deterministic fixture resolution semantics.",
+    "risk_note": "Optimization only changes fixture ID lookup strategy in workflow dispatch; fixture payloads, execution order, and reason-code outcomes are unchanged.",
+    "rollback_command": "git restore --source <last-green-commit> -- crates/fnp-conformance/src/workflow_scenarios.rs"
+  },
+  "benchmark_delta": {
+    "p50_delta_percent": -90.41542693877255,
+    "p95_delta_percent": -90.25876945815492,
+    "p99_delta_percent": -90.1736995207078,
+    "throughput_gain_percent_p50": 943.3432909446004,
+    "throughput_gain_percent_p95": 926.5643500626882
+  },
+  "ev_gate": {
+    "formula": "(Impact * Confidence * Reuse) / (Effort * AdoptionFriction)",
+    "threshold": 2.0,
+    "impact": 4.0,
+    "confidence": 4.0,
+    "reuse": 4.0,
+    "effort": 2.0,
+    "adoption_friction": 1.0,
+    "score": 32.0,
+    "promoted": true
+  },
+  "isomorphism": {
+    "cases_total": 7,
+    "cases_passed": 7,
+    "cases_failed": 0,
+    "ordering_tiebreak_note": "HashMap lookup path only replaces fixture-id membership/index resolution; fixture payload selection, scenario step ordering, and strict/hardened reason-code outcomes remain unchanged.",
+    "checks": [
+      {
+        "case_id": "lookup_hit::rng_same_seed_stream_witness",
+        "status": "pass",
+        "details": "linear=Some(0) mapped=Some(0)"
+      },
+      {
+        "case_id": "lookup_hit::rng_distinct_seed_divergence_witness",
+        "status": "pass",
+        "details": "linear=Some(1) mapped=Some(1)"
+      },
+      {
+        "case_id": "lookup_hit::rng_jump_ahead_equivalence_witness",
+        "status": "pass",
+        "details": "linear=Some(2) mapped=Some(2)"
+      },
+      {
+        "case_id": "lookup_hit::rng_state_restore_replay_witness",
+        "status": "pass",
+        "details": "linear=Some(3) mapped=Some(3)"
+      },
+      {
+        "case_id": "lookup_hit::rng_bounded_u64_grid_witness",
+        "status": "pass",
+        "details": "linear=Some(4) mapped=Some(4)"
+      },
+      {
+        "case_id": "lookup_miss",
+        "status": "pass",
+        "details": "linear=None mapped=None"
+      },
+      {
+        "case_id": "full_workload_checksum",
+        "status": "pass",
+        "details": "linear_checksum=3183527456 mapped_checksum=3183527456"
+      }
+    ]
+  },
+  "quality_gates": [
+    {
+      "command": "rch exec -- cargo fmt --check",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- env CARGO_TARGET_DIR=target/rch_maroon cargo check --workspace --all-targets",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- env CARGO_TARGET_DIR=target/rch_maroon cargo clippy --workspace --all-targets -- -D warnings",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- env CARGO_TARGET_DIR=target/rch_maroon cargo test -p fnp-random",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- env CARGO_TARGET_DIR=target/rch_maroon cargo test -p fnp-conformance workflow_scenario_suite_is_green -- --nocapture",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo run -p fnp-conformance --bin generate_packet007_optimization_report -- --output-path artifacts/phase2c/FNP-P2C-007/optimization_profile_report.json",
+      "result": "pass"
+    },
+    {
+      "command": "target/debug/generate_packet007_optimization_report --output-path artifacts/phase2c/FNP-P2C-007/optimization_profile_report.json",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- env CARGO_TARGET_DIR=target/rch_maroon cargo run -p fnp-conformance --bin run_workflow_scenario_gate -- --log-path artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_opt_e2e.jsonl --artifact-index-path artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_opt_artifact_index.json --report-path artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_opt_reliability.json --retries 1 --flake-budget 0 --coverage-floor 1.0",
+      "result": "pass"
+    },
+    {
+      "command": "target/debug/run_workflow_scenario_gate --log-path artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_opt_e2e.jsonl --artifact-index-path artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_opt_artifact_index.json --report-path artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_opt_reliability.json --retries 1 --flake-budget 0 --coverage-floor 1.0",
+      "result": "pass"
+    }
+  ],
+  "artifacts": [
+    "crates/fnp-conformance/src/workflow_scenarios.rs",
+    "crates/fnp-conformance/src/bin/generate_packet007_optimization_report.rs",
+    "artifacts/phase2c/FNP-P2C-007/optimization_profile_report.json",
+    "artifacts/phase2c/FNP-P2C-007/optimization_profile_isomorphism_evidence.json",
+    "artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_opt_e2e.jsonl",
+    "artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_opt_reliability.json",
+    "artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_opt_artifact_index.json"
+  ],
+  "notes": [
+    "Profile report captures baseline/rebaseline lookup latency and throughput with reproducibility command and environment fingerprint.",
+    "Isomorphism checks passed for lookup hits, lookup misses, and full-workload checksum parity between linear and HashMap lookup paths.",
+    "Optimization accepted under EV gate with score 32.0 >= 2.0 and no observed behavior drift.",
+    "Post-change workflow scenario gate rerun passed with 455/455 scenarios and coverage_ratio=1.0.",
+    "Packet validator remains expected not-ready until packet-I parity artifacts are produced (fixture manifest + parity gate/report + RaptorQ/decode proof)."
+  ]
+}

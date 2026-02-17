@@ -111,6 +111,7 @@ impl DeterministicRng {
         }
 
         let threshold = u64::MAX - u64::MAX % upper_bound;
+
         loop {
             let candidate = self.next_u64();
             if candidate < threshold {

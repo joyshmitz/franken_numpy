@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "packet_id": "FNP-P2C-007",
+  "strict_parity": 1.0,
+  "hardened_parity": 1.0,
+  "divergence_classes": [
+    "no_observed_strict_drift_in_packet007_gates",
+    "no_observed_hardened_drift_in_packet007_gates"
+  ],
+  "compatibility_drift_hash": "sha256:ff0e9b492f86f0b526a14129de63fb6ca2019fe970ac39801af66dd2f5a486b4"
+}

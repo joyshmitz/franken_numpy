@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "packet_id": "FNP-P2C-001",
+  "subtask_id": "FNP-P2C-001-G",
+  "status": "pass",
+  "summary": {
+    "workflow_suite_total_checks": 400,
+    "workflow_suite_passed_checks": 400,
+    "workflow_suite_failed_checks": 0,
+    "attempts_run": 1,
+    "flake_budget": 0,
+    "coverage_floor": 1.0,
+    "coverage_ratio": 1.0
+  },
+  "scenario_coverage": {
+    "packet_golden": "shape_reshape_packet_replay",
+    "packet_hostile": "shape_reshape_packet_hostile_guardrails",
+    "strict_expected_status": "pass/fail_closed (scenario-dependent)",
+    "hardened_expected_status": "pass/fail_closed (scenario-dependent)"
+  },
+  "workflow_gate_runs": [
+    {
+      "command": "scripts/e2e/run_shape_contract_journey.sh artifacts/phase2c/FNP-P2C-001/workflow_scenario_packet001_e2e.jsonl artifacts/phase2c/FNP-P2C-001/workflow_scenario_packet001_reliability.json artifacts/phase2c/FNP-P2C-001/workflow_scenario_packet001_artifact_index.json",
+      "result": "pass",
+      "replay_command": "cargo run -p fnp-conformance --bin run_workflow_scenario_gate -- --log-path 'artifacts/phase2c/FNP-P2C-001/workflow_scenario_packet001_e2e.jsonl' --retries 0 --flake-budget 0 --coverage-floor 1",
+      "notes": [
+        "Packet-001 wrapper script completed with workflow_scenarios case_count=400 pass_count=400.",
+        "Forensics artifact index now includes the packet-001 wrapper script entry (shape_packet_workflow_script)."
+      ]
+    }
+  ],
+  "quality_gates": [
+    {
+      "command": "rch exec -- cargo fmt --check",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo check --workspace --all-targets",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo clippy --workspace --all-targets -- -D warnings",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo test -p fnp-conformance workflow_scenario_suite_is_green -- --nocapture",
+      "result": "pass"
+    },
+    {
+      "command": "scripts/e2e/run_shape_contract_journey.sh artifacts/phase2c/FNP-P2C-001/workflow_scenario_packet001_e2e.jsonl artifacts/phase2c/FNP-P2C-001/workflow_scenario_packet001_reliability.json artifacts/phase2c/FNP-P2C-001/workflow_scenario_packet001_artifact_index.json",
+      "result": "pass"
+    }
+  ],
+  "artifacts": [
+    "crates/fnp-conformance/src/bin/run_workflow_scenario_gate.rs",
+    "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json",
+    "scripts/e2e/run_shape_contract_journey.sh",
+    "artifacts/phase2c/FNP-P2C-001/workflow_scenario_packet001_e2e.jsonl",
+    "artifacts/phase2c/FNP-P2C-001/workflow_scenario_packet001_reliability.json",
+    "artifacts/phase2c/FNP-P2C-001/workflow_scenario_packet001_artifact_index.json",
+    "artifacts/phase2c/FNP-P2C-001/unit_property_evidence.json",
+    "artifacts/phase2c/FNP-P2C-001/differential_metamorphic_adversarial_evidence.json",
+    "artifacts/phase2c/FNP-P2C-001/behavior_extraction_ledger.md",
+    "artifacts/phase2c/FNP-P2C-001/risk_note.md",
+    "artifacts/phase2c/FNP-P2C-001/e2e_replay_forensics_evidence.json"
+  ],
+  "notes": [
+    "Workflow step logs include fixture_id, seed, mode, env_fingerprint, artifact_refs, and reason_code via WorkflowScenarioLogEntry.",
+    "Packet-001 scenarios execute real shape_stride_case and runtime_policy/runtime_policy_wire steps for strict and hardened replay parity.",
+    "Packet-001 wrapper script provides deterministic paths for replay log, reliability report, and artifact index outputs."
+  ]
+}

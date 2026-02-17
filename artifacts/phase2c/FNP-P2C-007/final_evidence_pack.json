@@ -1,0 +1,119 @@
+{
+  "schema_version": 1,
+  "packet_id": "FNP-P2C-007",
+  "subtask_id": "FNP-P2C-007-I",
+  "generated_at_unix_ms": 1771345916526,
+  "status": "pass",
+  "reproducibility_command": "cargo run -p fnp-conformance --bin generate_packet007_final_evidence_pack",
+  "parity_signals": {
+    "strict_parity": 1.0,
+    "hardened_parity": 1.0,
+    "compatibility_drift_hash": "sha256:ff0e9b492f86f0b526a14129de63fb6ca2019fe970ac39801af66dd2f5a486b4",
+    "divergence_classes": [
+      "no_observed_strict_drift_in_packet007_gates",
+      "no_observed_hardened_drift_in_packet007_gates"
+    ]
+  },
+  "parity_gate_summary": {
+    "strict_mode": {
+      "pass_required": true,
+      "min_pass_rate": 1.0,
+      "observed_pass_rate": 1.0,
+      "result": "pass"
+    },
+    "hardened_mode": {
+      "pass_required": true,
+      "min_pass_rate": 0.99,
+      "observed_pass_rate": 1.0,
+      "result": "pass"
+    },
+    "max_strict_drift": 0.0,
+    "max_hardened_divergence": 0.01
+  },
+  "waivers": [],
+  "artifact_index": [
+    "artifacts/phase2c/FNP-P2C-007/legacy_anchor_map.md",
+    "artifacts/phase2c/FNP-P2C-007/contract_table.md",
+    "artifacts/phase2c/FNP-P2C-007/behavior_extraction_ledger.md",
+    "artifacts/phase2c/FNP-P2C-007/risk_note.md",
+    "artifacts/phase2c/FNP-P2C-007/fixture_manifest.json",
+    "artifacts/phase2c/FNP-P2C-007/parity_gate.yaml",
+    "artifacts/phase2c/FNP-P2C-007/parity_report.json",
+    "artifacts/phase2c/FNP-P2C-007/unit_property_evidence.json",
+    "artifacts/phase2c/FNP-P2C-007/differential_metamorphic_adversarial_evidence.json",
+    "artifacts/phase2c/FNP-P2C-007/e2e_replay_forensics_evidence.json",
+    "artifacts/phase2c/FNP-P2C-007/optimization_profile_report.json",
+    "artifacts/phase2c/FNP-P2C-007/optimization_profile_isomorphism_evidence.json",
+    "artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_opt_e2e.jsonl",
+    "artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_opt_reliability.json",
+    "artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_opt_artifact_index.json",
+    "crates/fnp-conformance/fixtures/rng_differential_cases.json",
+    "crates/fnp-conformance/fixtures/rng_metamorphic_cases.json",
+    "crates/fnp-conformance/fixtures/rng_adversarial_cases.json",
+    "crates/fnp-conformance/fixtures/oracle_outputs/rng_differential_report.json"
+  ],
+  "artifact_digests": {
+    "artifacts/phase2c/FNP-P2C-007/behavior_extraction_ledger.md": "fad047a5ba2db97d5ee446090cfc1e9f87a0d9a9528cc366ef07a4ec9a04a81f",
+    "artifacts/phase2c/FNP-P2C-007/contract_table.md": "9077e9146ea6397a14484dc73491aa1b95c1dfbf05c0580ea693882b7dbc8f55",
+    "artifacts/phase2c/FNP-P2C-007/differential_metamorphic_adversarial_evidence.json": "4417fcc19492c2eaf6da504317276339a6815e8f831a523889d659cf26f1634b",
+    "artifacts/phase2c/FNP-P2C-007/e2e_replay_forensics_evidence.json": "759f1afb6b21a58ca2f35103f72e2622d27b420db2b782cf1345b06e7093104e",
+    "artifacts/phase2c/FNP-P2C-007/fixture_manifest.json": "25c78f8fcc106f575f554371a42fc62ad4a431845ffb6d07d233cb11effd17c8",
+    "artifacts/phase2c/FNP-P2C-007/legacy_anchor_map.md": "0b478de89e6f48ddc2a5e5ca4d42b2aacb3fbe0e0224fd914948df5df54589d7",
+    "artifacts/phase2c/FNP-P2C-007/optimization_profile_isomorphism_evidence.json": "821b8d01046f5db1bb9f6acb287c44d38dad7c371e4c6f65b4029ec3aaaae1a5",
+    "artifacts/phase2c/FNP-P2C-007/optimization_profile_report.json": "8bb3c6c966a6fd771065b4d058ce9f5de8178f23cd513a8b8e20c29c7156e212",
+    "artifacts/phase2c/FNP-P2C-007/parity_gate.yaml": "9bc755c6ceff786383ee8a3bf319a5b1e84dd8e8bcf81ae8375cff790b1ab0ae",
+    "artifacts/phase2c/FNP-P2C-007/parity_report.json": "30555035b9aae1dda063e327e8fda092775a14118dc8531f9735398366459845",
+    "artifacts/phase2c/FNP-P2C-007/risk_note.md": "fad8a34388767ba2d5fb723f41605f207a345c8664f8432a9e79e6affc69cae3",
+    "artifacts/phase2c/FNP-P2C-007/unit_property_evidence.json": "2243ea8c8bb0c7666719a95c0430456b92f27bcb741b7dce2a00b5a30b2e69b2",
+    "artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_opt_artifact_index.json": "f3e4a950637688d8c7998e88b4a63e437337d6a92609058a2764505119c0c29d",
+    "artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_opt_e2e.jsonl": "a8d356412ce270bdb174f60640b18fd9382eff4add685cc97311317bc58b036a",
+    "artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_opt_reliability.json": "830b295456477eadaba146dbe2a003b30d0ac181dca5ff86bc5a249544b21f2d",
+    "crates/fnp-conformance/fixtures/oracle_outputs/rng_differential_report.json": "ef6a7feff7c3dd16418c97642771f2a3a05177d8ed567bcf09fd4671e0917fde",
+    "crates/fnp-conformance/fixtures/rng_adversarial_cases.json": "535c66cb1897fbc3b9b261f22f1dfbee2a5e11ab179e92281960ed4e3732a34a",
+    "crates/fnp-conformance/fixtures/rng_differential_cases.json": "3bc4de247923884d71002932ddb7ce4175ff0014dc42459d63c393e4b6a4cdd3",
+    "crates/fnp-conformance/fixtures/rng_metamorphic_cases.json": "9a2787f131d4b40280d690b536ce48144524125611931279171b712d0652e030"
+  },
+  "raptorq": {
+    "sidecar_path": "artifacts/phase2c/FNP-P2C-007/parity_report.raptorq.json",
+    "scrub_report_path": "artifacts/phase2c/FNP-P2C-007/parity_report.scrub_report.json",
+    "decode_proof_path": "artifacts/phase2c/FNP-P2C-007/parity_report.decode_proof.json"
+  },
+  "residual_risk_monitoring": {
+    "owner": "packet-007-maintainers",
+    "follow_up_actions": [
+      "Expand packet-007 workflow scenario breadth beyond the current RNG replay and hostile guardrail pair before readiness drill sign-off.",
+      "Keep packet-007 calibration thresholds aligned with full RNG corpus growth and refresh optimization/isomorphism evidence when fixture-lookup policy changes."
+    ],
+    "follow_up_gate": "bd-23m.11 readiness drill + packet-I residual risk review"
+  },
+  "quality_gates": [
+    {
+      "command": "rch exec -- cargo check --workspace --all-targets",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo clippy --workspace --all-targets -- -D warnings",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo test -p fnp-random",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo run -p fnp-conformance --bin run_test_contract_gate",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo run -p fnp-conformance --bin run_security_gate",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo run -p fnp-conformance --bin run_workflow_scenario_gate -- --log-path artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_opt_e2e.jsonl --artifact-index-path artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_opt_artifact_index.json --report-path artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_opt_reliability.json --retries 1 --flake-budget 0 --coverage-floor 1.0",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo run -p fnp-conformance --bin validate_phase2c_packet -- --packet-id FNP-P2C-007",
+      "result": "pass"
+    }
+  ]
+}
