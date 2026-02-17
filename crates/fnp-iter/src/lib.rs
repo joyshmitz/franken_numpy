@@ -262,9 +262,29 @@ fn count_selected_indices(len: usize, index: &FlatIterIndex) -> Result<usize, Tr
                     "bool mask length must equal flatiter length",
                 ));
             }
-            Ok(mask.iter().filter(|flag| **flag).count())
+            Ok(count_true_mask(mask))
         }
     }
+}
+
+#[must_use]
+fn count_true_mask(mask: &[bool]) -> usize {
+    let mut count = 0usize;
+    let mut chunks = mask.chunks_exact(8);
+    for chunk in &mut chunks {
+        count += usize::from(chunk[0])
+            + usize::from(chunk[1])
+            + usize::from(chunk[2])
+            + usize::from(chunk[3])
+            + usize::from(chunk[4])
+            + usize::from(chunk[5])
+            + usize::from(chunk[6])
+            + usize::from(chunk[7]);
+    }
+    for &flag in chunks.remainder() {
+        count += usize::from(flag);
+    }
+    count
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -406,6 +426,21 @@ mod tests {
         let err =
             validate_flatiter_write(8, &FlatIterIndex::Single(7), 2).expect_err("arity mismatch");
         assert_eq!(err.reason_code(), "flatiter_transfer_write_violation");
+    }
+
+    #[test]
+    fn bool_mask_count_matches_reference() {
+        let masks = vec![
+            vec![false; 64],
+            vec![true; 64],
+            (0..257).map(|idx| idx % 3 == 0).collect::<Vec<_>>(),
+            (0..511).map(|idx| (idx * 17) % 11 < 5).collect::<Vec<_>>(),
+        ];
+        for mask in masks {
+            let fast = count_true_mask(&mask);
+            let reference = mask.iter().filter(|&&flag| flag).count();
+            assert_eq!(fast, reference);
+        }
     }
 
     #[test]

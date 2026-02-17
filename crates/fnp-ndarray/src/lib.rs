@@ -78,6 +78,30 @@ pub fn can_broadcast(lhs: &[usize], rhs: &[usize]) -> bool {
 }
 
 pub fn broadcast_shape(lhs: &[usize], rhs: &[usize]) -> Result<Vec<usize>, ShapeError> {
+    if lhs == rhs {
+        return Ok(lhs.to_vec());
+    }
+
+    if lhs.len() == rhs.len() {
+        let mut out = Vec::with_capacity(lhs.len());
+        for (&l, &r) in lhs.iter().zip(rhs.iter()) {
+            let merged = if l == r {
+                l
+            } else if l == 1 {
+                r
+            } else if r == 1 {
+                l
+            } else {
+                return Err(ShapeError::IncompatibleBroadcast {
+                    lhs: lhs.to_vec(),
+                    rhs: rhs.to_vec(),
+                });
+            };
+            out.push(merged);
+        }
+        return Ok(out);
+    }
+
     let nd = lhs.len().max(rhs.len());
     let mut out = Vec::with_capacity(nd);
 
@@ -376,6 +400,19 @@ mod tests {
     fn broadcast_shape_matches_numpy_style() {
         let out = broadcast_shape(&[8, 1, 6, 1], &[7, 1, 5]).expect("broadcast should succeed");
         assert_eq!(out, vec![8, 7, 6, 5]);
+    }
+
+    #[test]
+    fn broadcast_shape_handles_same_rank_axiswise_merge() {
+        let out = broadcast_shape(&[1, 4, 1, 3], &[2, 1, 5, 3]).expect("broadcast should succeed");
+        assert_eq!(out, vec![2, 4, 5, 3]);
+    }
+
+    #[test]
+    fn broadcast_shape_preserves_identical_shape() {
+        let shape = vec![2, 3, 4];
+        let out = broadcast_shape(&shape, &shape).expect("identical shapes should broadcast");
+        assert_eq!(out, shape);
     }
 
     #[test]

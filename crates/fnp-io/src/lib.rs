@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
 use core::fmt;
-use std::collections::BTreeSet;
+use std::collections::HashSet;
 
 pub const IO_PACKET_ID: &str = "FNP-P2C-009";
 pub const NPY_MAGIC_PREFIX: [u8; 6] = [0x93, b'N', b'U', b'M', b'P', b'Y'];
@@ -419,7 +419,7 @@ pub fn synthesize_npz_member_names(
     }
 
     let mut names = Vec::with_capacity(member_count);
-    let mut seen = BTreeSet::new();
+    let mut seen = HashSet::with_capacity(member_count);
 
     for idx in 0..positional_count {
         let name = format!("arr_{idx}");

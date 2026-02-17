@@ -53,11 +53,13 @@ Program doctrine:
 cargo run -p fnp-conformance --bin capture_numpy_oracle
 cargo run -p fnp-conformance --bin run_ufunc_differential
 cargo run -p fnp-conformance --bin generate_benchmark_baseline
+cargo run -p fnp-conformance --bin run_performance_budget_gate
 cargo run -p fnp-conformance --bin generate_raptorq_sidecars
 cargo run -p fnp-conformance --bin validate_phase2c_packet -- --packet-id FNP-P2C-001
 cargo run -p fnp-conformance --bin run_security_gate
 cargo run -p fnp-conformance --bin run_test_contract_gate
 cargo run -p fnp-conformance --bin run_workflow_scenario_gate
+scripts/e2e/run_performance_budget_gate.sh
 scripts/e2e/run_security_policy_gate.sh
 scripts/e2e/run_test_contract_gate.sh
 scripts/e2e/run_workflow_scenario_gate.sh
@@ -79,6 +81,7 @@ Notes:
 - Security threat controls are machine-mapped in `artifacts/contracts/security_control_checks_v1.yaml`.
 - Runtime-policy e2e logs are emitted as JSONL under `artifacts/logs/` by `run_security_gate` / `scripts/e2e/run_security_policy_gate.sh`.
 - Workflow-scenario e2e logs are emitted as JSONL under `artifacts/logs/` by `run_workflow_scenario_gate` / `scripts/e2e/run_workflow_scenario_gate.sh`.
+- Performance budget baseline-delta reports are emitted under `artifacts/logs/` by `run_performance_budget_gate` / `scripts/e2e/run_performance_budget_gate.sh`.
 - Test/logging conventions are locked in `artifacts/contracts/test_logging_contract_v1.json` and `artifacts/contracts/TESTING_AND_LOGGING_CONVENTIONS_V1.md`.
 
 ## Repository Layout

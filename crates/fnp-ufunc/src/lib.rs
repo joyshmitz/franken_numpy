@@ -101,6 +101,21 @@ impl UFuncArray {
     pub fn elementwise_binary(&self, rhs: &Self, op: BinaryOp) -> Result<Self, UFuncError> {
         let out_shape = broadcast_shape(&self.shape, &rhs.shape).map_err(UFuncError::Shape)?;
         let out_count = element_count(&out_shape).map_err(UFuncError::Shape)?;
+        let out_dtype = promote(self.dtype, rhs.dtype);
+
+        if self.shape == rhs.shape {
+            let values = self
+                .values
+                .iter()
+                .zip(&rhs.values)
+                .map(|(&lhs, &rhs)| op.apply(lhs, rhs))
+                .collect::<Vec<_>>();
+            return Ok(Self {
+                shape: out_shape,
+                values,
+                dtype: out_dtype,
+            });
+        }
 
         let lhs_strides = contiguous_strides_elems(&self.shape);
         let rhs_strides = contiguous_strides_elems(&rhs.shape);
@@ -142,7 +157,7 @@ impl UFuncArray {
         Ok(Self {
             shape: out_shape,
             values: out_values,
-            dtype: promote(self.dtype, rhs.dtype),
+            dtype: out_dtype,
         })
     }
 

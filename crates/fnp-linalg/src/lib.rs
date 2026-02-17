@@ -200,13 +200,23 @@ pub fn validate_matrix_shape(shape: &[usize]) -> Result<(usize, usize), LinAlgEr
         ));
     }
 
-    let batch_lanes = shape[..shape.len() - 2]
-        .iter()
-        .copied()
-        .try_fold(1usize, |acc, dim| acc.checked_mul(dim))
-        .ok_or(LinAlgError::ShapeContractViolation(
-            "batch lane multiplication overflowed",
-        ))?;
+    let batch_rank = shape.len() - 2;
+    let batch_lanes = match batch_rank {
+        0 => 1usize,
+        1 => shape[0],
+        2 => shape[0]
+            .checked_mul(shape[1])
+            .ok_or(LinAlgError::ShapeContractViolation(
+                "batch lane multiplication overflowed",
+            ))?,
+        _ => shape[..batch_rank]
+            .iter()
+            .copied()
+            .try_fold(1usize, |acc, dim| acc.checked_mul(dim))
+            .ok_or(LinAlgError::ShapeContractViolation(
+                "batch lane multiplication overflowed",
+            ))?,
+    };
 
     if batch_lanes > MAX_BATCH_SHAPE_CHECKS {
         return Err(LinAlgError::ShapeContractViolation(
@@ -421,11 +431,12 @@ pub fn validate_policy_metadata(mode: &str, class: &str) -> Result<(), LinAlgErr
 #[cfg(test)]
 mod tests {
     use super::{
-        LINALG_PACKET_ID, LINALG_PACKET_REASON_CODES, LinAlgLogRecord, LinAlgRuntimeMode,
-        MAX_BACKEND_REVALIDATION_ATTEMPTS, MAX_TOLERANCE_SEARCH_DEPTH, QrMode, lstsq_output_shapes,
-        qr_output_shapes, solve_2x2, svd_output_shapes, validate_backend_bridge,
-        validate_cholesky_diagonal, validate_matrix_shape, validate_policy_metadata,
-        validate_spectral_branch, validate_square_matrix, validate_tolerance_policy,
+        LINALG_PACKET_ID, LINALG_PACKET_REASON_CODES, LinAlgError, LinAlgLogRecord,
+        LinAlgRuntimeMode, MAX_BACKEND_REVALIDATION_ATTEMPTS, MAX_BATCH_SHAPE_CHECKS,
+        MAX_TOLERANCE_SEARCH_DEPTH, QrMode, lstsq_output_shapes, qr_output_shapes, solve_2x2,
+        svd_output_shapes, validate_backend_bridge, validate_cholesky_diagonal,
+        validate_matrix_shape, validate_policy_metadata, validate_spectral_branch,
+        validate_square_matrix, validate_tolerance_policy,
     };
 
     fn packet008_artifacts() -> Vec<String> {
@@ -437,6 +448,38 @@ mod tests {
 
     fn approx_equal(lhs: f64, rhs: f64, tol: f64) -> bool {
         (lhs - rhs).abs() <= tol
+    }
+
+    fn legacy_validate_matrix_shape(shape: &[usize]) -> Result<(usize, usize), LinAlgError> {
+        if shape.len() < 2 {
+            return Err(LinAlgError::ShapeContractViolation(
+                "linalg input must be at least 2D",
+            ));
+        }
+
+        let rows = shape[shape.len() - 2];
+        let cols = shape[shape.len() - 1];
+        if rows == 0 || cols == 0 {
+            return Err(LinAlgError::ShapeContractViolation(
+                "matrix rows/cols must be non-zero",
+            ));
+        }
+
+        let batch_lanes = shape[..shape.len() - 2]
+            .iter()
+            .copied()
+            .try_fold(1usize, |acc, dim| acc.checked_mul(dim))
+            .ok_or(LinAlgError::ShapeContractViolation(
+                "batch lane multiplication overflowed",
+            ))?;
+
+        if batch_lanes > MAX_BATCH_SHAPE_CHECKS {
+            return Err(LinAlgError::ShapeContractViolation(
+                "batch lanes exceeded bounded validation budget",
+            ));
+        }
+
+        Ok((rows, cols))
     }
 
     #[test]
@@ -478,6 +521,31 @@ mod tests {
         let huge_batch = [MAX_TOLERANCE_SEARCH_DEPTH * 20_000usize, 2usize, 2usize];
         let err = validate_matrix_shape(&huge_batch).expect_err("batch budget should fail");
         assert_eq!(err.reason_code(), "linalg_shape_contract_violation");
+    }
+
+    #[test]
+    fn matrix_shape_fast_paths_are_isomorphic_with_legacy_path() {
+        let fixtures: [&[usize]; 13] = [
+            &[2, 2],
+            &[4, 4],
+            &[1, 2, 2],
+            &[8, 2, 2],
+            &[7, 9, 3, 3],
+            &[3, 5, 7, 11, 2, 2],
+            &[4],
+            &[0, 2],
+            &[2, 0],
+            &[MAX_BATCH_SHAPE_CHECKS + 1, 2, 2],
+            &[usize::MAX, usize::MAX, 2, 2],
+            &[usize::MAX, 1, 2, 2],
+            &[1, usize::MAX, 2, 2],
+        ];
+
+        for shape in fixtures {
+            let baseline = legacy_validate_matrix_shape(shape);
+            let optimized = validate_matrix_shape(shape);
+            assert_eq!(optimized, baseline, "shape={shape:?}");
+        }
     }
 
     #[test]

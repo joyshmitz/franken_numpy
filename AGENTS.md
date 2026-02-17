@@ -186,11 +186,13 @@ cargo test --workspace --all-features
 cargo run -p fnp-conformance --bin capture_numpy_oracle
 cargo run -p fnp-conformance --bin run_ufunc_differential
 cargo run -p fnp-conformance --bin generate_benchmark_baseline
+cargo run -p fnp-conformance --bin run_performance_budget_gate
 cargo run -p fnp-conformance --bin generate_raptorq_sidecars
 cargo run -p fnp-conformance --bin validate_phase2c_packet -- --packet-id FNP-P2C-001
 cargo run -p fnp-conformance --bin run_security_gate
 cargo run -p fnp-conformance --bin run_test_contract_gate
 cargo run -p fnp-conformance --bin run_workflow_scenario_gate
+scripts/e2e/run_performance_budget_gate.sh
 scripts/e2e/run_security_policy_gate.sh
 scripts/e2e/run_test_contract_gate.sh
 scripts/e2e/run_workflow_scenario_gate.sh
