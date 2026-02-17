@@ -664,6 +664,24 @@ fn build_forensics_artifact_index(
                 .to_string(),
         },
         ArtifactIndexEntry {
+            id: "transfer_iter_differential_cases".to_string(),
+            kind: "fixture_collection".to_string(),
+            path: "crates/fnp-conformance/fixtures/packet003_transfer/iter_differential_cases.json"
+                .to_string(),
+            description:
+                "Packet-003 transfer differential fixture cases linked from workflow scenarios"
+                    .to_string(),
+        },
+        ArtifactIndexEntry {
+            id: "transfer_iter_adversarial_cases".to_string(),
+            kind: "fixture_collection".to_string(),
+            path: "crates/fnp-conformance/fixtures/packet003_transfer/iter_adversarial_cases.json"
+                .to_string(),
+            description:
+                "Packet-003 transfer adversarial fixture cases linked from workflow scenarios"
+                    .to_string(),
+        },
+        ArtifactIndexEntry {
             id: "io_differential_cases".to_string(),
             kind: "fixture_collection".to_string(),
             path: "crates/fnp-conformance/fixtures/io_differential_cases.json".to_string(),
@@ -709,6 +727,24 @@ fn build_forensics_artifact_index(
             description: "RNG adversarial fixture cases linked from workflow scenarios".to_string(),
         },
         ArtifactIndexEntry {
+            id: "dtype_differential_cases".to_string(),
+            kind: "fixture_collection".to_string(),
+            path: "crates/fnp-conformance/fixtures/packet002_dtype/dtype_differential_cases.json"
+                .to_string(),
+            description:
+                "Packet-002 dtype differential fixture cases linked from workflow scenarios"
+                    .to_string(),
+        },
+        ArtifactIndexEntry {
+            id: "dtype_adversarial_cases".to_string(),
+            kind: "fixture_collection".to_string(),
+            path: "crates/fnp-conformance/fixtures/packet002_dtype/dtype_adversarial_cases.json"
+                .to_string(),
+            description:
+                "Packet-002 dtype adversarial fixture cases linked from workflow scenarios"
+                    .to_string(),
+        },
+        ArtifactIndexEntry {
             id: "workflow_runner_script".to_string(),
             kind: "replay_script".to_string(),
             path: "scripts/e2e/run_workflow_scenario_gate.sh".to_string(),
@@ -737,6 +773,18 @@ fn build_forensics_artifact_index(
             kind: "replay_script".to_string(),
             path: "scripts/e2e/run_rng_contract_journey.sh".to_string(),
             description: "Packet-007 workflow replay wrapper script".to_string(),
+        },
+        ArtifactIndexEntry {
+            id: "dtype_packet_workflow_script".to_string(),
+            kind: "replay_script".to_string(),
+            path: "scripts/e2e/run_dtype_contract_journey.sh".to_string(),
+            description: "Packet-002 workflow replay wrapper script".to_string(),
+        },
+        ArtifactIndexEntry {
+            id: "transfer_packet_workflow_script".to_string(),
+            kind: "replay_script".to_string(),
+            path: "scripts/e2e/run_transfer_contract_journey.sh".to_string(),
+            description: "Packet-003 workflow replay wrapper script".to_string(),
         },
     ];
     if let Some(path) = context.report_path {

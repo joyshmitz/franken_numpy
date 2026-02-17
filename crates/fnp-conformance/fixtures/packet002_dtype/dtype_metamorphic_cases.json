@@ -1,0 +1,75 @@
+[
+  {
+    "id": "dtype002_commutative_i32_f32",
+    "relation": "commutative",
+    "lhs": "i32",
+    "rhs": "f32",
+    "seed": 2201,
+    "mode": "strict",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_permutation_invariant"
+  },
+  {
+    "id": "dtype002_commutative_bool_f64",
+    "relation": "commutative",
+    "lhs": "bool",
+    "rhs": "f64",
+    "seed": 2202,
+    "mode": "hardened",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_permutation_invariant"
+  },
+  {
+    "id": "dtype002_idempotent_i64",
+    "relation": "idempotent",
+    "lhs": "i64",
+    "seed": 2203,
+    "mode": "strict",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_idempotent"
+  },
+  {
+    "id": "dtype002_idempotent_f32",
+    "relation": "idempotent",
+    "lhs": "f32",
+    "seed": 2204,
+    "mode": "hardened",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_idempotent"
+  },
+  {
+    "id": "dtype002_lossless_cast_destination_i32_i64",
+    "relation": "lossless_cast_destination",
+    "lhs": "i32",
+    "rhs": "i64",
+    "seed": 2205,
+    "mode": "strict",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_lossless_cast_destination"
+  }
+]

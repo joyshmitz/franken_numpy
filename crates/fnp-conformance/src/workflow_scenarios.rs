@@ -2,6 +2,7 @@
 
 use crate::ufunc_differential::{UFuncInputCase, execute_input_case, load_input_cases};
 use crate::{HarnessConfig, SuiteReport};
+use fnp_dtype::promote;
 use fnp_random::{DeterministicRng, RandomError};
 use fnp_runtime::{
     CompatibilityClass, DecisionAction, RuntimeMode, decide_compatibility,
@@ -78,6 +79,12 @@ enum WorkflowStep {
         expected_action_hardened: String,
     },
     IterFixtureCase {
+        id: String,
+        case_id: String,
+        fixture_set: String,
+    },
+    #[serde(rename = "dtype_fixture_case")]
+    DTypeFixtureCase {
         id: String,
         case_id: String,
         fixture_set: String,
@@ -239,6 +246,14 @@ pub fn run_user_workflow_scenario_suite(config: &HarnessConfig) -> Result<SuiteR
     )?;
     let iter_differential_cases = load_iter_differential_case_map(&config.fixture_root)?;
     let iter_adversarial_cases = load_iter_adversarial_case_map(&config.fixture_root)?;
+    let packet002_dtype_root = config.fixture_root.join("packet002_dtype");
+    let dtype_differential_cases = load_dtype_differential_case_map(&packet002_dtype_root)?;
+    let dtype_adversarial_cases = load_dtype_adversarial_case_map(&packet002_dtype_root)?;
+    let packet003_transfer_root = config.fixture_root.join("packet003_transfer");
+    let packet003_iter_differential_cases =
+        load_iter_differential_case_map(&packet003_transfer_root)?;
+    let packet003_iter_adversarial_cases =
+        load_iter_adversarial_case_map(&packet003_transfer_root)?;
     let rng_differential_cases = load_rng_differential_case_map(&config.fixture_root)?;
     let rng_metamorphic_cases = load_rng_metamorphic_case_map(&config.fixture_root)?;
     let rng_adversarial_cases = load_rng_adversarial_case_map(&config.fixture_root)?;
@@ -318,6 +333,10 @@ pub fn run_user_workflow_scenario_suite(config: &HarnessConfig) -> Result<SuiteR
                     || shape_stride_cases.contains_key(fixture_id.as_str())
                     || iter_differential_cases.contains_key(fixture_id.as_str())
                     || iter_adversarial_cases.contains_key(fixture_id.as_str())
+                    || packet003_iter_differential_cases.contains_key(fixture_id.as_str())
+                    || packet003_iter_adversarial_cases.contains_key(fixture_id.as_str())
+                    || dtype_differential_cases.contains_key(fixture_id.as_str())
+                    || dtype_adversarial_cases.contains_key(fixture_id.as_str())
                     || rng_differential_cases.contains_key(fixture_id.as_str())
                     || rng_metamorphic_cases.contains_key(fixture_id.as_str())
                     || rng_adversarial_cases.contains_key(fixture_id.as_str())
@@ -326,7 +345,7 @@ pub fn run_user_workflow_scenario_suite(config: &HarnessConfig) -> Result<SuiteR
                     || linalg_differential_cases.contains_key(fixture_id.as_str())
                     || linalg_adversarial_cases.contains_key(fixture_id.as_str()),
                 format!(
-                    "{}: differential fixture id not found in ufunc_input_cases.json, shape_stride_cases.json, iter_differential_cases.json, iter_adversarial_cases.json, rng_differential_cases.json, rng_metamorphic_cases.json, rng_adversarial_cases.json, io_differential_cases.json, io_adversarial_cases.json, linalg_differential_cases.json, or linalg_adversarial_cases.json: {}",
+                    "{}: differential fixture id not found in ufunc_input_cases.json, shape_stride_cases.json, iter_differential_cases.json, iter_adversarial_cases.json, packet003_transfer/iter_differential_cases.json, packet003_transfer/iter_adversarial_cases.json, packet002_dtype/dtype_differential_cases.json, packet002_dtype/dtype_adversarial_cases.json, rng_differential_cases.json, rng_metamorphic_cases.json, rng_adversarial_cases.json, io_differential_cases.json, io_adversarial_cases.json, linalg_differential_cases.json, or linalg_adversarial_cases.json: {}",
                     scenario.id, fixture_id
                 ),
             );
@@ -390,6 +409,10 @@ pub fn run_user_workflow_scenario_suite(config: &HarnessConfig) -> Result<SuiteR
             &wire_cases,
             &iter_differential_cases,
             &iter_adversarial_cases,
+            &packet003_iter_differential_cases,
+            &packet003_iter_adversarial_cases,
+            &dtype_differential_cases,
+            &dtype_adversarial_cases,
             &rng_differential_cases,
             &rng_adversarial_cases,
             &io_differential_cases,
@@ -406,6 +429,10 @@ pub fn run_user_workflow_scenario_suite(config: &HarnessConfig) -> Result<SuiteR
             &wire_cases,
             &iter_differential_cases,
             &iter_adversarial_cases,
+            &packet003_iter_differential_cases,
+            &packet003_iter_adversarial_cases,
+            &dtype_differential_cases,
+            &dtype_adversarial_cases,
             &rng_differential_cases,
             &rng_adversarial_cases,
             &io_differential_cases,
@@ -545,6 +572,38 @@ fn load_iter_adversarial_case_map(
             return Err(format!(
                 "duplicate iter adversarial fixture id in {}",
                 fixture_root.join("iter_adversarial_cases.json").display()
+            ));
+        }
+    }
+    Ok(map)
+}
+
+fn load_dtype_differential_case_map(
+    fixture_root: &Path,
+) -> Result<BTreeMap<String, crate::DTypeDifferentialCase>, String> {
+    let cases = crate::load_dtype_differential_cases(fixture_root)?;
+    let mut map = BTreeMap::new();
+    for case in cases {
+        if map.insert(case.id.clone(), case).is_some() {
+            return Err(format!(
+                "duplicate dtype differential fixture id in {}",
+                fixture_root.join("dtype_differential_cases.json").display()
+            ));
+        }
+    }
+    Ok(map)
+}
+
+fn load_dtype_adversarial_case_map(
+    fixture_root: &Path,
+) -> Result<BTreeMap<String, crate::DTypeAdversarialCase>, String> {
+    let cases = crate::load_dtype_adversarial_cases(fixture_root)?;
+    let mut map = BTreeMap::new();
+    for case in cases {
+        if map.insert(case.id.clone(), case).is_some() {
+            return Err(format!(
+                "duplicate dtype adversarial fixture id in {}",
+                fixture_root.join("dtype_adversarial_cases.json").display()
             ));
         }
     }
@@ -731,6 +790,10 @@ fn execute_mode(
     wire_cases: &BTreeMap<String, PolicyWireFixtureCase>,
     iter_differential_cases: &BTreeMap<String, crate::IterDifferentialCase>,
     iter_adversarial_cases: &BTreeMap<String, crate::IterAdversarialCase>,
+    packet003_iter_differential_cases: &BTreeMap<String, crate::IterDifferentialCase>,
+    packet003_iter_adversarial_cases: &BTreeMap<String, crate::IterAdversarialCase>,
+    dtype_differential_cases: &BTreeMap<String, crate::DTypeDifferentialCase>,
+    dtype_adversarial_cases: &BTreeMap<String, crate::DTypeAdversarialCase>,
     rng_differential_cases: &BTreeMap<String, RngDifferentialFixtureCase>,
     rng_adversarial_cases: &BTreeMap<String, RngAdversarialFixtureCase>,
     io_differential_cases: &BTreeMap<String, crate::IoDifferentialCase>,
@@ -990,7 +1053,10 @@ fn execute_mode(
                 let fixture_id = format!("{}::{}", scenario.id, id);
                 let (expected, actual, passed, detail) = match fixture_set.as_str() {
                     "differential" => {
-                        if let Some(case) = iter_differential_cases.get(case_id.as_str()) {
+                        if let Some(case) = packet003_iter_differential_cases
+                            .get(case_id.as_str())
+                            .or_else(|| iter_differential_cases.get(case_id.as_str()))
+                        {
                             let result = execute_iter_differential_step(case);
                             (result.expected, result.actual, result.passed, result.detail)
                         } else {
@@ -998,12 +1064,18 @@ fn execute_mode(
                                 String::new(),
                                 "missing_case".to_string(),
                                 false,
-                                format!("iter differential case id '{}' not found", case_id),
+                                format!(
+                                    "iter differential case id '{}' not found in iter_differential_cases.json or packet003_transfer/iter_differential_cases.json",
+                                    case_id
+                                ),
                             )
                         }
                     }
                     "adversarial" => {
-                        if let Some(case) = iter_adversarial_cases.get(case_id.as_str()) {
+                        if let Some(case) = packet003_iter_adversarial_cases
+                            .get(case_id.as_str())
+                            .or_else(|| iter_adversarial_cases.get(case_id.as_str()))
+                        {
                             let result = execute_iter_adversarial_step(case);
                             (result.expected, result.actual, result.passed, result.detail)
                         } else {
@@ -1011,7 +1083,10 @@ fn execute_mode(
                                 String::new(),
                                 "missing_case".to_string(),
                                 false,
-                                format!("iter adversarial case id '{}' not found", case_id),
+                                format!(
+                                    "iter adversarial case id '{}' not found in iter_adversarial_cases.json or packet003_transfer/iter_adversarial_cases.json",
+                                    case_id
+                                ),
                             )
                         }
                     }
@@ -1047,6 +1122,77 @@ fn execute_mode(
                 if !passed {
                     let failure_detail = if detail.is_empty() {
                         "iterator fixture step failed".to_string()
+                    } else {
+                        detail
+                    };
+                    failures.push(format!("{fixture_id}: {failure_detail}"));
+                }
+            }
+            WorkflowStep::DTypeFixtureCase {
+                id,
+                case_id,
+                fixture_set,
+            } => {
+                let fixture_id = format!("{}::{}", scenario.id, id);
+                let (expected, actual, passed, detail) = match fixture_set.as_str() {
+                    "differential" => {
+                        if let Some(case) = dtype_differential_cases.get(case_id.as_str()) {
+                            let result = execute_dtype_differential_step(case);
+                            (result.expected, result.actual, result.passed, result.detail)
+                        } else {
+                            (
+                                String::new(),
+                                "missing_case".to_string(),
+                                false,
+                                format!("dtype differential case id '{}' not found", case_id),
+                            )
+                        }
+                    }
+                    "adversarial" => {
+                        if let Some(case) = dtype_adversarial_cases.get(case_id.as_str()) {
+                            let result = execute_dtype_adversarial_step(case);
+                            (result.expected, result.actual, result.passed, result.detail)
+                        } else {
+                            (
+                                String::new(),
+                                "missing_case".to_string(),
+                                false,
+                                format!("dtype adversarial case id '{}' not found", case_id),
+                            )
+                        }
+                    }
+                    other => (
+                        String::new(),
+                        "unsupported_fixture_set".to_string(),
+                        false,
+                        format!(
+                            "unsupported dtype fixture_set '{}' (expected differential|adversarial)",
+                            other
+                        ),
+                    ),
+                };
+
+                let entry = WorkflowScenarioLogEntry {
+                    suite: "workflow_scenarios",
+                    fixture_id: fixture_id.clone(),
+                    seed: scenario.seed,
+                    mode: mode_name.clone(),
+                    env_fingerprint: scenario.env_fingerprint.clone(),
+                    artifact_refs: scenario.artifact_refs.clone(),
+                    reason_code: scenario.reason_code.clone(),
+                    scenario_id: scenario.id.clone(),
+                    step_id: id.clone(),
+                    step_kind: "dtype_fixture_case".to_string(),
+                    expected,
+                    actual,
+                    passed,
+                    detail: detail.clone(),
+                };
+                maybe_append_workflow_log(&entry)?;
+
+                if !passed {
+                    let failure_detail = if detail.is_empty() {
+                        "dtype fixture step failed".to_string()
                     } else {
                         detail
                     };
@@ -1709,6 +1855,144 @@ fn execute_iter_adversarial_step(case: &crate::IterAdversarialCase) -> IterStepR
             detail: format!(
                 "expected error containing '{}' but operation '{}' succeeded",
                 case.expected_error_contains, case.operation
+            ),
+        },
+        Err(err) => {
+            let contains_expected = err.message.to_lowercase().contains(&expected_error);
+            let reason_match = err.reason_code == expected_reason_code;
+            let passed = contains_expected && reason_match;
+            let detail = if passed {
+                String::new()
+            } else {
+                format!(
+                    "expected error containing '{}' with reason_code='{}' but got '{}' (actual_reason_code='{}')",
+                    case.expected_error_contains,
+                    expected_reason_code,
+                    err.message,
+                    err.reason_code
+                )
+            };
+            IterStepResult {
+                expected: format!(
+                    "error_contains:{} reason_code={}",
+                    case.expected_error_contains, expected_reason_code
+                ),
+                actual: format!("error:{} reason_code={}", err.message, err.reason_code),
+                passed,
+                detail,
+            }
+        }
+    }
+}
+
+fn execute_dtype_differential_step(case: &crate::DTypeDifferentialCase) -> IterStepResult {
+    let reason_code = crate::normalize_reason_code(&case.reason_code);
+    let expected_reason_code = if case.expected_reason_code.trim().is_empty() {
+        reason_code.clone()
+    } else {
+        case.expected_reason_code.trim().to_string()
+    };
+
+    let lhs = match crate::parse_dtype_for_suite(&case.lhs, "lhs") {
+        Ok(value) => value,
+        Err(err) => {
+            return IterStepResult {
+                expected: format!(
+                    "ok dtype={} reason_code={expected_reason_code}",
+                    case.expected
+                ),
+                actual: format!("error:{} reason_code={}", err.message, err.reason_code),
+                passed: false,
+                detail: err.message,
+            };
+        }
+    };
+    let rhs = match crate::parse_dtype_for_suite(&case.rhs, "rhs") {
+        Ok(value) => value,
+        Err(err) => {
+            return IterStepResult {
+                expected: format!(
+                    "ok dtype={} reason_code={expected_reason_code}",
+                    case.expected
+                ),
+                actual: format!("error:{} reason_code={}", err.message, err.reason_code),
+                passed: false,
+                detail: err.message,
+            };
+        }
+    };
+    let expected = match crate::parse_dtype_for_suite(&case.expected, "expected") {
+        Ok(value) => value,
+        Err(err) => {
+            return IterStepResult {
+                expected: format!(
+                    "ok dtype={} reason_code={expected_reason_code}",
+                    case.expected
+                ),
+                actual: format!("error:{} reason_code={}", err.message, err.reason_code),
+                passed: false,
+                detail: err.message,
+            };
+        }
+    };
+
+    let actual = promote(lhs, rhs);
+    let actual_reason_code = if actual == expected {
+        reason_code
+    } else {
+        "dtype_promotion_oracle_mismatch".to_string()
+    };
+    let reason_match = actual_reason_code == expected_reason_code;
+    let passed = actual == expected && reason_match;
+    let detail = if passed {
+        String::new()
+    } else if actual != expected {
+        format!(
+            "promotion mismatch expected={} actual={}",
+            expected.name(),
+            actual.name()
+        )
+    } else {
+        format!(
+            "reason-code mismatch expected={} actual={}",
+            expected_reason_code, actual_reason_code
+        )
+    };
+
+    IterStepResult {
+        expected: format!(
+            "ok dtype={} reason_code={expected_reason_code}",
+            expected.name()
+        ),
+        actual: format!(
+            "ok dtype={} reason_code={actual_reason_code}",
+            actual.name()
+        ),
+        passed,
+        detail,
+    }
+}
+
+fn execute_dtype_adversarial_step(case: &crate::DTypeAdversarialCase) -> IterStepResult {
+    let reason_code = crate::normalize_reason_code(&case.reason_code);
+    let expected_reason_code = if case.expected_reason_code.trim().is_empty() {
+        reason_code
+    } else {
+        case.expected_reason_code.trim().to_string()
+    };
+    let expected_error = case.expected_error_contains.to_lowercase();
+
+    match crate::execute_dtype_adversarial_operation(case) {
+        Ok((_lhs, _rhs, actual)) => IterStepResult {
+            expected: format!(
+                "error_contains:{} reason_code={}",
+                case.expected_error_contains, expected_reason_code
+            ),
+            actual: format!("ok dtype={}", actual.name()),
+            passed: false,
+            detail: format!(
+                "expected error containing '{}' but dtype promote succeeded",
+                case.expected_error_contains
             ),
         },
         Err(err) => {

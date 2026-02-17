@@ -16,6 +16,21 @@
       "id": "p2c002_runtime_policy_dtype_boundary",
       "input_path": "crates/fnp-conformance/fixtures/runtime_policy_cases.json",
       "oracle_case_id": "dtype_policy_boundary_contract"
+    },
+    {
+      "id": "p2c002_dtype_packet_f_differential",
+      "input_path": "crates/fnp-conformance/fixtures/packet002_dtype/dtype_differential_cases.json",
+      "oracle_case_id": "dtype_promotion_matrix_differential"
+    },
+    {
+      "id": "p2c002_dtype_packet_f_metamorphic",
+      "input_path": "crates/fnp-conformance/fixtures/packet002_dtype/dtype_metamorphic_cases.json",
+      "oracle_case_id": "dtype_promotion_metamorphic_invariants"
+    },
+    {
+      "id": "p2c002_dtype_packet_f_adversarial",
+      "input_path": "crates/fnp-conformance/fixtures/packet002_dtype/dtype_adversarial_cases.json",
+      "oracle_case_id": "dtype_promotion_adversarial_fail_closed"
     }
   ]
 }

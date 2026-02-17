@@ -9,7 +9,7 @@ pub mod ufunc_differential;
 pub mod workflow_scenarios;
 
 use crate::ufunc_differential::{UFuncInputCase, UFuncOperation};
-use fnp_dtype::{DType, promote};
+use fnp_dtype::{DType, can_cast_lossless, promote};
 use fnp_io::{
     IOError, IOSupportedDType, LoadDispatch, MemmapMode, classify_load_dispatch,
     validate_descriptor_roundtrip, validate_header_schema, validate_io_policy_metadata,
@@ -157,6 +157,68 @@ struct PromotionFixtureCase {
     expected: String,
     #[serde(default)]
     seed: u64,
+    #[serde(default)]
+    env_fingerprint: String,
+    #[serde(default)]
+    artifact_refs: Vec<String>,
+    #[serde(default)]
+    reason_code: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct DTypeDifferentialCase {
+    id: String,
+    lhs: String,
+    rhs: String,
+    expected: String,
+    #[serde(default)]
+    expected_reason_code: String,
+    #[serde(default)]
+    minimal_repro_artifacts: Vec<String>,
+    #[serde(default)]
+    seed: u64,
+    #[serde(default)]
+    mode: String,
+    #[serde(default)]
+    env_fingerprint: String,
+    #[serde(default)]
+    artifact_refs: Vec<String>,
+    #[serde(default)]
+    reason_code: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct DTypeMetamorphicCase {
+    id: String,
+    relation: String,
+    lhs: String,
+    #[serde(default)]
+    rhs: Option<String>,
+    #[serde(default)]
+    seed: u64,
+    #[serde(default)]
+    mode: String,
+    #[serde(default)]
+    env_fingerprint: String,
+    #[serde(default)]
+    artifact_refs: Vec<String>,
+    #[serde(default)]
+    reason_code: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct DTypeAdversarialCase {
+    id: String,
+    lhs: String,
+    rhs: String,
+    expected_error_contains: String,
+    expected_reason_code: String,
+    #[serde(default)]
+    severity: String,
+    #[serde(default)]
+    seed: u64,
+    #[serde(default)]
+    mode: String,
     #[serde(default)]
     env_fingerprint: String,
     #[serde(default)]
@@ -965,6 +1027,31 @@ struct IterDifferentialReportArtifact {
     mismatches: Vec<IterDifferentialMismatch>,
 }
 
+#[derive(Debug, Serialize)]
+struct DTypeDifferentialMismatch {
+    fixture_id: String,
+    seed: u64,
+    mode: String,
+    lhs: String,
+    rhs: String,
+    expected_dtype: String,
+    actual_dtype: String,
+    expected_reason_code: String,
+    actual_reason_code: String,
+    message: String,
+    minimal_repro_artifacts: Vec<String>,
+    artifact_refs: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DTypeDifferentialReportArtifact {
+    suite: &'static str,
+    total_cases: usize,
+    passed_cases: usize,
+    failed_cases: usize,
+    mismatches: Vec<DTypeDifferentialMismatch>,
+}
+
 static RUNTIME_POLICY_LOG_PATH: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
 static SHAPE_STRIDE_LOG_PATH: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
 static DTYPE_PROMOTION_LOG_PATH: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
@@ -1041,6 +1128,29 @@ fn load_iter_metamorphic_cases(fixture_root: &Path) -> Result<Vec<IterMetamorphi
 
 fn load_iter_adversarial_cases(fixture_root: &Path) -> Result<Vec<IterAdversarialCase>, String> {
     let path = fixture_root.join("iter_adversarial_cases.json");
+    let raw = fs::read_to_string(&path)
+        .map_err(|err| format!("failed reading {}: {err}", path.display()))?;
+    serde_json::from_str(&raw).map_err(|err| format!("invalid json: {err}"))
+}
+
+fn load_dtype_differential_cases(
+    fixture_root: &Path,
+) -> Result<Vec<DTypeDifferentialCase>, String> {
+    let path = fixture_root.join("dtype_differential_cases.json");
+    let raw = fs::read_to_string(&path)
+        .map_err(|err| format!("failed reading {}: {err}", path.display()))?;
+    serde_json::from_str(&raw).map_err(|err| format!("invalid json: {err}"))
+}
+
+fn load_dtype_metamorphic_cases(fixture_root: &Path) -> Result<Vec<DTypeMetamorphicCase>, String> {
+    let path = fixture_root.join("dtype_metamorphic_cases.json");
+    let raw = fs::read_to_string(&path)
+        .map_err(|err| format!("failed reading {}: {err}", path.display()))?;
+    serde_json::from_str(&raw).map_err(|err| format!("invalid json: {err}"))
+}
+
+fn load_dtype_adversarial_cases(fixture_root: &Path) -> Result<Vec<DTypeAdversarialCase>, String> {
+    let path = fixture_root.join("dtype_adversarial_cases.json");
     let raw = fs::read_to_string(&path)
         .map_err(|err| format!("failed reading {}: {err}", path.display()))?;
     serde_json::from_str(&raw).map_err(|err| format!("invalid json: {err}"))
@@ -2777,6 +2887,482 @@ pub fn run_dtype_promotion_suite(config: &HarnessConfig) -> Result<SuiteReport, 
             rhs: rhs.name().to_string(),
             expected: expected.name().to_string(),
             actual: actual.name().to_string(),
+            passed,
+        };
+        maybe_append_dtype_promotion_log(&log_entry)?;
+    }
+
+    Ok(report)
+}
+
+#[derive(Debug, Clone)]
+struct DTypeSuiteError {
+    reason_code: String,
+    message: String,
+}
+
+impl DTypeSuiteError {
+    fn new(reason_code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            reason_code: reason_code.into(),
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for DTypeSuiteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for DTypeSuiteError {}
+
+fn parse_dtype_for_suite(raw: &str, position: &str) -> Result<DType, DTypeSuiteError> {
+    DType::parse(raw).ok_or_else(|| {
+        DTypeSuiteError::new(
+            "dtype_normalization_failed",
+            format!("unknown {position} dtype '{raw}'"),
+        )
+    })
+}
+
+pub fn run_dtype_differential_suite(config: &HarnessConfig) -> Result<SuiteReport, String> {
+    let cases = load_dtype_differential_cases(&config.fixture_root)?;
+    let mut report = SuiteReport {
+        suite: "dtype_differential",
+        case_count: cases.len(),
+        pass_count: 0,
+        failures: Vec::new(),
+    };
+    let mut mismatches = Vec::new();
+
+    for case in cases {
+        let mode = resolve_case_mode(&case.mode, config.strict_mode);
+        let env_fingerprint = normalize_env_fingerprint(&case.env_fingerprint);
+        let artifact_refs = normalize_artifact_refs(case.artifact_refs.clone());
+        let reason_code = normalize_reason_code(&case.reason_code);
+        let expected_reason_code = if case.expected_reason_code.trim().is_empty() {
+            reason_code.clone()
+        } else {
+            case.expected_reason_code.trim().to_string()
+        };
+        let minimal_repro_artifacts = if case.minimal_repro_artifacts.is_empty() {
+            artifact_refs.clone()
+        } else {
+            normalize_artifact_refs(case.minimal_repro_artifacts.clone())
+        };
+
+        let mut expected_dtype_for_log = case.expected.clone();
+        let (passed, actual_reason_code, actual_dtype_for_log, detail) = match parse_dtype_for_suite(
+            &case.lhs, "lhs",
+        ) {
+            Ok(lhs) => match parse_dtype_for_suite(&case.rhs, "rhs") {
+                Ok(rhs) => match parse_dtype_for_suite(&case.expected, "expected") {
+                    Ok(expected) => {
+                        expected_dtype_for_log = expected.name().to_string();
+                        let actual = promote(lhs, rhs);
+                        let actual_reason_code = if actual == expected {
+                            reason_code.clone()
+                        } else {
+                            "dtype_promotion_oracle_mismatch".to_string()
+                        };
+                        let reason_match = actual_reason_code == expected_reason_code;
+                        let passed = actual == expected && reason_match;
+                        let detail = if passed {
+                            String::new()
+                        } else if actual != expected {
+                            format!(
+                                "promotion mismatch expected={} actual={}",
+                                expected.name(),
+                                actual.name()
+                            )
+                        } else {
+                            format!(
+                                "reason_code mismatch expected_reason_code={} actual_reason_code={actual_reason_code}",
+                                expected_reason_code
+                            )
+                        };
+                        (
+                            passed,
+                            actual_reason_code,
+                            actual.name().to_string(),
+                            detail,
+                        )
+                    }
+                    Err(err) => (
+                        false,
+                        err.reason_code,
+                        "parse_error".to_string(),
+                        err.message,
+                    ),
+                },
+                Err(err) => (
+                    false,
+                    err.reason_code,
+                    "parse_error".to_string(),
+                    err.message,
+                ),
+            },
+            Err(err) => (
+                false,
+                err.reason_code,
+                "parse_error".to_string(),
+                err.message,
+            ),
+        };
+
+        if passed {
+            report.pass_count += 1;
+        } else {
+            let rendered = format!(
+                "{}: seed={} mode={} reason_code={} env_fingerprint={} artifact_refs={} {} (expected_reason_code={} actual_reason_code={})",
+                case.id,
+                case.seed,
+                mode,
+                reason_code,
+                env_fingerprint,
+                artifact_refs.join(","),
+                detail,
+                expected_reason_code,
+                actual_reason_code
+            );
+            report.failures.push(rendered.clone());
+            mismatches.push(DTypeDifferentialMismatch {
+                fixture_id: case.id.clone(),
+                seed: case.seed,
+                mode: mode.clone(),
+                lhs: case.lhs.clone(),
+                rhs: case.rhs.clone(),
+                expected_dtype: expected_dtype_for_log.clone(),
+                actual_dtype: actual_dtype_for_log.clone(),
+                expected_reason_code: expected_reason_code.clone(),
+                actual_reason_code: actual_reason_code.clone(),
+                message: rendered,
+                minimal_repro_artifacts: minimal_repro_artifacts.clone(),
+                artifact_refs: artifact_refs.clone(),
+            });
+        }
+
+        let log_entry = DTypePromotionLogEntry {
+            suite: "dtype_differential",
+            fixture_id: case.id,
+            seed: case.seed,
+            mode: mode.clone(),
+            env_fingerprint,
+            artifact_refs,
+            reason_code: reason_code.clone(),
+            lhs: case.lhs,
+            rhs: case.rhs,
+            expected: expected_dtype_for_log,
+            actual: actual_dtype_for_log,
+            passed,
+        };
+        maybe_append_dtype_promotion_log(&log_entry)?;
+    }
+
+    let artifact = DTypeDifferentialReportArtifact {
+        suite: "dtype_differential",
+        total_cases: report.case_count,
+        passed_cases: report.pass_count,
+        failed_cases: report.case_count.saturating_sub(report.pass_count),
+        mismatches,
+    };
+    let artifact_path = config
+        .fixture_root
+        .join("oracle_outputs/dtype_differential_report.json");
+    if let Some(parent) = artifact_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed creating {}: {err}", parent.display()))?;
+    }
+    let payload = serde_json::to_string_pretty(&artifact)
+        .map_err(|err| format!("failed serializing dtype differential report: {err}"))?;
+    fs::write(&artifact_path, payload.as_bytes())
+        .map_err(|err| format!("failed writing {}: {err}", artifact_path.display()))?;
+
+    Ok(report)
+}
+
+pub fn run_dtype_metamorphic_suite(config: &HarnessConfig) -> Result<SuiteReport, String> {
+    let cases = load_dtype_metamorphic_cases(&config.fixture_root)?;
+    let mut report = SuiteReport {
+        suite: "dtype_metamorphic",
+        case_count: 0,
+        pass_count: 0,
+        failures: Vec::new(),
+    };
+
+    for case in cases {
+        let mode = resolve_case_mode(&case.mode, config.strict_mode);
+        let env_fingerprint = normalize_env_fingerprint(&case.env_fingerprint);
+        let artifact_refs = normalize_artifact_refs(case.artifact_refs.clone());
+        let reason_code = normalize_reason_code(&case.reason_code);
+
+        let (passed, expected_for_log, actual_for_log, detail) = match case.relation.as_str() {
+            "commutative" => match case.rhs.as_ref() {
+                Some(rhs_raw) => match parse_dtype_for_suite(&case.lhs, "lhs")
+                    .and_then(|lhs| parse_dtype_for_suite(rhs_raw, "rhs").map(|rhs| (lhs, rhs)))
+                {
+                    Ok((lhs, rhs)) => {
+                        let lhs_rhs = promote(lhs, rhs);
+                        let rhs_lhs = promote(rhs, lhs);
+                        (
+                            lhs_rhs == rhs_lhs,
+                            rhs_lhs.name().to_string(),
+                            lhs_rhs.name().to_string(),
+                            format!(
+                                "commutative promotion mismatch lhs_rhs={} rhs_lhs={}",
+                                lhs_rhs.name(),
+                                rhs_lhs.name()
+                            ),
+                        )
+                    }
+                    Err(err) => (
+                        false,
+                        "parse_success".to_string(),
+                        "parse_error".to_string(),
+                        err.message,
+                    ),
+                },
+                None => (
+                    false,
+                    "relation_requires_rhs".to_string(),
+                    "missing_rhs".to_string(),
+                    "commutative relation requires rhs dtype".to_string(),
+                ),
+            },
+            "idempotent" => match parse_dtype_for_suite(&case.lhs, "lhs") {
+                Ok(lhs) => {
+                    let actual = promote(lhs, lhs);
+                    (
+                        actual == lhs,
+                        lhs.name().to_string(),
+                        actual.name().to_string(),
+                        format!(
+                            "idempotent promotion mismatch expected={} actual={}",
+                            lhs.name(),
+                            actual.name()
+                        ),
+                    )
+                }
+                Err(err) => (
+                    false,
+                    "parse_success".to_string(),
+                    "parse_error".to_string(),
+                    err.message,
+                ),
+            },
+            "lossless_cast_destination" => match case.rhs.as_ref() {
+                Some(rhs_raw) => match parse_dtype_for_suite(&case.lhs, "lhs")
+                    .and_then(|lhs| parse_dtype_for_suite(rhs_raw, "rhs").map(|rhs| (lhs, rhs)))
+                {
+                    Ok((lhs, rhs)) => {
+                        if !can_cast_lossless(lhs, rhs) {
+                            (
+                                false,
+                                "cast_lossless_precondition".to_string(),
+                                "cast_lossless_precondition_failed".to_string(),
+                                format!(
+                                    "fixture precondition failed: can_cast_lossless({}, {}) is false",
+                                    lhs.name(),
+                                    rhs.name()
+                                ),
+                            )
+                        } else {
+                            let actual = promote(lhs, rhs);
+                            (
+                                actual == rhs,
+                                rhs.name().to_string(),
+                                actual.name().to_string(),
+                                format!(
+                                    "lossless-cast promotion mismatch expected={} actual={}",
+                                    rhs.name(),
+                                    actual.name()
+                                ),
+                            )
+                        }
+                    }
+                    Err(err) => (
+                        false,
+                        "parse_success".to_string(),
+                        "parse_error".to_string(),
+                        err.message,
+                    ),
+                },
+                None => (
+                    false,
+                    "relation_requires_rhs".to_string(),
+                    "missing_rhs".to_string(),
+                    "lossless_cast_destination relation requires rhs dtype".to_string(),
+                ),
+            },
+            other => (
+                false,
+                "known_relation".to_string(),
+                other.to_string(),
+                format!("unsupported relation {other}"),
+            ),
+        };
+
+        record_suite_check(
+            &mut report,
+            passed,
+            format!(
+                "{}: seed={} mode={} reason_code={} env_fingerprint={} artifact_refs={} {}",
+                case.id,
+                case.seed,
+                mode,
+                reason_code,
+                env_fingerprint,
+                artifact_refs.join(","),
+                detail
+            ),
+        );
+
+        let rhs_for_log = case.rhs.unwrap_or_else(|| case.lhs.clone());
+        let log_entry = DTypePromotionLogEntry {
+            suite: "dtype_metamorphic",
+            fixture_id: case.id,
+            seed: case.seed,
+            mode: mode.clone(),
+            env_fingerprint,
+            artifact_refs,
+            reason_code,
+            lhs: case.lhs,
+            rhs: rhs_for_log,
+            expected: expected_for_log,
+            actual: actual_for_log,
+            passed,
+        };
+        maybe_append_dtype_promotion_log(&log_entry)?;
+    }
+
+    Ok(report)
+}
+
+fn execute_dtype_adversarial_operation(
+    case: &DTypeAdversarialCase,
+) -> Result<(DType, DType, DType), DTypeSuiteError> {
+    let lhs = parse_dtype_for_suite(&case.lhs, "lhs")?;
+    let rhs = parse_dtype_for_suite(&case.rhs, "rhs")?;
+    let actual = promote(lhs, rhs);
+    Ok((lhs, rhs, actual))
+}
+
+pub fn run_dtype_adversarial_suite(config: &HarnessConfig) -> Result<SuiteReport, String> {
+    let cases = load_dtype_adversarial_cases(&config.fixture_root)?;
+    let mut report = SuiteReport {
+        suite: "dtype_adversarial",
+        case_count: cases.len(),
+        pass_count: 0,
+        failures: Vec::new(),
+    };
+
+    for case in cases {
+        let mode = resolve_case_mode(&case.mode, config.strict_mode);
+        let env_fingerprint = normalize_env_fingerprint(&case.env_fingerprint);
+        let artifact_refs = normalize_artifact_refs(case.artifact_refs.clone());
+        let reason_code = normalize_reason_code(&case.reason_code);
+        let expected_reason_code = if case.expected_reason_code.trim().is_empty() {
+            reason_code.clone()
+        } else {
+            case.expected_reason_code.trim().to_string()
+        };
+        let severity = case.severity.trim().to_lowercase();
+        if !matches!(severity.as_str(), "low" | "medium" | "high" | "critical") {
+            report.failures.push(format!(
+                "{}: invalid severity '{}' (must be low|medium|high|critical), reason_code={}, mode={}, env_fingerprint={}, artifact_refs={}",
+                case.id,
+                case.severity,
+                reason_code,
+                mode,
+                env_fingerprint,
+                artifact_refs.join(",")
+            ));
+            continue;
+        }
+        if case.expected_error_contains.trim().is_empty() {
+            report.failures.push(format!(
+                "{}: expected_error_contains must be non-empty, reason_code={}, mode={}, env_fingerprint={}, artifact_refs={}",
+                case.id,
+                reason_code,
+                mode,
+                env_fingerprint,
+                artifact_refs.join(",")
+            ));
+            continue;
+        }
+        let expected_error = case.expected_error_contains.to_lowercase();
+        let (passed, expected_for_log, actual_for_log) = match execute_dtype_adversarial_operation(
+            &case,
+        ) {
+            Ok((_lhs, _rhs, actual)) => {
+                let expected_for_log = format!(
+                    "error_contains:{} reason_code={}",
+                    case.expected_error_contains, expected_reason_code
+                );
+                report.failures.push(format!(
+                    "{}: severity={severity} seed={} reason_code={} mode={} env_fingerprint={} artifact_refs={} expected error containing '{}' but operation succeeded with promoted dtype={}",
+                    case.id,
+                    case.seed,
+                    reason_code,
+                    mode,
+                    env_fingerprint,
+                    artifact_refs.join(","),
+                    case.expected_error_contains,
+                    actual.name()
+                ));
+                (false, expected_for_log, actual.name().to_string())
+            }
+            Err(err) => {
+                let contains_expected = err.message.to_lowercase().contains(&expected_error);
+                let reason_match = err.reason_code == expected_reason_code;
+                let expected_for_log = format!(
+                    "error_contains:{} reason_code={}",
+                    case.expected_error_contains, expected_reason_code
+                );
+                if contains_expected && reason_match {
+                    report.pass_count += 1;
+                    (
+                        true,
+                        expected_for_log,
+                        format!("error reason_code={}", err.reason_code),
+                    )
+                } else {
+                    report.failures.push(format!(
+                        "{}: severity={severity} seed={} reason_code={} mode={} env_fingerprint={} artifact_refs={} expected error containing '{}' with reason_code='{}' but got '{}' (actual_reason_code='{}')",
+                        case.id,
+                        case.seed,
+                        reason_code,
+                        mode,
+                        env_fingerprint,
+                        artifact_refs.join(","),
+                        case.expected_error_contains,
+                        expected_reason_code,
+                        err.message,
+                        err.reason_code
+                    ));
+                    (
+                        false,
+                        expected_for_log,
+                        format!("error reason_code={}", err.reason_code),
+                    )
+                }
+            }
+        };
+
+        let log_entry = DTypePromotionLogEntry {
+            suite: "dtype_adversarial",
+            fixture_id: case.id,
+            seed: case.seed,
+            mode: mode.clone(),
+            env_fingerprint,
+            artifact_refs,
+            reason_code: reason_code.clone(),
+            lhs: case.lhs,
+            rhs: case.rhs,
+            expected: expected_for_log,
+            actual: actual_for_log,
             passed,
         };
         maybe_append_dtype_promotion_log(&log_entry)?;
@@ -5823,6 +6409,7 @@ fn validate_runtime_policy_log_fields(
 mod tests {
     use super::{
         HarnessConfig, run_all_core_suites, run_crash_signature_regression_suite,
+        run_dtype_adversarial_suite, run_dtype_differential_suite, run_dtype_metamorphic_suite,
         run_dtype_promotion_suite, run_io_adversarial_suite, run_io_differential_suite,
         run_io_metamorphic_suite, run_iter_adversarial_suite, run_iter_differential_suite,
         run_iter_metamorphic_suite, run_linalg_adversarial_suite, run_linalg_differential_suite,
@@ -5920,6 +6507,37 @@ mod tests {
 
         let adversarial =
             run_iter_adversarial_suite(&cfg).expect("iter adversarial suite should run");
+        assert!(
+            adversarial.all_passed(),
+            "failures={:?}",
+            adversarial.failures
+        );
+    }
+
+    #[test]
+    fn dtype_packet002_f_suites_are_green() {
+        let mut cfg = HarnessConfig::default_paths();
+        cfg.fixture_root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/packet002_dtype");
+
+        let differential = run_dtype_differential_suite(&cfg)
+            .expect("packet002 dtype differential suite should run");
+        assert!(
+            differential.all_passed(),
+            "failures={:?}",
+            differential.failures
+        );
+
+        let metamorphic = run_dtype_metamorphic_suite(&cfg)
+            .expect("packet002 dtype metamorphic suite should run");
+        assert!(
+            metamorphic.all_passed(),
+            "failures={:?}",
+            metamorphic.failures
+        );
+
+        let adversarial = run_dtype_adversarial_suite(&cfg)
+            .expect("packet002 dtype adversarial suite should run");
         assert!(
             adversarial.all_passed(),
             "failures={:?}",

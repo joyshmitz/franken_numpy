@@ -10,6 +10,9 @@ This folder stores normalized oracle-vs-target fixtures for `fnp-conformance`.
 - `iter_differential_cases.json`: packet `FNP-P2C-004` iterator differential corpus for selector/overlap/flag/flatiter behavior parity.
 - `iter_metamorphic_cases.json`: deterministic iterator metamorphic invariants (repeatability/idempotence/count laws).
 - `iter_adversarial_cases.json`: hostile iterator payloads expecting stable reason-code failures.
+- `packet002_dtype/dtype_differential_cases.json`: packet `FNP-P2C-002` dtype differential oracle corpus (promotion matrix parity with replay metadata).
+- `packet002_dtype/dtype_metamorphic_cases.json`: packet `FNP-P2C-002` deterministic dtype metamorphic invariants (commutativity, idempotence, lossless-cast destination law).
+- `packet002_dtype/dtype_adversarial_cases.json`: packet `FNP-P2C-002` hostile dtype payloads expecting fail-closed normalization reason-code classes.
 - `packet003_transfer/iter_differential_cases.json`: packet `FNP-P2C-003` transfer differential corpus (selector/overlap/flags/flatiter) with packet-local artifact refs.
 - `packet003_transfer/iter_metamorphic_cases.json`: packet `FNP-P2C-003` deterministic transfer metamorphic invariants.
 - `packet003_transfer/iter_adversarial_cases.json`: packet `FNP-P2C-003` hostile transfer payloads with severity and expected fail-closed reason-code classes.
@@ -29,6 +32,7 @@ This folder stores normalized oracle-vs-target fixtures for `fnp-conformance`.
 - `oracle_outputs/ufunc_oracle_output.json`: captured NumPy oracle outputs.
 - `oracle_outputs/ufunc_differential_report.json`: comparator report against current Rust implementation.
 - `oracle_outputs/iter_differential_report.json`: machine-readable mismatch report for packet `FNP-P2C-004` iterator differential checks.
+- `packet002_dtype/oracle_outputs/dtype_differential_report.json`: machine-readable mismatch report for packet `FNP-P2C-002` dtype differential checks.
 - `packet003_transfer/oracle_outputs/iter_differential_report.json`: machine-readable mismatch report for packet `FNP-P2C-003` transfer differential checks.
 - `oracle_outputs/io_differential_report.json`: machine-readable mismatch report for packet `FNP-P2C-009` IO differential checks.
 - `oracle_outputs/linalg_differential_report.json`: machine-readable mismatch report for packet `FNP-P2C-008` differential checks.

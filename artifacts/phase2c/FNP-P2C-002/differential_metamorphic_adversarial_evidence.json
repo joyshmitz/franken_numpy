@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "packet_id": "FNP-P2C-002",
+  "subtask_id": "FNP-P2C-002-F",
+  "status": "pass",
+  "summary": {
+    "dtype_differential_total_cases": 8,
+    "dtype_differential_passed_cases": 8,
+    "dtype_differential_failed_cases": 0,
+    "dtype_metamorphic_total_cases": 5,
+    "dtype_metamorphic_passed_cases": 5,
+    "dtype_metamorphic_failed_cases": 0,
+    "dtype_adversarial_total_cases": 6,
+    "dtype_adversarial_passed_cases": 6,
+    "dtype_adversarial_failed_cases": 0
+  },
+  "suites": [
+    {
+      "suite": "dtype_packet002_f_suites",
+      "command": "rch exec -- cargo test -p fnp-conformance dtype_packet002_f_suites_are_green -- --nocapture",
+      "result": "pass",
+      "notes": [
+        "Executes packet-002 dtype differential + metamorphic + adversarial lanes with deterministic seeds.",
+        "Differential mismatch artifact is emitted at crates/fnp-conformance/fixtures/packet002_dtype/oracle_outputs/dtype_differential_report.json."
+      ]
+    }
+  ],
+  "quality_gates": [
+    {
+      "command": "rch exec -- cargo fmt --check",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo check --workspace --all-targets",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo clippy --workspace --all-targets -- -D warnings",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo run -p fnp-conformance --bin validate_phase2c_packet -- --packet-id FNP-P2C-002",
+      "result": "pass",
+      "packet_status": "ready"
+    },
+    {
+      "command": "ubs --only=rust crates/fnp-conformance/src/lib.rs",
+      "result": "pass_with_warnings",
+      "critical_findings": 0
+    }
+  ],
+  "artifacts": [
+    "crates/fnp-conformance/src/lib.rs",
+    "crates/fnp-conformance/fixtures/packet002_dtype/dtype_differential_cases.json",
+    "crates/fnp-conformance/fixtures/packet002_dtype/dtype_metamorphic_cases.json",
+    "crates/fnp-conformance/fixtures/packet002_dtype/dtype_adversarial_cases.json",
+    "crates/fnp-conformance/fixtures/packet002_dtype/oracle_outputs/dtype_differential_report.json",
+    "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json",
+    "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+    "artifacts/phase2c/FNP-P2C-002/packet_readiness_report.json",
+    "artifacts/phase2c/FNP-P2C-002/differential_metamorphic_adversarial_evidence.json"
+  ],
+  "notes": [
+    "Differential mismatch payload is machine-readable and carries expected/actual reason-code fields plus minimal repro artifact links when mismatches occur.",
+    "Each packet-002 dtype fixture carries replay-required fields: fixture_id, seed, mode, env_fingerprint, artifact_refs, reason_code.",
+    "Packet-F output is cross-linked to packet-E unit/property evidence and workflow scenario corpus; packet-G remains responsible for e2e replay scripts."
+  ]
+}
