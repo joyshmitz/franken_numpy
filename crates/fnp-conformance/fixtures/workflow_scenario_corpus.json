@@ -518,6 +518,85 @@
     ]
   },
   {
+    "id": "ufunc_packet_override_gufunc_edge_guardrails",
+    "category": "adversarial",
+    "description": "Packet FNP-P2C-005 adversarial workflow covering override-wire fail-closed behavior and gufunc-like signature contract edges in strict/hardened modes.",
+    "seed": 5603,
+    "env_fingerprint": "linux-x86_64-rust2024",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-005/contract_table.md",
+      "crates/fnp-conformance/fixtures/ufunc_adversarial_cases.json",
+      "crates/fnp-conformance/fixtures/runtime_policy_adversarial_cases.json",
+      "scripts/e2e/run_workflow_scenario_gate.sh"
+    ],
+    "reason_code": "ufunc_override_gufunc_edge_guardrails",
+    "strict": {
+      "expected_status": "fail_closed"
+    },
+    "hardened": {
+      "expected_status": "fail_closed"
+    },
+    "steps": [
+      {
+        "id": "step_signature_missing_rhs_shape",
+        "kind": "ufunc_input",
+        "case_id": "mul_missing_rhs_shape",
+        "expect_error_contains": "rhs_shape"
+      },
+      {
+        "id": "step_signature_missing_rhs_values",
+        "kind": "ufunc_input",
+        "case_id": "mul_missing_rhs_values_2x1x3_by_1x3x1",
+        "expect_error_contains": "rhs_values"
+      },
+      {
+        "id": "step_high_rank_axis_guard_rejected",
+        "kind": "ufunc_input",
+        "case_id": "sum_axis_out_of_bounds_5d",
+        "expect_error_contains": "axis"
+      },
+      {
+        "id": "step_override_wire_unknown_mode_fail_closed",
+        "kind": "runtime_policy_wire",
+        "case_id": "wire_unknown_mode_fail_closed",
+        "expected_action_strict": "fail_closed",
+        "expected_action_hardened": "fail_closed"
+      },
+      {
+        "id": "step_override_wire_unknown_class_fail_closed",
+        "kind": "runtime_policy_wire",
+        "case_id": "wire_unknown_class_fail_closed",
+        "expected_action_strict": "fail_closed",
+        "expected_action_hardened": "fail_closed"
+      }
+    ],
+    "links": {
+      "differential_fixture_ids": [
+        "mul_missing_rhs_shape",
+        "mul_missing_rhs_values_2x1x3_by_1x3x1",
+        "sum_axis_out_of_bounds_5d"
+      ],
+      "e2e_script_paths": [
+        "scripts/e2e/run_workflow_scenario_gate.sh",
+        "scripts/e2e/run_security_policy_gate.sh"
+      ]
+    },
+    "gaps": [
+      {
+        "bead_id": "bd-23m.16.10",
+        "owner": "bd-23m.16.10",
+        "priority": "p1",
+        "description": "Add explicit override-precedence fixture lanes once override-bridge semantics are wired into packet-005 differential harness inputs."
+      },
+      {
+        "bead_id": "bd-23m.16.11",
+        "owner": "bd-23m.16.11",
+        "priority": "p1",
+        "description": "Extend this scenario family with true gufunc signature-shape contracts after packet-005 gufunc parser support lands."
+      }
+    ]
+  },
+  {
     "id": "stride_tricks_packet_replay",
     "category": "high_frequency",
     "description": "Packet FNP-P2C-006 golden workflow covering deterministic stride-tricks replay with strict/hardened policy parity.",
