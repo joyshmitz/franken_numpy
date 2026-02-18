@@ -180,6 +180,46 @@ def normalize_dtype_name(name):
     key = str(name).strip().lower()
     return aliases.get(key, name)
 
+def normalize_fallback_dtype(name):
+    aliases = {
+        'bool': 'bool',
+        'bool_': 'bool',
+        'i32': 'i32',
+        'int32': 'i32',
+        'i64': 'i64',
+        'int64': 'i64',
+        'f32': 'f32',
+        'float32': 'f32',
+        'f64': 'f64',
+        'float64': 'f64',
+    }
+    if name is None:
+        return 'f64'
+    key = str(name).strip().lower()
+    return aliases.get(key, 'f64')
+
+def fallback_promote(lhs_dtype, rhs_dtype):
+    lhs = normalize_fallback_dtype(lhs_dtype)
+    rhs = normalize_fallback_dtype(rhs_dtype)
+
+    if lhs == 'bool':
+        return rhs
+    if rhs == 'bool':
+        return lhs
+    if lhs == rhs:
+        return lhs
+    if (lhs == 'i32' and rhs == 'i64') or (lhs == 'i64' and rhs == 'i32'):
+        return 'i64'
+    if lhs == 'f64' or rhs == 'f64':
+        return 'f64'
+    if (lhs == 'f32' and rhs == 'f32'):
+        return 'f32'
+    if (lhs == 'f32' and rhs == 'i32') or (lhs == 'i32' and rhs == 'f32'):
+        return 'f64'
+    if (lhs == 'f32' and rhs == 'i64') or (lhs == 'i64' and rhs == 'f32'):
+        return 'f64'
+    return 'f64'
+
 results = []
 
 for case in cases:
@@ -215,16 +255,18 @@ for case in cases:
         else:
             lhs_shape = case['lhs_shape']
             lhs_vals = [float(v) for v in case['lhs_values']]
+            lhs_dtype = normalize_fallback_dtype(case.get('lhs_dtype', 'f64'))
             if op in ('add', 'sub', 'mul', 'div'):
                 rhs_shape = case['rhs_shape']
                 rhs_vals = [float(v) for v in case['rhs_values']]
+                rhs_dtype = normalize_fallback_dtype(case.get('rhs_dtype', 'f64'))
                 shape, values = py_binary(lhs_vals, lhs_shape, rhs_vals, rhs_shape, op)
-                dtype = 'f64'
+                dtype = fallback_promote(lhs_dtype, rhs_dtype)
             elif op == 'sum':
                 axis = case.get('axis')
                 keepdims = bool(case.get('keepdims', False))
                 shape, values = py_sum(lhs_vals, lhs_shape, axis, keepdims)
-                dtype = 'f64'
+                dtype = lhs_dtype
             else:
                 raise ValueError(f'unsupported op: {op}')
 

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "oracle_source": "pure_python_fallback",
-  "generated_at_unix_ms": 1771448439420,
+  "generated_at_unix_ms": 1771450030905,
   "cases": [
     {
       "id": "add_broadcast_2x3_plus_3",
@@ -414,6 +414,48 @@
         26.0
       ],
       "dtype": "f64"
+    },
+    {
+      "id": "mul_mixed_dtype_bool_by_i64_2x1x2_by_1x3x1",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        2,
+        3,
+        2
+      ],
+      "values": [
+        10.0,
+        0.0,
+        -2.0,
+        -0.0,
+        7.0,
+        0.0,
+        0.0,
+        10.0,
+        -0.0,
+        -2.0,
+        0.0,
+        7.0
+      ],
+      "dtype": "i64"
+    },
+    {
+      "id": "sum_axis1_keepdims_i32_2x2x2",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        2,
+        1,
+        2
+      ],
+      "values": [
+        2.0,
+        -6.0,
+        -4.0,
+        26.0
+      ],
+      "dtype": "i32"
     },
     {
       "id": "add_zero_extent_mixed_dtype_2x0x3x1_plus_1x0x1x1",
