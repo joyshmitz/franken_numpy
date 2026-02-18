@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
   "bundle_id": "fnp_p2c007_parity_bundle_v1",
-  "generated_at_unix_ms": 1771345916525,
+  "generated_at_unix_ms": 1771441930014,
   "status": "ok",
-  "expected_hash": "323cb6cabe940c84c27e95875c453f4ba1d5045b743efd81c56b8132aad1e685",
-  "decoded_hash": "323cb6cabe940c84c27e95875c453f4ba1d5045b743efd81c56b8132aad1e685",
+  "expected_hash": "c94cd88886e6b31417bf2475a9cdd3013d16a4938660d7a25117ad6e893c8696",
+  "decoded_hash": "c94cd88886e6b31417bf2475a9cdd3013d16a4938660d7a25117ad6e893c8696",
   "full_decode_match": true,
   "recovery_decode_match": true,
-  "symbols_total": 1055,
-  "symbols_used_full": 1055,
-  "symbols_used_recovery": 1054
+  "symbols_total": 1058,
+  "symbols_used_full": 1058,
+  "symbols_used_recovery": 1057
 }

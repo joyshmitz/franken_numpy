@@ -137,6 +137,13 @@ fn run() -> Result<(), String> {
     let parity_gate_path = packet_dir.join("parity_gate.yaml");
     write_yaml_file(&parity_gate_path, &parity_gate)?;
 
+    let parity_report_path = packet_dir.join("parity_report.json");
+    let source_bundle_paths = packet_bundle_source_files(&repo_root, &packet_dir);
+    let drift_hash_source_paths =
+        compatibility_drift_source_files(&source_bundle_paths, &parity_report_path)?;
+    ensure_files_exist(&drift_hash_source_paths)?;
+    let (compatibility_drift_hash, _) =
+        compute_compatibility_drift_hash(&repo_root, &drift_hash_source_paths)?;
     let parity_report = ParityReport {
         schema_version: 1,
         packet_id: PACKET_ID.to_string(),
@@ -146,20 +153,11 @@ fn run() -> Result<(), String> {
             "no_observed_strict_drift_in_packet008_gates".to_string(),
             "no_observed_hardened_drift_in_packet008_gates".to_string(),
         ],
-        compatibility_drift_hash: "sha256:pending-p2c008-drift-hash".to_string(),
-    };
-    let parity_report_path = packet_dir.join("parity_report.json");
-    write_json_file(&parity_report_path, &parity_report)?;
-
-    let source_bundle_paths = packet_bundle_source_files(&repo_root, &packet_dir);
-    ensure_files_exist(&source_bundle_paths)?;
-    let (compatibility_drift_hash, artifact_digests) =
-        compute_compatibility_drift_hash(&repo_root, &source_bundle_paths)?;
-    let parity_report = ParityReport {
         compatibility_drift_hash,
-        ..parity_report
     };
     write_json_file(&parity_report_path, &parity_report)?;
+    ensure_files_exist(&source_bundle_paths)?;
+    let artifact_digests = compute_artifact_digests(&repo_root, &source_bundle_paths)?;
 
     let sidecar_path = packet_dir.join("parity_report.raptorq.json");
     let scrub_report_path = packet_dir.join("parity_report.scrub_report.json");
@@ -356,6 +354,31 @@ fn packet_bundle_source_files(repo_root: &Path, packet_dir: &Path) -> Vec<PathBu
     ]
 }
 
+fn compatibility_drift_source_files(
+    source_bundle_paths: &[PathBuf],
+    parity_report_path: &Path,
+) -> Result<Vec<PathBuf>, String> {
+    let mut removed_parity_report = false;
+    let mut drift_paths = Vec::with_capacity(source_bundle_paths.len().saturating_sub(1));
+
+    for path in source_bundle_paths {
+        if path == parity_report_path {
+            removed_parity_report = true;
+            continue;
+        }
+        drift_paths.push(path.clone());
+    }
+
+    if !removed_parity_report {
+        return Err(format!(
+            "parity report source is missing from bundle paths: {}",
+            parity_report_path.display()
+        ));
+    }
+
+    Ok(drift_paths)
+}
+
 fn ensure_files_exist(paths: &[PathBuf]) -> Result<(), String> {
     for path in paths {
         if !path.is_file() {
@@ -369,13 +392,7 @@ fn compute_compatibility_drift_hash(
     repo_root: &Path,
     paths: &[PathBuf],
 ) -> Result<(String, BTreeMap<String, String>), String> {
-    let mut digests = BTreeMap::new();
-    for path in paths {
-        let bytes =
-            fs::read(path).map_err(|err| format!("failed reading {}: {err}", path.display()))?;
-        let digest = sha256_hex(&bytes);
-        digests.insert(relative_path_string(repo_root, path), digest);
-    }
+    let digests = compute_artifact_digests(repo_root, paths)?;
 
     let mut hasher = Sha256::new();
     for (path, digest) in &digests {
@@ -386,6 +403,20 @@ fn compute_compatibility_drift_hash(
     }
     let combined = hasher.finalize();
     Ok((format!("sha256:{}", hex_lower(&combined)), digests))
+}
+
+fn compute_artifact_digests(
+    repo_root: &Path,
+    paths: &[PathBuf],
+) -> Result<BTreeMap<String, String>, String> {
+    let mut digests = BTreeMap::new();
+    for path in paths {
+        let bytes =
+            fs::read(path).map_err(|err| format!("failed reading {}: {err}", path.display()))?;
+        let digest = sha256_hex(&bytes);
+        digests.insert(relative_path_string(repo_root, path), digest);
+    }
+    Ok(digests)
 }
 
 fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {

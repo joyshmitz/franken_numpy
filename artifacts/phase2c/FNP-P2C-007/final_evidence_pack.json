@@ -2,13 +2,13 @@
   "schema_version": 1,
   "packet_id": "FNP-P2C-007",
   "subtask_id": "FNP-P2C-007-I",
-  "generated_at_unix_ms": 1771345916526,
+  "generated_at_unix_ms": 1771441930015,
   "status": "pass",
   "reproducibility_command": "cargo run -p fnp-conformance --bin generate_packet007_final_evidence_pack",
   "parity_signals": {
     "strict_parity": 1.0,
     "hardened_parity": 1.0,
-    "compatibility_drift_hash": "sha256:ff0e9b492f86f0b526a14129de63fb6ca2019fe970ac39801af66dd2f5a486b4",
+    "compatibility_drift_hash": "sha256:dabdf2f34a52e1bb1e31ac18d05eace39141661741028a71e4621cff3b17d1c2",
     "divergence_classes": [
       "no_observed_strict_drift_in_packet007_gates",
       "no_observed_hardened_drift_in_packet007_gates"
@@ -53,7 +53,7 @@
     "crates/fnp-conformance/fixtures/oracle_outputs/rng_differential_report.json"
   ],
   "artifact_digests": {
-    "artifacts/phase2c/FNP-P2C-007/behavior_extraction_ledger.md": "fad047a5ba2db97d5ee446090cfc1e9f87a0d9a9528cc366ef07a4ec9a04a81f",
+    "artifacts/phase2c/FNP-P2C-007/behavior_extraction_ledger.md": "6326dc31601106d03c30f6418fd3968a5f8ab03e7689d9050e4c34f91532e127",
     "artifacts/phase2c/FNP-P2C-007/contract_table.md": "9077e9146ea6397a14484dc73491aa1b95c1dfbf05c0580ea693882b7dbc8f55",
     "artifacts/phase2c/FNP-P2C-007/differential_metamorphic_adversarial_evidence.json": "4417fcc19492c2eaf6da504317276339a6815e8f831a523889d659cf26f1634b",
     "artifacts/phase2c/FNP-P2C-007/e2e_replay_forensics_evidence.json": "759f1afb6b21a58ca2f35103f72e2622d27b420db2b782cf1345b06e7093104e",
@@ -62,8 +62,8 @@
     "artifacts/phase2c/FNP-P2C-007/optimization_profile_isomorphism_evidence.json": "821b8d01046f5db1bb9f6acb287c44d38dad7c371e4c6f65b4029ec3aaaae1a5",
     "artifacts/phase2c/FNP-P2C-007/optimization_profile_report.json": "8bb3c6c966a6fd771065b4d058ce9f5de8178f23cd513a8b8e20c29c7156e212",
     "artifacts/phase2c/FNP-P2C-007/parity_gate.yaml": "9bc755c6ceff786383ee8a3bf319a5b1e84dd8e8bcf81ae8375cff790b1ab0ae",
-    "artifacts/phase2c/FNP-P2C-007/parity_report.json": "30555035b9aae1dda063e327e8fda092775a14118dc8531f9735398366459845",
-    "artifacts/phase2c/FNP-P2C-007/risk_note.md": "fad8a34388767ba2d5fb723f41605f207a345c8664f8432a9e79e6affc69cae3",
+    "artifacts/phase2c/FNP-P2C-007/parity_report.json": "68ecefebdfe2de06405e13a443e4371222c2441198cfa470cf17aa1f651a8770",
+    "artifacts/phase2c/FNP-P2C-007/risk_note.md": "a77f2ddd0bf4847baa2bcb472923d7e454b2bf418b253a4340381210dcda89d3",
     "artifacts/phase2c/FNP-P2C-007/unit_property_evidence.json": "2243ea8c8bb0c7666719a95c0430456b92f27bcb741b7dce2a00b5a30b2e69b2",
     "artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_opt_artifact_index.json": "f3e4a950637688d8c7998e88b4a63e437337d6a92609058a2764505119c0c29d",
     "artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_opt_e2e.jsonl": "a8d356412ce270bdb174f60640b18fd9382eff4add685cc97311317bc58b036a",

@@ -469,6 +469,7 @@ fn hex_lower(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn packet_bundle_source_files_contains_workflow_corpus_and_parity_report() {
@@ -516,5 +517,38 @@ mod tests {
         let err = compatibility_drift_source_files(&source_bundle, &parity_report)
             .expect_err("missing parity report must fail");
         assert!(err.contains("parity report source is missing from bundle paths"));
+    }
+
+    #[test]
+    fn compatibility_drift_hash_is_order_independent() {
+        let repo_root = std::env::temp_dir().join(format!(
+            "fnp_packet005_hash_test_{}_{}",
+            std::process::id(),
+            now_unix_ms()
+        ));
+        let alpha = repo_root.join("fixtures/alpha.json");
+        let beta = repo_root.join("fixtures/beta.json");
+        fs::create_dir_all(
+            alpha
+                .parent()
+                .expect("alpha fixture path must have a parent directory"),
+        )
+        .expect("create fixture directory");
+        fs::write(&alpha, r#"{"case":"alpha","value":1}"#).expect("write alpha fixture");
+        fs::write(&beta, r#"{"case":"beta","value":2}"#).expect("write beta fixture");
+
+        let ordered_paths = vec![alpha.clone(), beta.clone()];
+        let reversed_paths = vec![beta, alpha];
+
+        let (ordered_hash, ordered_digests) =
+            compute_compatibility_drift_hash(&repo_root, &ordered_paths)
+                .expect("compute ordered drift hash");
+        let (reversed_hash, reversed_digests) =
+            compute_compatibility_drift_hash(&repo_root, &reversed_paths)
+                .expect("compute reversed drift hash");
+
+        assert_eq!(ordered_hash, reversed_hash);
+        assert_eq!(ordered_digests, reversed_digests);
+        fs::remove_dir_all(&repo_root).expect("cleanup temp repo");
     }
 }

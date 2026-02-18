@@ -2,13 +2,13 @@
   "schema_version": 1,
   "packet_id": "FNP-P2C-003",
   "subtask_id": "FNP-P2C-003-I",
-  "generated_at_unix_ms": 1771372410280,
+  "generated_at_unix_ms": 1771441924677,
   "status": "pass",
   "reproducibility_command": "cargo run -p fnp-conformance --bin generate_packet003_final_evidence_pack",
   "parity_signals": {
     "strict_parity": 1.0,
     "hardened_parity": 1.0,
-    "compatibility_drift_hash": "sha256:0b0a66372366fd7366f339d1c009edc7a86e3446dd4c49d7f089aeb1033679ca",
+    "compatibility_drift_hash": "sha256:5a6fec181f4f0dad63042d90884142b64390426378d3002975b80de26b8976d8",
     "divergence_classes": [
       "no_observed_strict_drift_in_packet003_gates",
       "no_observed_hardened_drift_in_packet003_gates"
@@ -65,7 +65,7 @@
     "artifacts/phase2c/FNP-P2C-003/optimization_profile_isomorphism_evidence.json": "76926fe6b85f3b74b96ca4823630b738d4804832290b4834751397d4d9484703",
     "artifacts/phase2c/FNP-P2C-003/optimization_profile_report.json": "f81acc51425ab8d3566cc5771fa40ede711be510ac4cd8fd4428058bb4af8f81",
     "artifacts/phase2c/FNP-P2C-003/parity_gate.yaml": "1073f624855ba666354e6fdc65197286997e4c6d3fd16ba6ab89643b88acc526",
-    "artifacts/phase2c/FNP-P2C-003/parity_report.json": "3a4a671c0a540ac9dedaada3179287d26d7185213985ce004093cfe5ec54e415",
+    "artifacts/phase2c/FNP-P2C-003/parity_report.json": "77f4d16bda045574bd56079ae1ea32c9c18957c4738a2eb4bb42778298e01b27",
     "artifacts/phase2c/FNP-P2C-003/risk_note.md": "9484ebf6b76a01bfc5d246056f09df7c27dab511a539885645138cf25d56dc27",
     "artifacts/phase2c/FNP-P2C-003/unit_property_evidence.json": "404174265a301265c04d81613d14a3b04e7638c81132d7362d10e6b97713441e",
     "artifacts/phase2c/FNP-P2C-003/workflow_scenario_packet003_artifact_index.json": "4b224c6e2f951e2e1b09bc0b5477700496dc94492b09e4c083a92aa4cfadd7b1",

@@ -8,4 +8,3 @@ hardened_mode:
   min_pass_rate: 0.99
 max_strict_drift: 0.0
 max_hardened_divergence: 0.01
-
