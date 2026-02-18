@@ -8,3 +8,5 @@ cargo run -p fnp-conformance --bin run_ufunc_differential
 ```
 
 Files in this folder are deterministic JSON artifacts used by `run_ufunc_differential_suite`.
+
+`scripts/e2e/run_ci_gate_topology.sh` now captures oracle output before G3 differential and, in CI contexts, fails when `oracle_source` is `pure_python_fallback`. Set `FNP_ORACLE_PYTHON` to a NumPy-backed interpreter to satisfy that gate.

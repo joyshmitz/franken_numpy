@@ -78,6 +78,7 @@ Notes:
 - Oracle capture prefers legacy NumPy import, then system NumPy.
 - Oracle interpreter is configurable with `FNP_ORACLE_PYTHON` (defaults to `python3`).
 - If neither is importable in the environment, it uses `pure_python_fallback` and records this in the oracle artifact.
+- `scripts/e2e/run_ci_gate_topology.sh` runs oracle capture before G3 differential and fails in CI when fallback is used (`FNP_REQUIRE_REAL_NUMPY_ORACLE=1`, auto-enabled for `CI=1`/`GITHUB_ACTIONS=true`).
 - Packet contract schema lock is versioned as `phase2c-contract-v1` in `artifacts/contracts/`.
 - Security threat controls are machine-mapped in `artifacts/contracts/security_control_checks_v1.yaml`.
 - Runtime-policy e2e logs are emitted as JSONL under `artifacts/logs/` by `run_security_gate` / `scripts/e2e/run_security_policy_gate.sh`.
@@ -97,7 +98,7 @@ Ordered gates (`fast -> heavy`):
 
 1. `G1` fmt + lint: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`
 2. `G2` unit/property: `cargo test --workspace --lib`
-3. `G3` differential: `cargo run -p fnp-conformance --bin run_ufunc_differential`
+3. `G3` oracle capture + differential: `cargo run -p fnp-conformance --bin capture_numpy_oracle` then `cargo run -p fnp-conformance --bin run_ufunc_differential`
 4. `G4` adversarial/security: `scripts/e2e/run_security_policy_gate.sh`
 5. `G5` test/logging contract: `scripts/e2e/run_test_contract_gate.sh`
 6. `G6` workflow e2e + forensics: `scripts/e2e/run_workflow_scenario_gate.sh`
