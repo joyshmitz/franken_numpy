@@ -1,14 +1,16 @@
 {
+  "schema_version": 1,
+  "oracle_source": "pure_python_fallback",
+  "generated_at_unix_ms": 1771393029467,
   "cases": [
     {
-      "dtype": "float64",
-      "error": null,
       "id": "add_broadcast_2x3_plus_3",
+      "status": "ok",
+      "error": null,
       "shape": [
         2,
         3
       ],
-      "status": "ok",
       "values": [
         11.0,
         22.0,
@@ -16,118 +18,234 @@
         14.0,
         25.0,
         36.0
-      ]
+      ],
+      "dtype": "f64"
     },
     {
-      "dtype": "float64",
-      "error": null,
       "id": "sub_same_shape_2x2",
+      "status": "ok",
+      "error": null,
       "shape": [
         2,
         2
       ],
-      "status": "ok",
       "values": [
         6.0,
         6.0,
         6.0,
         6.0
-      ]
+      ],
+      "dtype": "f64"
     },
     {
-      "dtype": "float64",
-      "error": null,
       "id": "mul_scalar_broadcast",
+      "status": "ok",
+      "error": null,
       "shape": [
         2,
         2
       ],
-      "status": "ok",
       "values": [
         0.5,
         1.0,
         1.5,
         2.0
-      ]
+      ],
+      "dtype": "f64"
     },
     {
-      "dtype": "float64",
-      "error": null,
       "id": "div_vector_by_scalar",
+      "status": "ok",
+      "error": null,
       "shape": [
         3
       ],
-      "status": "ok",
       "values": [
         4.0,
         5.0,
         6.0
-      ]
+      ],
+      "dtype": "f64"
     },
     {
-      "dtype": "float64",
-      "error": null,
       "id": "sum_all_no_keepdims",
-      "shape": [],
       "status": "ok",
+      "error": null,
+      "shape": [],
       "values": [
         21.0
-      ]
+      ],
+      "dtype": "f64"
     },
     {
-      "dtype": "float64",
-      "error": null,
       "id": "sum_axis1_keepdims",
+      "status": "ok",
+      "error": null,
       "shape": [
         2,
         1
       ],
-      "status": "ok",
       "values": [
         6.0,
         15.0
-      ]
+      ],
+      "dtype": "f64"
     },
     {
-      "dtype": "float64",
-      "error": null,
       "id": "sum_axis0_no_keepdims",
+      "status": "ok",
+      "error": null,
       "shape": [
         3
       ],
-      "status": "ok",
       "values": [
         5.0,
         7.0,
         9.0
-      ]
+      ],
+      "dtype": "f64"
     },
     {
-      "dtype": "unknown",
-      "error": "cannot broadcast [2, 2] with [3, 1]",
+      "id": "add_broadcast_2x1x3x1_plus_1x4x1x1",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        2,
+        4,
+        3,
+        1
+      ],
+      "values": [
+        11.0,
+        12.0,
+        13.0,
+        21.0,
+        22.0,
+        23.0,
+        31.0,
+        32.0,
+        33.0,
+        41.0,
+        42.0,
+        43.0,
+        14.0,
+        15.0,
+        16.0,
+        24.0,
+        25.0,
+        26.0,
+        34.0,
+        35.0,
+        36.0,
+        44.0,
+        45.0,
+        46.0
+      ],
+      "dtype": "f64"
+    },
+    {
+      "id": "mul_broadcast_2x2x2_by_1x2x1",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        2,
+        2,
+        2
+      ],
+      "values": [
+        2.0,
+        4.0,
+        -3.0,
+        -4.0,
+        10.0,
+        12.0,
+        -7.0,
+        -8.0
+      ],
+      "dtype": "f64"
+    },
+    {
+      "id": "sum_axis2_keepdims_2x2x3x2",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        2,
+        2,
+        1,
+        2
+      ],
+      "values": [
+        9.0,
+        12.0,
+        27.0,
+        30.0,
+        45.0,
+        48.0,
+        63.0,
+        66.0
+      ],
+      "dtype": "f64"
+    },
+    {
+      "id": "sum_axis0_no_keepdims_2x2x2x2",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        2,
+        2,
+        2
+      ],
+      "values": [
+        10.0,
+        12.0,
+        14.0,
+        16.0,
+        18.0,
+        20.0,
+        22.0,
+        24.0
+      ],
+      "dtype": "f64"
+    },
+    {
       "id": "add_shape_mismatch_2x2_vs_3x1",
-      "shape": [],
       "status": "error",
-      "values": []
+      "error": "cannot broadcast [2, 2] with [3, 1]",
+      "shape": [],
+      "values": [],
+      "dtype": "unknown"
     },
     {
-      "dtype": "unknown",
-      "error": "axis 3 out of bounds for shape [2, 2]",
       "id": "sum_axis_out_of_bounds",
-      "shape": [],
       "status": "error",
-      "values": []
+      "error": "axis 3 out of bounds for shape [2, 2]",
+      "shape": [],
+      "values": [],
+      "dtype": "unknown"
     },
     {
-      "dtype": "unknown",
-      "error": "'NoneType' object is not iterable",
-      "id": "mul_missing_rhs_shape",
-      "shape": [],
+      "id": "add_shape_mismatch_2x1x3x1_vs_2x4x2",
       "status": "error",
-      "values": []
+      "error": "cannot broadcast [2, 1, 3, 1] with [2, 4, 2]",
+      "shape": [],
+      "values": [],
+      "dtype": "unknown"
+    },
+    {
+      "id": "sum_axis_out_of_bounds_4d",
+      "status": "error",
+      "error": "axis 5 out of bounds for shape [2, 2, 2, 2]",
+      "shape": [],
+      "values": [],
+      "dtype": "unknown"
+    },
+    {
+      "id": "mul_missing_rhs_shape",
+      "status": "error",
+      "error": "'NoneType' object is not iterable",
+      "shape": [],
+      "values": [],
+      "dtype": "unknown"
     }
-  ],
-  "generated_at_unix_ms": 1771280701984,
-  "oracle_source": "pure_python_fallback",
-  "schema_version": 1
+  ]
 }
