@@ -118,6 +118,8 @@ Branch-protection policy (required checks + merge blockers) is captured in
 - missing required artifacts
 - budget breach
 
+`run_test_contract_gate` enforces that G7 (`performance-budget`) and G8 (`durability-decode`) remain in required checks and keep their mandatory output fields.
+
 ## Repository Layout
 
 - `crates/fnp-dtype`

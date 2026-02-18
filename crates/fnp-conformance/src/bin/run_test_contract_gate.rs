@@ -31,8 +31,27 @@ const CI_GATE_TOPOLOGY_CONTRACT_PATH: &str = "artifacts/contracts/ci_gate_topolo
 const CI_TOPOLOGY_RUNNER_SCRIPT: &str = "scripts/e2e/run_ci_gate_topology.sh";
 const CI_TOPOLOGY_SCHEMA_VERSION: &str = "ci-gate-topology-v1";
 const EXPECTED_GATE_IDS: &[&str] = &["G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8"];
+const REQUIRED_BRANCH_CHECKS: &[&str] = &[
+    "ci/g1-fmt-lint",
+    "ci/g2-unit-property",
+    "ci/g3-differential",
+    "ci/g4-adversarial-security",
+    "ci/g5-test-contract",
+    "ci/g6-workflow-forensics",
+    "ci/g7-performance-budget",
+    "ci/g8-durability-decode",
+];
 const REQUIRED_MERGE_BLOCKERS: &[&str] =
     &["compatibility_drift", "missing_artifacts", "budget_breach"];
+const REQUIRED_G7_COMMAND_FRAGMENT: &str = "scripts/e2e/run_performance_budget_gate.sh";
+const REQUIRED_G8_COMMAND_FRAGMENT: &str = "scripts/e2e/run_raptorq_gate.sh";
+const REQUIRED_G7_OUTPUTS: &[&str] = &["candidate_baseline", "performance_budget_report"];
+const REQUIRED_G8_OUTPUTS: &[&str] = &[
+    "sidecar",
+    "scrub_report",
+    "decode_proof",
+    "raptorq_reliability_report",
+];
 
 #[derive(Debug, Deserialize)]
 struct CiGateTopologyContract {
@@ -585,6 +604,21 @@ fn validate_ci_gate_topology_contract() -> Result<SuiteReport, String> {
             contract_path.display()
         ),
     );
+    for required_check in REQUIRED_BRANCH_CHECKS {
+        record_contract_check(
+            &mut report,
+            contract
+                .branch_protection
+                .required_checks
+                .iter()
+                .any(|entry| entry == required_check),
+            format!(
+                "branch_protection.required_checks missing '{}' in {}",
+                required_check,
+                contract_path.display()
+            ),
+        );
+    }
 
     for blocker in REQUIRED_MERGE_BLOCKERS {
         record_contract_check(
@@ -685,6 +719,68 @@ fn validate_ci_gate_topology_contract() -> Result<SuiteReport, String> {
             &mut report,
             false,
             format!("G6 gate missing in {}", contract_path.display()),
+        );
+    }
+
+    if let Some(g7) = contract.gates.iter().find(|gate| gate.id == "G7") {
+        record_contract_check(
+            &mut report,
+            g7.required_command_fragment == REQUIRED_G7_COMMAND_FRAGMENT,
+            format!(
+                "G7 required_command_fragment must be '{}' in {}",
+                REQUIRED_G7_COMMAND_FRAGMENT,
+                contract_path.display()
+            ),
+        );
+        for required_field in REQUIRED_G7_OUTPUTS {
+            record_contract_check(
+                &mut report,
+                g7.required_outputs
+                    .iter()
+                    .any(|field| field == required_field),
+                format!(
+                    "G7 required_outputs missing '{}' in {}",
+                    required_field,
+                    contract_path.display()
+                ),
+            );
+        }
+    } else {
+        record_contract_check(
+            &mut report,
+            false,
+            format!("G7 gate missing in {}", contract_path.display()),
+        );
+    }
+
+    if let Some(g8) = contract.gates.iter().find(|gate| gate.id == "G8") {
+        record_contract_check(
+            &mut report,
+            g8.required_command_fragment == REQUIRED_G8_COMMAND_FRAGMENT,
+            format!(
+                "G8 required_command_fragment must be '{}' in {}",
+                REQUIRED_G8_COMMAND_FRAGMENT,
+                contract_path.display()
+            ),
+        );
+        for required_field in REQUIRED_G8_OUTPUTS {
+            record_contract_check(
+                &mut report,
+                g8.required_outputs
+                    .iter()
+                    .any(|field| field == required_field),
+                format!(
+                    "G8 required_outputs missing '{}' in {}",
+                    required_field,
+                    contract_path.display()
+                ),
+            );
+        }
+    } else {
+        record_contract_check(
+            &mut report,
+            false,
+            format!("G8 gate missing in {}", contract_path.display()),
         );
     }
 
