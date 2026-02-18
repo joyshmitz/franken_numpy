@@ -1,0 +1,192 @@
+{
+  "schema_version": 1,
+  "bead_id": "bd-23m.11",
+  "drill_run": {
+    "executed_at_unix_ms": 1771387521000,
+    "status": "blocked",
+    "entry_command": "scripts/e2e/run_ci_gate_topology.sh",
+    "log_path": "artifacts/logs/phase2c_readiness_drill_1771387521.log",
+    "exit_code": 101,
+    "failed_gate": "G2"
+  },
+  "gate_results": [
+    {
+      "gate": "G1",
+      "status": "pass",
+      "checks": [
+        "rch exec -- cargo fmt --check",
+        "rch exec -- cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "evidence_refs": [
+        "artifacts/logs/phase2c_readiness_drill_1771387521.log"
+      ]
+    },
+    {
+      "gate": "G2",
+      "status": "fail",
+      "checks": [
+        "rch exec -- cargo test --workspace --lib"
+      ],
+      "reason_codes": [
+        "test_contract_fixture_linkage_break",
+        "raptorq_conformance_bundle_stale"
+      ],
+      "evidence_refs": [
+        "artifacts/logs/phase2c_readiness_drill_1771387521.log"
+      ],
+      "replay_command": "rch exec -- cargo test --workspace --lib"
+    },
+    {
+      "gate": "G3",
+      "status": "not_run"
+    },
+    {
+      "gate": "G4",
+      "status": "not_run"
+    },
+    {
+      "gate": "G5",
+      "status": "not_run"
+    },
+    {
+      "gate": "G6",
+      "status": "not_run"
+    },
+    {
+      "gate": "G7",
+      "status": "not_run"
+    },
+    {
+      "gate": "G8",
+      "status": "not_run"
+    }
+  ],
+  "compatibility_statement": {
+    "summary": "All packet readiness reports are status=ready, but full sign-off remains blocked until G2 failures are fixed and packet-002 final evidence pack parity with peer packets is resolved.",
+    "packet_readiness": [
+      {
+        "packet_id": "FNP-P2C-001",
+        "readiness_status": "ready",
+        "final_evidence_pack_present": true
+      },
+      {
+        "packet_id": "FNP-P2C-002",
+        "readiness_status": "ready",
+        "final_evidence_pack_present": false
+      },
+      {
+        "packet_id": "FNP-P2C-003",
+        "readiness_status": "ready",
+        "final_evidence_pack_present": true
+      },
+      {
+        "packet_id": "FNP-P2C-004",
+        "readiness_status": "ready",
+        "final_evidence_pack_present": true
+      },
+      {
+        "packet_id": "FNP-P2C-005",
+        "readiness_status": "ready",
+        "final_evidence_pack_present": true
+      },
+      {
+        "packet_id": "FNP-P2C-006",
+        "readiness_status": "ready",
+        "final_evidence_pack_present": true
+      },
+      {
+        "packet_id": "FNP-P2C-007",
+        "readiness_status": "ready",
+        "final_evidence_pack_present": true
+      },
+      {
+        "packet_id": "FNP-P2C-008",
+        "readiness_status": "ready",
+        "final_evidence_pack_present": true
+      },
+      {
+        "packet_id": "FNP-P2C-009",
+        "readiness_status": "ready",
+        "final_evidence_pack_present": true
+      }
+    ]
+  },
+  "security_posture_summary": {
+    "runtime_policy": "strict/hardened split with fail-closed handling for unknown or incompatible semantics",
+    "status": "blocked_pending_g2_repairs",
+    "notes": [
+      "No new hostile-input regressions were observed before the drill stopped.",
+      "Security/adversarial gates (G4/G5) were not executed because G2 failed first."
+    ],
+    "reference_artifacts": [
+      "artifacts/contracts/security_control_checks_v1.yaml",
+      "artifacts/contracts/test_logging_contract_v1.json",
+      "artifacts/phase2c/FNP-P2C-006/risk_note.md"
+    ]
+  },
+  "residual_risk_ledger": {
+    "blockers": [
+      {
+        "id": "RDY-001",
+        "title": "Workflow scenario contract fixtures are out of sync with test-contract expectations",
+        "owner": "bd-23m.23 / bd-23m.21",
+        "evidence": "Unsupported workflow kinds (dtype_fixture_case, rng_fixture_case) and unknown fixture links during G2.",
+        "mitigation": "Align workflow_scenario_corpus fixture kinds and differential/adversarial fixture IDs with test_contracts validators; rerun G2 then full topology drill."
+      },
+      {
+        "id": "RDY-002",
+        "title": "RaptorQ conformance bundle durability artifacts are stale",
+        "owner": "bd-23m.9",
+        "evidence": "conformance_bundle_v1 sidecar hash/size mismatch and stale scrub/decode proof signatures during G2.",
+        "mitigation": "Regenerate conformance_bundle_v1 sidecar/scrub/decode-proof artifacts and verify hash alignment before rerunning the drill."
+      },
+      {
+        "id": "RDY-003",
+        "title": "Packet-002 lacks final evidence pack artifact",
+        "owner": "bd-23m.11 follow-up (packet-002 parity debt)",
+        "evidence": "FNP-P2C-002 readiness is ready, but final_evidence_pack.json is absent while peer packets provide one.",
+        "mitigation": "Generate packet-002 final evidence pack artifact or codify approved exception policy with explicit waiver metadata."
+      }
+    ],
+    "waivers": []
+  },
+  "packet_follow_up_actions": [
+    {
+      "packet_id": "FNP-P2C-001",
+      "follow_up_gate": "bd-23m.11 readiness drill + packet-I residual risk review"
+    },
+    {
+      "packet_id": "FNP-P2C-003",
+      "follow_up_gate": "bd-23m.11 readiness drill + packet-I residual risk review"
+    },
+    {
+      "packet_id": "FNP-P2C-004",
+      "follow_up_gate": "bd-23m.11 readiness drill + packet-I residual risk review"
+    },
+    {
+      "packet_id": "FNP-P2C-005",
+      "follow_up_gate": "bd-23m.11 readiness drill + packet-I residual risk review"
+    },
+    {
+      "packet_id": "FNP-P2C-006",
+      "follow_up_gate": "bd-23m.11 readiness drill + packet-I residual risk review"
+    },
+    {
+      "packet_id": "FNP-P2C-007",
+      "follow_up_gate": "bd-23m.11 readiness drill + packet-I residual risk review"
+    },
+    {
+      "packet_id": "FNP-P2C-008",
+      "follow_up_gate": "bd-23m.11 readiness drill + packet-I residual risk review"
+    },
+    {
+      "packet_id": "FNP-P2C-009",
+      "follow_up_gate": "bd-23m.11 readiness drill + packet-I residual risk review"
+    }
+  ],
+  "next_actions": [
+    "Fix RDY-001 and RDY-002, then rerun scripts/e2e/run_ci_gate_topology.sh.",
+    "Resolve RDY-003 before final readiness sign-off closure.",
+    "After green rerun, publish explicit compatibility/security sign-off update in bd-23m.11 thread."
+  ]
+}

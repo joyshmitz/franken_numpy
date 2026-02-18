@@ -63,6 +63,7 @@ scripts/e2e/run_performance_budget_gate.sh
 scripts/e2e/run_security_policy_gate.sh
 scripts/e2e/run_test_contract_gate.sh
 scripts/e2e/run_workflow_scenario_gate.sh
+scripts/e2e/run_ci_gate_topology.sh
 ```
 
 Example: use `uv` Python 3.14 + NumPy for capture:
@@ -83,6 +84,38 @@ Notes:
 - Workflow-scenario e2e logs are emitted as JSONL under `artifacts/logs/` by `run_workflow_scenario_gate` / `scripts/e2e/run_workflow_scenario_gate.sh`.
 - Performance budget baseline-delta reports are emitted under `artifacts/logs/` by `run_performance_budget_gate` / `scripts/e2e/run_performance_budget_gate.sh`.
 - Test/logging conventions are locked in `artifacts/contracts/test_logging_contract_v1.json` and `artifacts/contracts/TESTING_AND_LOGGING_CONVENTIONS_V1.md`.
+
+## CI Gate Topology (G1..G8)
+
+Canonical ordered gate runner:
+
+```bash
+scripts/e2e/run_ci_gate_topology.sh
+```
+
+Ordered gates (`fast -> heavy`):
+
+1. `G1` fmt + lint: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`
+2. `G2` unit/property: `cargo test --workspace --lib`
+3. `G3` differential: `cargo run -p fnp-conformance --bin run_ufunc_differential`
+4. `G4` adversarial/security: `scripts/e2e/run_security_policy_gate.sh`
+5. `G5` test/logging contract: `scripts/e2e/run_test_contract_gate.sh`
+6. `G6` workflow e2e + forensics: `scripts/e2e/run_workflow_scenario_gate.sh`
+7. `G7` performance budget: `scripts/e2e/run_performance_budget_gate.sh`
+8. `G8` durability/decode proof: `scripts/e2e/run_raptorq_gate.sh`
+
+Topology contract and policy lock:
+
+- Machine contract: `artifacts/contracts/ci_gate_topology_v1.json`
+- Contract enforcement suite: `ci_gate_topology_contract` in `run_test_contract_gate`
+- G6 forensics output requirements: `artifact_index_path` + `replay_command`
+
+Branch-protection policy (required checks + merge blockers) is captured in
+`artifacts/contracts/ci_gate_topology_v1.json` and blocks merges on:
+
+- compatibility drift
+- missing required artifacts
+- budget breach
 
 ## Repository Layout
 

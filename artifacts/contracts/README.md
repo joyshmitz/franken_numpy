@@ -16,3 +16,4 @@ Current locked schema/version set:
 - test/logging contract (machine): `test_logging_contract_v1.json`
 - test/logging conventions (human): `TESTING_AND_LOGGING_CONVENTIONS_V1.md`
 - workflow scenario corpus contract (human): `USER_WORKFLOW_SCENARIO_CORPUS_V1.md`
+- CI gate topology contract (machine): `ci_gate_topology_v1.json`

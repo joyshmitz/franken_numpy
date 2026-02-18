@@ -1,0 +1,97 @@
+{
+  "schema_version": "ci-gate-topology-v1",
+  "runner_script": "scripts/e2e/run_ci_gate_topology.sh",
+  "gates": [
+    {
+      "id": "G1",
+      "name": "fmt_lint",
+      "required_command_fragment": "rch exec -- cargo fmt --check",
+      "required_outputs": [
+        "fmt_check",
+        "clippy_check"
+      ]
+    },
+    {
+      "id": "G2",
+      "name": "unit_property",
+      "required_command_fragment": "rch exec -- cargo test --workspace --lib",
+      "required_outputs": [
+        "unit_property_results"
+      ]
+    },
+    {
+      "id": "G3",
+      "name": "differential",
+      "required_command_fragment": "rch exec -- cargo run -p fnp-conformance --bin run_ufunc_differential",
+      "required_outputs": [
+        "differential_summary"
+      ]
+    },
+    {
+      "id": "G4",
+      "name": "adversarial_security",
+      "required_command_fragment": "scripts/e2e/run_security_policy_gate.sh",
+      "required_outputs": [
+        "runtime_policy_log",
+        "security_reliability_report"
+      ]
+    },
+    {
+      "id": "G5",
+      "name": "test_contract",
+      "required_command_fragment": "scripts/e2e/run_test_contract_gate.sh",
+      "required_outputs": [
+        "test_contract_log",
+        "test_contract_reliability_report"
+      ]
+    },
+    {
+      "id": "G6",
+      "name": "workflow_forensics",
+      "required_command_fragment": "scripts/e2e/run_workflow_scenario_gate.sh",
+      "required_outputs": [
+        "workflow_log",
+        "reliability_report",
+        "artifact_index_path",
+        "replay_command"
+      ]
+    },
+    {
+      "id": "G7",
+      "name": "performance_budget",
+      "required_command_fragment": "scripts/e2e/run_performance_budget_gate.sh",
+      "required_outputs": [
+        "candidate_baseline",
+        "performance_budget_report"
+      ]
+    },
+    {
+      "id": "G8",
+      "name": "durability_decode",
+      "required_command_fragment": "scripts/e2e/run_raptorq_gate.sh",
+      "required_outputs": [
+        "sidecar",
+        "scrub_report",
+        "decode_proof",
+        "raptorq_reliability_report"
+      ]
+    }
+  ],
+  "branch_protection": {
+    "required_checks": [
+      "ci/g1-fmt-lint",
+      "ci/g2-unit-property",
+      "ci/g3-differential",
+      "ci/g4-adversarial-security",
+      "ci/g5-test-contract",
+      "ci/g6-workflow-forensics",
+      "ci/g7-performance-budget",
+      "ci/g8-durability-decode"
+    ],
+    "merge_blockers": [
+      "compatibility_drift",
+      "missing_artifacts",
+      "budget_breach"
+    ]
+  }
+}

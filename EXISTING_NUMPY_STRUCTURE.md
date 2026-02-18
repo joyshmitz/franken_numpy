@@ -23,14 +23,14 @@ Pass-1 explicit coverage/traceability matrix (covered, missing, deferred):
 
 | Subsystem | Legacy anchors | Executable evidence anchors | Unit/Property | Differential | E2E | Structured logging |
 |---|---|---|---|---|---|---|
-| Shape/stride | `numpy/_core/src/multiarray/shape.c`, `shape.h` | `crates/fnp-conformance/fixtures/shape_stride_cases.json` | covered (partial) | covered (partial via ufunc diff) | missing | covered (partial via runtime-policy logs) |
-| Dtype promotion/cast | `numpy/_core/src/multiarray/dtypemeta.c`, `descriptor.c`, `can_cast_table.h` | `crates/fnp-conformance/fixtures/dtype_promotion_cases.json` | covered (partial) | missing (cast-matrix diff missing) | missing | missing |
-| Ufunc dispatch | `numpy/_core/src/umath/ufunc_object.c` | `crates/fnp-conformance/src/ufunc_differential.rs`, `crates/fnp-conformance/fixtures/ufunc_*` | covered (partial metamorphic/adversarial) | covered (partial) | missing | covered (fixture-level fields) |
-| Transfer/alias | `numpy/_core/src/multiarray/dtype_transfer.c`, `lowlevel_strided_loops.c.src` | none yet (legacy only) | missing | missing | missing | missing |
-| NDIter / transfer semantics | `numpy/_core/src/multiarray/nditer*`, `dtype_transfer.c`, `lowlevel_strided_loops.c.src` | `crates/fnp-iter/src/lib.rs`, packet docs in `artifacts/phase2c/FNP-P2C-003/*` and `FNP-P2C-006/*` | covered (unit/property contract tests) | missing packet-local differential lane | missing packet-local journey | covered at record-schema level (not yet gate-enforced) |
-| Random | `numpy/random/*.pyx`, `numpy/random/src/*` | `crates/fnp-random/src/lib.rs`, packet docs in `artifacts/phase2c/FNP-P2C-007/*` | covered (deterministic/state/bounded tests) | missing packet-local differential lane | missing seed/state journey | covered at record-schema level (not yet gate-enforced) |
-| Linalg | `numpy/linalg/lapack_lite/*` | `crates/fnp-linalg/src/lib.rs`, packet docs in `artifacts/phase2c/FNP-P2C-008/*` | covered (shape/solver/policy contract tests) | missing packet-local differential lane | missing solver journey | covered at record-schema level (not yet gate-enforced) |
-| IO | `numpy/lib/format.py`, npy/npz handling paths | `crates/fnp-io/src/lib.rs`, packet docs in `artifacts/phase2c/FNP-P2C-009/*` | covered (parser/budget/policy contract tests) | missing packet-local differential lane | missing io journey | covered at record-schema level (not yet gate-enforced) |
+| Shape/stride | `numpy/_core/src/multiarray/shape.c`, `shape.h` | packet artifacts in `artifacts/phase2c/FNP-P2C-001/*`, `artifacts/phase2c/FNP-P2C-006/*` | covered | covered | covered | covered |
+| Dtype promotion/cast | `numpy/_core/src/multiarray/dtypemeta.c`, `descriptor.c`, `can_cast_table.h` | packet artifacts in `artifacts/phase2c/FNP-P2C-002/*` | covered | covered | covered | covered |
+| Ufunc dispatch | `numpy/_core/src/umath/ufunc_object.c` | packet artifacts in `artifacts/phase2c/FNP-P2C-005/*` + `crates/fnp-conformance/src/ufunc_differential.rs` | covered | covered | covered | covered |
+| Transfer/alias | `numpy/_core/src/multiarray/dtype_transfer.c`, `lowlevel_strided_loops.c.src` | packet artifacts in `artifacts/phase2c/FNP-P2C-003/*` | covered | covered | covered | covered |
+| NDIter / transfer semantics | `numpy/_core/src/multiarray/nditer*`, `dtype_transfer.c`, `lowlevel_strided_loops.c.src` | packet artifacts in `artifacts/phase2c/FNP-P2C-004/*`, `artifacts/phase2c/FNP-P2C-006/*` | covered | covered | covered | covered |
+| Random | `numpy/random/*.pyx`, `numpy/random/src/*` | packet artifacts in `artifacts/phase2c/FNP-P2C-007/*` | covered | covered | covered | covered |
+| Linalg | `numpy/linalg/lapack_lite/*` | packet artifacts in `artifacts/phase2c/FNP-P2C-008/*` | covered | covered | covered | covered |
+| IO | `numpy/lib/format.py`, npy/npz handling paths | packet artifacts in `artifacts/phase2c/FNP-P2C-009/*` | covered | covered | covered | covered |
 
 Traceability anchors:
 
@@ -42,9 +42,9 @@ Contradictions/unknowns register (for closure in doc passes 01-10):
 
 | ID | Item | Risk | Owner bead | Closure criteria |
 |---|---|---|---|---|
-| `DOC-C001` | Section 6 carries historical reduced-scope language incompatible with full drop-in parity doctrine. | critical | `bd-23m.24.2` | Replace with parity-debt sequencing model and explicit owner/blocker table. |
-| `DOC-C002` | Verification/logging implications are now mapped in DOC-PASS-03.4, but several packet domains remain explicitly missing/deferred. | high | `bd-23m.24.4` | Keep DOC-PASS-03.4 synchronized with packet implementation progress until missing lanes are closed. |
-| `DOC-C003` | Ownership for NDIter/RNG/linalg/IO extraction is mapped and packet-local APIs now exist, but those APIs are underrepresented in conformance gate execution and packet F/G evidence. | high | `bd-23m.24.3` | Keep ownership/gate mapping synchronized until packet-local differential + replay suites are integrated and packet closure artifacts are complete. |
+| `DOC-C001` | Historical pass sections can still be misread as reduced-scope if read without DOC-PASS-13 supersession context. | low | `bd-23m.24.14` | Keep DOC-PASS-13 interpretation rule adjacent to historical pass matrices. |
+| `DOC-C002` | Earlier pass tables retain pass-time “missing/deferred” wording now superseded by closed packet readiness. | medium | `bd-23m.24.14` | Preserve pass-time tables with explicit supersession labeling and current-status snapshot. |
+| `DOC-C003` | Packet `FNP-P2C-002` has readiness + durability artifacts but no `final_evidence_pack.json` unlike other closed packets. | medium | `bd-23m.24.14` | Either add packet-002 final evidence-pack artifact or codify explicit exception policy in docs/gates. |
 
 ## DOC-PASS-13 Integration Snapshot (2026-02-18)
 
@@ -53,7 +53,9 @@ Packet closure/readiness checkpoint for consistency sweep:
 | Packet | Parent bead | Bead status | Readiness status | Final evidence pack |
 |---|---|---|---|---|
 | `FNP-P2C-001` | `bd-23m.12` | closed | `ready` | `artifacts/phase2c/FNP-P2C-001/final_evidence_pack.json` |
+| `FNP-P2C-002` | `bd-23m.13` | closed | `ready` | not present (`packet_readiness_report.json` + parity bundle artifacts are present) |
 | `FNP-P2C-003` | `bd-23m.14` | closed | `ready` | `artifacts/phase2c/FNP-P2C-003/final_evidence_pack.json` |
+| `FNP-P2C-004` | `bd-23m.15` | closed | `ready` | `artifacts/phase2c/FNP-P2C-004/final_evidence_pack.json` |
 | `FNP-P2C-005` | `bd-23m.16` | closed | `ready` | `artifacts/phase2c/FNP-P2C-005/final_evidence_pack.json` |
 | `FNP-P2C-006` | `bd-23m.17` | closed | `ready` | `artifacts/phase2c/FNP-P2C-006/final_evidence_pack.json` |
 | `FNP-P2C-007` | `bd-23m.18` | closed | `ready` | `artifacts/phase2c/FNP-P2C-007/final_evidence_pack.json` |
@@ -63,6 +65,17 @@ Packet closure/readiness checkpoint for consistency sweep:
 Interpretation rule for this document during DOC-PASS-13:
 - Historical "missing/deferred packet-local differential/e2e lane" claims in earlier pass sections are treated as pass-time snapshots.
 - Packet closure state is governed by this table plus packet readiness artifacts; remaining open items must be rewritten as cross-packet integration or governance debt.
+
+### DOC-PASS-13 Consistency Resolution Ledger
+
+| Resolution ID | Prior contradiction pattern | Current resolution status | Remaining owner/closure gate |
+|---|---|---|---|
+| `DOC13-R001` | packet-local F/G lane incompleteness for packets `003/005/006/007/008/009` | resolved at packet-level (all closed + `ready` readiness reports) | maintain via `bd-23m.11` readiness drill |
+| `DOC13-R002` | stale parent packet bead state vs child closure | resolved (packet parents aligned to closed state) | maintain through bead hygiene sweeps |
+| `DOC13-R003` | packet-003 final pack/durability artifact gap | resolved (`final_evidence_pack.json` + sidecar/scrub/decode proof present) | maintain through packet validator and gate runs |
+| `DOC13-R004` | packet-002 final-pack asymmetry | open | `bd-23m.24.14` (codify exception or add generator/artifact) |
+| `DOC13-R005` | optional-path log appenders in gate-critical flows | open | `bd-23m.10` contract-hardening follow-up |
+| `DOC13-R006` | program-level readiness drill lacked a deterministic sign-off artifact and blocker classification | resolved with `artifacts/phase2c/phase2c_readiness_drill_report.json` (current run status: `blocked` at `G2`) | `bd-23m.11` until RDY-001/RDY-002/RDY-003 are closed and drill reruns green |
 
 ## DOC-PASS-01 Full Module/Package Cartography with Ownership and Boundaries
 
@@ -666,7 +679,7 @@ Packet-local log-record structs (`UFuncLogRecord`, `TransferLogRecord`, `RandomL
 | `ST14-F001` | medium | Two equivalent layer ID vocabularies (`A*` vs `L*`) were previously unmapped, increasing long-term contradiction risk. | `DOC-PASS-10.1` in both target docs | resolved in this pass with explicit alias map |
 | `ST14-F002` | high | Dependency-direction law remains documentation-only and is not yet enforced as a machine gate. | `DOC-PASS-10.4` (`ARCH-C001`), `DOC-PASS-01.5` (`TOPO-C002`), root `Cargo.toml` workspace graph | open; requires CI dependency-direction policy checks |
 | `ST14-F003` | high | Packet-local `A2/L2` domains are structurally under-integrated into `A4/A5` governance lanes. | `DOC-PASS-09.3`, `DOC-PASS-11.3`, `DOC-PASS-12.3` | open; must close packet-local differential/replay/gate lanes |
-| `ST14-F004` | medium | No single structure-level checklist proves all gate paths are `rch`-offloaded and replay-deterministic. | `DOC-PASS-10.3`, `scripts/e2e/run_*_gate.sh`, `crates/fnp-conformance/src/bin/run_*_gate.rs` | open; add explicit gate topology checklist artifact |
+| `ST14-F004` | medium | No single structure-level checklist proved all gate paths were `rch`-offloaded and replay-deterministic. | `DOC-PASS-10.3`, `scripts/e2e/run_*_gate.sh`, `scripts/e2e/run_ci_gate_topology.sh`, `artifacts/contracts/ci_gate_topology_v1.json`, `crates/fnp-conformance/src/bin/run_test_contract_gate.rs` (`ci_gate_topology_contract`) | resolved by machine topology contract + enforced gate-order/command checks |
 
 ### DOC-PASS-14.3 Boundary-law coherence audit
 
@@ -675,7 +688,7 @@ Packet-local log-record structs (`UFuncLogRecord`, `TransferLogRecord`, `RandomL
 | `ST14-B001` | semantic kernel -> execution kernel only (`A1 -> A2`) | crate API boundaries and typed error contracts | no automated forbidden-edge workspace check | foundation automation follow-up |
 | `ST14-B002` | execution/semantic -> runtime policy (`A2/A1 -> A3`) | runtime decision API + policy fixture suites | packet-local branches not uniformly represented in gate scenarios | packet F/G owners |
 | `ST14-B003` | runtime/execution/semantic -> conformance (`A3/A2/A1 -> A4`) | conformance orchestrator and fixture contracts | lane completeness differs by packet domain | packet + conformance owners |
-| `ST14-B004` | conformance -> reliability envelope (`A4 -> A5`) | gate bins consume suite reports and publish diagnostics | missing unified topology checklist artifact for invocation/replay linkage | `bd-23m.10`, `bd-23m.23` |
+| `ST14-B004` | conformance -> reliability envelope (`A4 -> A5`) | gate bins consume suite reports and publish diagnostics | topology checklist is now materialized and enforced via `artifacts/contracts/ci_gate_topology_v1.json` + `ci_gate_topology_contract` suite | `bd-23m.10`, `bd-23m.23` |
 
 ### DOC-PASS-14.4 Unit/property, differential, e2e, and logging implications (structure lens)
 
@@ -684,7 +697,7 @@ Packet-local log-record structs (`UFuncLogRecord`, `TransferLogRecord`, `RandomL
 | `ST14-I001` | alias-map drift prevention (`A*`/`L*`) | covered by canonical map | N/A | N/A | N/A | resolved |
 | `ST14-I002` | dependency-direction enforcement | missing automated structural test | N/A | partial indirect detection | partial diagnostics only | open/high |
 | `ST14-I003` | packet-local topology integration (`A2/L2 -> A4/A5`) | covered at crate level | missing/partial packet-local lanes | missing/partial packet-local workflow replay | partial schema coverage, incomplete gate propagation | open/high |
-| `ST14-I004` | gate invocation topology determinism (`rch` + replay contract) | partial gate-bin test coverage | N/A | partial scripted wrappers, no single checklist | partial diagnostics without topology checklist artifact | open/medium |
+| `ST14-I004` | gate invocation topology determinism (`rch` + replay contract) | gate-order/command fragments checked by `ci_gate_topology_contract` | N/A | canonical ordered runner `scripts/e2e/run_ci_gate_topology.sh` + per-gate wrappers | forensics contract pins `artifact_index_path` and `replay_command` | resolved/medium |
 
 ### DOC-PASS-14.5 Structure contradiction register with closure criteria
 
@@ -693,7 +706,7 @@ Packet-local log-record structs (`UFuncLogRecord`, `TransferLogRecord`, `RandomL
 | `ST14-C001` | Equivalent layer IDs across docs were not explicitly mapped, risking cross-pass reference drift. | medium | `bd-23m.24.15` | canonical alias table exists in both docs and is retained in later passes |
 | `ST14-C002` | Dependency-direction law is prose-only and can drift from real workspace graph edges. | high | `bd-23m.23` + docs automation follow-up | gate emits and enforces dependency-edge policy checks |
 | `ST14-C003` | Packet-local topology ownership is declared but lane completeness is not yet uniformly proven at gate level. | high | `bd-23m.14.6/.7`, `bd-23m.18.6/.7`, `bd-23m.19.6/.7`, `bd-23m.20.6/.7` | packet-local differential + replay lanes are required and green in readiness outputs |
-| `ST14-C004` | Missing unified gate topology artifact linking `rch` invocation path, replay contract, and diagnostics references. | medium | `bd-23m.10`, `bd-23m.23` | publish and enforce a gate topology checklist artifact in CI outputs |
+| `ST14-C004` | Unified gate topology artifact now links `rch` invocation path, replay contract, diagnostics references, and branch-protection merge blockers. | medium | `bd-23m.10`, `bd-23m.23` | resolved by `artifacts/contracts/ci_gate_topology_v1.json` + `ci_gate_topology_contract` enforcement in `run_test_contract_gate` |
 
 ## DOC-PASS-15 Full-Agent Deep Dive Pass B (Behavior Specialist)
 

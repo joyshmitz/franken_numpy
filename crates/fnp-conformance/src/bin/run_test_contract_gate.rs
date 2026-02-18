@@ -11,8 +11,9 @@ use fnp_conformance::{
     run_ufunc_adversarial_suite, run_ufunc_differential_suite, run_ufunc_metamorphic_suite,
     set_runtime_policy_log_path, test_contracts,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -25,6 +26,34 @@ const REQUIRED_LOG_FIELDS: &[&str] = &[
     "artifact_refs",
     "reason_code",
 ];
+
+const CI_GATE_TOPOLOGY_CONTRACT_PATH: &str = "artifacts/contracts/ci_gate_topology_v1.json";
+const CI_TOPOLOGY_RUNNER_SCRIPT: &str = "scripts/e2e/run_ci_gate_topology.sh";
+const CI_TOPOLOGY_SCHEMA_VERSION: &str = "ci-gate-topology-v1";
+const EXPECTED_GATE_IDS: &[&str] = &["G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8"];
+const REQUIRED_MERGE_BLOCKERS: &[&str] =
+    &["compatibility_drift", "missing_artifacts", "budget_breach"];
+
+#[derive(Debug, Deserialize)]
+struct CiGateTopologyContract {
+    schema_version: String,
+    runner_script: String,
+    gates: Vec<CiGateDefinition>,
+    branch_protection: BranchProtectionContract,
+}
+
+#[derive(Debug, Deserialize)]
+struct CiGateDefinition {
+    id: String,
+    required_command_fragment: String,
+    required_outputs: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BranchProtectionContract {
+    required_checks: Vec<String>,
+    merge_blockers: Vec<String>,
+}
 
 #[derive(Debug, Clone, Serialize)]
 struct SuiteSummary {
@@ -318,6 +347,7 @@ fn run_gate_suites(cfg: &HarnessConfig, log_path: &Path) -> Result<Vec<SuiteRepo
         run_io_adversarial_suite(cfg)?,
         run_crash_signature_regression_suite(cfg)?,
         validate_runtime_policy_log(log_path)?,
+        validate_ci_gate_topology_contract()?,
     ])
 }
 
@@ -450,4 +480,222 @@ fn validate_runtime_policy_log(path: &Path) -> Result<SuiteReport, String> {
     }
 
     Ok(report)
+}
+
+fn validate_ci_gate_topology_contract() -> Result<SuiteReport, String> {
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let contract_path = repo_root.join(CI_GATE_TOPOLOGY_CONTRACT_PATH);
+    let runner_path = repo_root.join(CI_TOPOLOGY_RUNNER_SCRIPT);
+
+    let mut report = SuiteReport {
+        suite: "ci_gate_topology_contract",
+        case_count: 0,
+        pass_count: 0,
+        failures: Vec::new(),
+    };
+
+    let contract_raw = match fs::read_to_string(&contract_path) {
+        Ok(raw) => {
+            record_contract_check(
+                &mut report,
+                true,
+                format!("failed reading {}", contract_path.display()),
+            );
+            raw
+        }
+        Err(err) => {
+            record_contract_check(
+                &mut report,
+                false,
+                format!("failed reading {}: {err}", contract_path.display()),
+            );
+            return Ok(report);
+        }
+    };
+
+    let contract: CiGateTopologyContract = match serde_json::from_str(&contract_raw) {
+        Ok(contract) => {
+            record_contract_check(
+                &mut report,
+                true,
+                format!("failed parsing {}", contract_path.display()),
+            );
+            contract
+        }
+        Err(err) => {
+            record_contract_check(
+                &mut report,
+                false,
+                format!("failed parsing {}: {err}", contract_path.display()),
+            );
+            return Ok(report);
+        }
+    };
+
+    record_contract_check(
+        &mut report,
+        contract.schema_version == CI_TOPOLOGY_SCHEMA_VERSION,
+        format!(
+            "schema_version must be '{}' in {}",
+            CI_TOPOLOGY_SCHEMA_VERSION,
+            contract_path.display()
+        ),
+    );
+    record_contract_check(
+        &mut report,
+        contract.runner_script == CI_TOPOLOGY_RUNNER_SCRIPT,
+        format!(
+            "runner_script must be '{}' in {}",
+            CI_TOPOLOGY_RUNNER_SCRIPT,
+            contract_path.display()
+        ),
+    );
+
+    let gate_ids = contract
+        .gates
+        .iter()
+        .map(|gate| gate.id.as_str())
+        .collect::<Vec<_>>();
+    record_contract_check(
+        &mut report,
+        gate_ids == EXPECTED_GATE_IDS,
+        format!(
+            "gate ids/order mismatch in {}; expected {}",
+            contract_path.display(),
+            EXPECTED_GATE_IDS.join(", ")
+        ),
+    );
+
+    let unique_gate_ids = contract
+        .gates
+        .iter()
+        .map(|gate| gate.id.as_str())
+        .collect::<BTreeSet<_>>();
+    record_contract_check(
+        &mut report,
+        unique_gate_ids.len() == contract.gates.len(),
+        format!("duplicate gate ids found in {}", contract_path.display()),
+    );
+
+    record_contract_check(
+        &mut report,
+        !contract.branch_protection.required_checks.is_empty(),
+        format!(
+            "branch_protection.required_checks must not be empty in {}",
+            contract_path.display()
+        ),
+    );
+
+    for blocker in REQUIRED_MERGE_BLOCKERS {
+        record_contract_check(
+            &mut report,
+            contract
+                .branch_protection
+                .merge_blockers
+                .iter()
+                .any(|entry| entry == blocker),
+            format!(
+                "branch_protection.merge_blockers missing '{}' in {}",
+                blocker,
+                contract_path.display()
+            ),
+        );
+    }
+
+    let runner_raw = match fs::read_to_string(&runner_path) {
+        Ok(raw) => {
+            record_contract_check(
+                &mut report,
+                true,
+                format!("failed reading {}", runner_path.display()),
+            );
+            raw
+        }
+        Err(err) => {
+            record_contract_check(
+                &mut report,
+                false,
+                format!("failed reading {}: {err}", runner_path.display()),
+            );
+            return Ok(report);
+        }
+    };
+
+    let mut prev_offset = 0usize;
+    for gate in &contract.gates {
+        record_contract_check(
+            &mut report,
+            !gate.required_command_fragment.trim().is_empty(),
+            format!(
+                "gate '{}' has empty required_command_fragment in {}",
+                gate.id,
+                contract_path.display()
+            ),
+        );
+        record_contract_check(
+            &mut report,
+            !gate.required_outputs.is_empty(),
+            format!(
+                "gate '{}' must define required_outputs in {}",
+                gate.id,
+                contract_path.display()
+            ),
+        );
+
+        if gate.required_command_fragment.trim().is_empty() {
+            continue;
+        }
+
+        let maybe_index = runner_raw
+            .get(prev_offset..)
+            .and_then(|slice| slice.find(&gate.required_command_fragment))
+            .map(|idx| prev_offset + idx);
+        let found = maybe_index.is_some();
+        record_contract_check(
+            &mut report,
+            found,
+            format!(
+                "runner script {} missing command fragment for gate '{}': {}",
+                runner_path.display(),
+                gate.id,
+                gate.required_command_fragment
+            ),
+        );
+        if let Some(index) = maybe_index {
+            prev_offset = index + gate.required_command_fragment.len();
+        }
+    }
+
+    if let Some(g6) = contract.gates.iter().find(|gate| gate.id == "G6") {
+        for required_field in ["artifact_index_path", "replay_command"] {
+            record_contract_check(
+                &mut report,
+                g6.required_outputs
+                    .iter()
+                    .any(|field| field == required_field),
+                format!(
+                    "G6 required_outputs missing '{}' in {}",
+                    required_field,
+                    contract_path.display()
+                ),
+            );
+        }
+    } else {
+        record_contract_check(
+            &mut report,
+            false,
+            format!("G6 gate missing in {}", contract_path.display()),
+        );
+    }
+
+    Ok(report)
+}
+
+fn record_contract_check(report: &mut SuiteReport, pass: bool, failure_message: String) {
+    report.case_count += 1;
+    if pass {
+        report.pass_count += 1;
+    } else {
+        report.failures.push(failure_message);
+    }
 }
