@@ -25,6 +25,24 @@ Project contracts:
 - `/data/projects/franken_numpy/PROPOSED_ARCHITECTURE.md`
 - `/data/projects/franken_numpy/FEATURE_PARITY.md`
 
+## DOC-PASS-13 Integration Snapshot (2026-02-18)
+
+Packet execution and readiness status snapshot (authoritative for packet closure state in this pass):
+
+| Packet | Parent bead | Bead status | Readiness status | Final evidence pack |
+|---|---|---|---|---|
+| `FNP-P2C-001` | `bd-23m.12` | closed | `ready` | `artifacts/phase2c/FNP-P2C-001/final_evidence_pack.json` |
+| `FNP-P2C-003` | `bd-23m.14` | closed | `ready` | `artifacts/phase2c/FNP-P2C-003/final_evidence_pack.json` |
+| `FNP-P2C-005` | `bd-23m.16` | closed | `ready` | `artifacts/phase2c/FNP-P2C-005/final_evidence_pack.json` |
+| `FNP-P2C-006` | `bd-23m.17` | closed | `ready` | `artifacts/phase2c/FNP-P2C-006/final_evidence_pack.json` |
+| `FNP-P2C-007` | `bd-23m.18` | closed | `ready` | `artifacts/phase2c/FNP-P2C-007/final_evidence_pack.json` |
+| `FNP-P2C-008` | `bd-23m.19` | closed | `ready` | `artifacts/phase2c/FNP-P2C-008/final_evidence_pack.json` |
+| `FNP-P2C-009` | `bd-23m.20` | closed | `ready` | `artifacts/phase2c/FNP-P2C-009/final_evidence_pack.json` |
+
+Interpretation rule for this file during DOC-PASS-13:
+- Earlier pass tables that call packet-local F/G/I lanes "missing" are historical pass-time observations.
+- This snapshot supersedes those closure-state claims for packet-level status; unresolved items must now point to program-level/doc-level integration debt, not packet completion debt.
+
 ## DOC-PASS-00 Baseline Gap Matrix + Quantitative Expansion Targets
 
 Snapshot baseline (2026-02-14):

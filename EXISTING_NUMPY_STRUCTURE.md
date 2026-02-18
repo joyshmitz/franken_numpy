@@ -46,6 +46,24 @@ Contradictions/unknowns register (for closure in doc passes 01-10):
 | `DOC-C002` | Verification/logging implications are now mapped in DOC-PASS-03.4, but several packet domains remain explicitly missing/deferred. | high | `bd-23m.24.4` | Keep DOC-PASS-03.4 synchronized with packet implementation progress until missing lanes are closed. |
 | `DOC-C003` | Ownership for NDIter/RNG/linalg/IO extraction is mapped and packet-local APIs now exist, but those APIs are underrepresented in conformance gate execution and packet F/G evidence. | high | `bd-23m.24.3` | Keep ownership/gate mapping synchronized until packet-local differential + replay suites are integrated and packet closure artifacts are complete. |
 
+## DOC-PASS-13 Integration Snapshot (2026-02-18)
+
+Packet closure/readiness checkpoint for consistency sweep:
+
+| Packet | Parent bead | Bead status | Readiness status | Final evidence pack |
+|---|---|---|---|---|
+| `FNP-P2C-001` | `bd-23m.12` | closed | `ready` | `artifacts/phase2c/FNP-P2C-001/final_evidence_pack.json` |
+| `FNP-P2C-003` | `bd-23m.14` | closed | `ready` | `artifacts/phase2c/FNP-P2C-003/final_evidence_pack.json` |
+| `FNP-P2C-005` | `bd-23m.16` | closed | `ready` | `artifacts/phase2c/FNP-P2C-005/final_evidence_pack.json` |
+| `FNP-P2C-006` | `bd-23m.17` | closed | `ready` | `artifacts/phase2c/FNP-P2C-006/final_evidence_pack.json` |
+| `FNP-P2C-007` | `bd-23m.18` | closed | `ready` | `artifacts/phase2c/FNP-P2C-007/final_evidence_pack.json` |
+| `FNP-P2C-008` | `bd-23m.19` | closed | `ready` | `artifacts/phase2c/FNP-P2C-008/final_evidence_pack.json` |
+| `FNP-P2C-009` | `bd-23m.20` | closed | `ready` | `artifacts/phase2c/FNP-P2C-009/final_evidence_pack.json` |
+
+Interpretation rule for this document during DOC-PASS-13:
+- Historical "missing/deferred packet-local differential/e2e lane" claims in earlier pass sections are treated as pass-time snapshots.
+- Packet closure state is governed by this table plus packet readiness artifacts; remaining open items must be rewritten as cross-packet integration or governance debt.
+
 ## DOC-PASS-01 Full Module/Package Cartography with Ownership and Boundaries
 
 ### DOC-PASS-01.1 Workspace ownership map (crate -> behavior contract)

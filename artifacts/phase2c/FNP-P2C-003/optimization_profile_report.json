@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "packet_id": "FNP-P2C-003",
+  "subtask_id": "FNP-P2C-003-H",
+  "generated_at_unix_ms": 1771368650449,
+  "environment_fingerprint": "os=linux arch=x86_64 cpus=8 rustc=rustc 1.95.0-nightly (a33907a7a 2026-02-14)",
+  "reproducibility_command": "cargo run -p fnp-conformance --bin generate_packet003_optimization_report",
+  "lever": {
+    "id": "P2C003-H-LEVER-001",
+    "description": "Replace linear transfer-fixture ID scans with precomputed hash-index dispatch",
+    "rationale": "Packet-003 workflow replay repeatedly resolves transfer fixture IDs for strict/hardened scenario steps; replacing linear scans with precomputed HashMap lookups removes O(n) per-step dispatch overhead while preserving deterministic fixture resolution semantics.",
+    "risk_note": "Optimization only changes fixture ID lookup strategy in workflow dispatch; fixture payloads, ordering, and reason-code outcomes remain unchanged.",
+    "rollback_command": "git restore --source <last-green-commit> -- crates/fnp-conformance/src/workflow_scenarios.rs"
+  },
+  "baseline_profile": {
+    "implementation": "baseline_linear_id_scan",
+    "runs": 80,
+    "lookups_per_run": 20736,
+    "percentiles": {
+      "p50_ms": 161.08541200000002,
+      "p95_ms": 178.067232,
+      "p99_ms": 193.62776100000002,
+      "min_ms": 130.550569,
+      "max_ms": 221.85167
+    },
+    "throughput_lookups_per_sec_p50": 128726.74032084295,
+    "throughput_lookups_per_sec_p95": 116450.39779132413
+  },
+  "rebaseline_profile": {
+    "implementation": "rebaseline_hash_map_lookup",
+    "runs": 80,
+    "lookups_per_run": 20736,
+    "percentiles": {
+      "p50_ms": 17.426071,
+      "p95_ms": 22.355533,
+      "p99_ms": 25.268742,
+      "min_ms": 14.859599,
+      "max_ms": 38.385698000000005
+    },
+    "throughput_lookups_per_sec_p50": 1189941.2093523548,
+    "throughput_lookups_per_sec_p95": 927555.6078220098
+  },
+  "delta": {
+    "p50_delta_percent": -89.18209241690985,
+    "p95_delta_percent": -87.44545374861558,
+    "p99_delta_percent": -86.9498351530285,
+    "throughput_gain_percent_p50": 824.393180769205,
+    "throughput_gain_percent_p95": 696.524207228698
+  },
+  "ev": {
+    "impact": 4.0,
+    "confidence": 4.0,
+    "reuse": 4.0,
+    "effort": 2.0,
+    "adoption_friction": 1.0,
+    "score": 32.0,
+    "promoted": true
+  },
+  "isomorphism_checks": [
+    {
+      "case_id": "case_known_hits",
+      "status": "pass",
+      "details": "baseline_hits=64 optimized_hits=64 query_count=64"
+    },
+    {
+      "case_id": "case_unknown_misses",
+      "status": "pass",
+      "details": "baseline_hits=0 optimized_hits=0 query_count=32"
+    },
+    {
+      "case_id": "case_mixed_hit_miss",
+      "status": "pass",
+      "details": "baseline_hits=16 optimized_hits=16 query_count=32"
+    },
+    {
+      "case_id": "case_scaled_suffix_hits",
+      "status": "pass",
+      "details": "baseline_hits=32 optimized_hits=32 query_count=32"
+    }
+  ]
+}

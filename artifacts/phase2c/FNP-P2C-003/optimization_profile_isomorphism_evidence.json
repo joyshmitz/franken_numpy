@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "packet_id": "FNP-P2C-003",
+  "subtask_id": "FNP-P2C-003-H",
+  "status": "pass",
+  "optimization_lever": {
+    "id": "P2C003-H-LEVER-001",
+    "description": "Replace linear transfer-fixture ID scans with precomputed hash-index dispatch",
+    "rationale": "Packet-003 workflow replay repeatedly resolves transfer fixture IDs for strict/hardened scenario steps; replacing linear scans with precomputed HashMap lookups removes O(n) per-step dispatch overhead while preserving deterministic fixture resolution semantics.",
+    "risk_note": "Optimization only changes fixture ID lookup strategy in workflow dispatch; fixture payloads, ordering, and reason-code outcomes remain unchanged.",
+    "rollback_command": "git restore --source <last-green-commit> -- crates/fnp-conformance/src/workflow_scenarios.rs"
+  },
+  "benchmark_delta": {
+    "p50_delta_percent": -89.18209241690985,
+    "p95_delta_percent": -87.44545374861558,
+    "p99_delta_percent": -86.9498351530285,
+    "throughput_gain_percent_p50": 824.393180769205,
+    "throughput_gain_percent_p95": 696.524207228698
+  },
+  "ev_gate": {
+    "formula": "(Impact * Confidence * Reuse) / (Effort * AdoptionFriction)",
+    "threshold": 2.0,
+    "impact": 4.0,
+    "confidence": 4.0,
+    "reuse": 4.0,
+    "effort": 2.0,
+    "adoption_friction": 1.0,
+    "score": 32.0,
+    "promoted": true
+  },
+  "isomorphism": {
+    "cases_total": 4,
+    "cases_passed": 4,
+    "cases_failed": 0,
+    "ordering_tiebreak_note": "Optimization changes only transfer fixture-id dispatch strategy; fixture payload execution ordering and failure-class branches remain behavior-isomorphic.",
+    "checks": [
+      {
+        "case_id": "case_known_hits",
+        "status": "pass",
+        "details": "baseline_hits=64 optimized_hits=64 query_count=64"
+      },
+      {
+        "case_id": "case_unknown_misses",
+        "status": "pass",
+        "details": "baseline_hits=0 optimized_hits=0 query_count=32"
+      },
+      {
+        "case_id": "case_mixed_hit_miss",
+        "status": "pass",
+        "details": "baseline_hits=16 optimized_hits=16 query_count=32"
+      },
+      {
+        "case_id": "case_scaled_suffix_hits",
+        "status": "pass",
+        "details": "baseline_hits=32 optimized_hits=32 query_count=32"
+      }
+    ]
+  },
+  "quality_gates": [
+    {
+      "command": "rch exec -- cargo fmt --check",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo check --workspace --all-targets",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo clippy --workspace --all-targets -- -D warnings",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo test -p fnp-conformance transfer_packet003_f_suites_are_green -- --nocapture",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo run -p fnp-conformance --bin generate_packet003_optimization_report",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo run -p fnp-conformance --bin run_workflow_scenario_gate -- --log-path artifacts/phase2c/FNP-P2C-003/workflow_scenario_packet003_opt_e2e.jsonl --artifact-index-path artifacts/phase2c/FNP-P2C-003/workflow_scenario_packet003_opt_artifact_index.json --report-path artifacts/phase2c/FNP-P2C-003/workflow_scenario_packet003_opt_reliability.json --retries 0 --flake-budget 0 --coverage-floor 1.0",
+      "result": "pass"
+    }
+  ],
+  "artifacts": [
+    "crates/fnp-conformance/src/bin/generate_packet003_optimization_report.rs",
+    "artifacts/phase2c/FNP-P2C-003/optimization_profile_report.json",
+    "artifacts/phase2c/FNP-P2C-003/optimization_profile_isomorphism_evidence.json",
+    "artifacts/phase2c/FNP-P2C-003/workflow_scenario_packet003_opt_e2e.jsonl",
+    "artifacts/phase2c/FNP-P2C-003/workflow_scenario_packet003_opt_artifact_index.json",
+    "artifacts/phase2c/FNP-P2C-003/workflow_scenario_packet003_opt_reliability.json"
+  ],
+  "notes": [
+    "Profile report captures baseline/rebaseline transfer fixture dispatch lookup distributions with environment fingerprint and reproducibility command.",
+    "Isomorphism checks cover known-hit, unknown-miss, mixed, and scaled-suffix query lanes with baseline/optimized parity.",
+    "Optimization accepted under EV gate with score 32.0 and no observed behavior drift.",
+    "Post-change workflow scenario gate rerun passed with 565/565 cases and coverage_ratio=1.0."
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "retries": 0,
+  "attempts_run": 1,
+  "flaky_failures": 0,
+  "flake_budget": 0,
+  "coverage_floor": 1.0,
+  "coverage_ratio": 1.0,
+  "diagnostics": []
+}

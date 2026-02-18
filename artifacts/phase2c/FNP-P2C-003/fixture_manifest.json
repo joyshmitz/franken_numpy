@@ -9,34 +9,24 @@
   ],
   "fixtures": [
     {
-      "id": "p2c003_transfer_selector_nominal",
-      "input_path": "crates/fnp-conformance/fixtures/p2c003_transfer_selector_cases.json",
-      "oracle_case_id": "selector_contiguous_and_strided_matrix"
+      "id": "p2c003_transfer_differential",
+      "input_path": "crates/fnp-conformance/fixtures/packet003_transfer/iter_differential_cases.json",
+      "oracle_case_id": "transfer_iter_differential_cases_contract"
     },
     {
-      "id": "p2c003_overlap_alias_hazard",
-      "input_path": "crates/fnp-conformance/fixtures/p2c003_overlap_alias_cases.json",
-      "oracle_case_id": "overlap_copy_direction_required"
+      "id": "p2c003_transfer_metamorphic",
+      "input_path": "crates/fnp-conformance/fixtures/packet003_transfer/iter_metamorphic_cases.json",
+      "oracle_case_id": "transfer_iter_metamorphic_cases_contract"
     },
     {
-      "id": "p2c003_where_mask_contract",
-      "input_path": "crates/fnp-conformance/fixtures/p2c003_where_mask_cases.json",
-      "oracle_case_id": "masked_write_preserves_masked_off_lanes"
+      "id": "p2c003_transfer_adversarial",
+      "input_path": "crates/fnp-conformance/fixtures/packet003_transfer/iter_adversarial_cases.json",
+      "oracle_case_id": "transfer_iter_adversarial_cases_contract"
     },
     {
-      "id": "p2c003_same_value_cast_guard",
-      "input_path": "crates/fnp-conformance/fixtures/p2c003_same_value_cast_cases.json",
-      "oracle_case_id": "lossy_same_value_cast_rejected"
-    },
-    {
-      "id": "p2c003_grouped_subarray_transfer",
-      "input_path": "crates/fnp-conformance/fixtures/p2c003_grouped_subarray_cases.json",
-      "oracle_case_id": "subarray_broadcast_contract_enforced"
-    },
-    {
-      "id": "p2c003_flatiter_transfer_paths",
-      "input_path": "crates/fnp-conformance/fixtures/p2c003_flatiter_transfer_cases.json",
-      "oracle_case_id": "flatiter_read_write_contracts"
+      "id": "p2c003_transfer_workflow_scenarios",
+      "input_path": "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json",
+      "oracle_case_id": "transfer_packet_workflow_contract"
     }
   ]
 }
