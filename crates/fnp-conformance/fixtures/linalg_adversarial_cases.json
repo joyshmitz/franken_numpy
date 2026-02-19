@@ -206,5 +206,76 @@
     "reason_code": "linalg_policy_unknown_metadata",
     "mode_raw": "strict",
     "class_raw": "legacy_semantics"
+  },
+  {
+    "id": "linalg_qr_batch_lane_budget_exceeded",
+    "operation": "qr_shapes",
+    "expected_error_contains": "batch lanes exceeded bounded validation budget",
+    "expected_reason_code": "linalg_shape_contract_violation",
+    "severity": "high",
+    "seed": 8413,
+    "mode": "hardened",
+    "env_fingerprint": "fnp-linalg-packet-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-008/risk_note.md",
+      "crates/fnp-conformance/fixtures/linalg_adversarial_cases.json"
+    ],
+    "reason_code": "linalg_shape_contract_violation",
+    "shape": [2001, 1000, 2, 2],
+    "qr_mode": "reduced"
+  },
+  {
+    "id": "linalg_lstsq_rhs_rank_three_invalid",
+    "operation": "lstsq_shapes",
+    "expected_error_contains": "rhs must be 1D or 2D for lstsq",
+    "expected_reason_code": "linalg_lstsq_tuple_contract_violation",
+    "severity": "high",
+    "seed": 8414,
+    "mode": "strict",
+    "env_fingerprint": "fnp-linalg-packet-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-008/risk_note.md",
+      "crates/fnp-conformance/fixtures/linalg_adversarial_cases.json"
+    ],
+    "reason_code": "linalg_lstsq_tuple_contract_violation",
+    "shape": [5, 3],
+    "rhs_shape": [5, 1, 1]
+  },
+  {
+    "id": "linalg_spectral_nonconverged_lower",
+    "operation": "spectral_branch",
+    "expected_error_contains": "did not converge",
+    "expected_reason_code": "linalg_spectral_convergence_failed",
+    "severity": "high",
+    "seed": 8415,
+    "mode": "hardened",
+    "env_fingerprint": "fnp-linalg-packet-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-008/risk_note.md",
+      "crates/fnp-conformance/fixtures/linalg_adversarial_cases.json"
+    ],
+    "reason_code": "linalg_spectral_convergence_failed",
+    "uplo": "L",
+    "converged": false
+  },
+  {
+    "id": "linalg_solve_rhs_length_invalid",
+    "operation": "solve_2x2",
+    "expected_error_contains": "requires a length-2 rhs fixture",
+    "expected_reason_code": "linalg_shape_contract_violation",
+    "severity": "high",
+    "seed": 8416,
+    "mode": "strict",
+    "env_fingerprint": "fnp-linalg-packet-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-008/risk_note.md",
+      "crates/fnp-conformance/fixtures/linalg_adversarial_cases.json"
+    ],
+    "reason_code": "linalg_shape_contract_violation",
+    "matrix": [
+      [2.0, 1.0],
+      [1.0, 2.0]
+    ],
+    "rhs": [3.0]
   }
 ]
