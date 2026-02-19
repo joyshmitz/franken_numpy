@@ -56,6 +56,54 @@ impl QrMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VectorNormOrder {
+    One,
+    Two,
+    Inf,
+    NegInf,
+}
+
+impl VectorNormOrder {
+    pub fn from_token(token: &str) -> Result<Self, LinAlgError> {
+        match token.trim().to_ascii_lowercase().as_str() {
+            "1" => Ok(Self::One),
+            "2" => Ok(Self::Two),
+            "inf" | "+inf" => Ok(Self::Inf),
+            "-inf" => Ok(Self::NegInf),
+            _ => Err(LinAlgError::NormDetRankPolicyViolation(
+                "unsupported vector norm order token",
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatrixNormOrder {
+    Fro,
+    One,
+    Inf,
+    Two,
+    NegTwo,
+    Nuclear,
+}
+
+impl MatrixNormOrder {
+    pub fn from_token(token: &str) -> Result<Self, LinAlgError> {
+        match token.trim().to_ascii_lowercase().as_str() {
+            "fro" | "f" => Ok(Self::Fro),
+            "1" => Ok(Self::One),
+            "inf" | "+inf" => Ok(Self::Inf),
+            "2" => Ok(Self::Two),
+            "-2" => Ok(Self::NegTwo),
+            "nuc" => Ok(Self::Nuclear),
+            _ => Err(LinAlgError::NormDetRankPolicyViolation(
+                "unsupported matrix norm order token",
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinAlgError {
     ShapeContractViolation(&'static str),
@@ -126,6 +174,27 @@ pub struct LstsqOutputShapes {
     pub residuals_shape: Vec<usize>,
     pub rank_upper_bound: usize,
     pub singular_values_shape: Vec<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Qr2x2Result {
+    pub q: Option<[[f64; 2]; 2]>,
+    pub r: [[f64; 2]; 2],
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Svd2x2Result {
+    pub u: [[f64; 2]; 2],
+    pub singular_values: [f64; 2],
+    pub vt: [[f64; 2]; 2],
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Lstsq2x2Result {
+    pub solution: [f64; 2],
+    pub residual_sum_squares: f64,
+    pub rank: usize,
+    pub singular_values: [f64; 2],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -312,6 +381,28 @@ fn singular_values_2x2(matrix: [[f64; 2]; 2]) -> Result<[f64; 2], LinAlgError> {
     Ok([lambda_max.sqrt(), lambda_min.sqrt()])
 }
 
+fn validate_finite_spectral_matrix_2x2(matrix: [[f64; 2]; 2]) -> Result<(), LinAlgError> {
+    if matrix.iter().flatten().any(|value| !value.is_finite()) {
+        return Err(LinAlgError::SpectralConvergenceFailed);
+    }
+    Ok(())
+}
+
+fn real_eigenvalues_2x2(matrix: [[f64; 2]; 2]) -> Result<[f64; 2], LinAlgError> {
+    let trace = matrix[0][0] + matrix[1][1];
+    let det = matrix[0][0] * matrix[1][1] - matrix[0][1] * matrix[1][0];
+    let mut disc = trace.mul_add(trace, -4.0 * det);
+    if disc < 0.0 && disc.abs() <= f64::EPSILON * 32.0 {
+        disc = 0.0;
+    }
+    if disc < 0.0 || !disc.is_finite() {
+        return Err(LinAlgError::SpectralConvergenceFailed);
+    }
+
+    let sqrt_disc = disc.sqrt();
+    Ok([(trace + sqrt_disc) * 0.5, (trace - sqrt_disc) * 0.5])
+}
+
 pub fn matrix_rank_2x2(matrix: [[f64; 2]; 2], rcond: f64) -> Result<usize, LinAlgError> {
     validate_tolerance_policy(rcond, 0)?;
     let singular_values = singular_values_2x2(matrix)?;
@@ -404,6 +495,174 @@ pub fn pinv_2x2(matrix: [[f64; 2]; 2], rcond: f64) -> Result<[[f64; 2]; 2], LinA
     Ok(pinv)
 }
 
+pub fn vector_norm(values: &[f64], ord: Option<VectorNormOrder>) -> Result<f64, LinAlgError> {
+    if values.iter().any(|value| !value.is_finite()) {
+        return Err(LinAlgError::NormDetRankPolicyViolation(
+            "vector norm requires finite entries",
+        ));
+    }
+
+    let order = ord.unwrap_or(VectorNormOrder::Two);
+    if values.is_empty() {
+        if matches!(order, VectorNormOrder::NegInf) {
+            return Err(LinAlgError::NormDetRankPolicyViolation(
+                "negative infinity vector norm is undefined for empty inputs",
+            ));
+        }
+        return Ok(0.0);
+    }
+
+    let abs_values = values.iter().map(|value| value.abs());
+    let result = match order {
+        VectorNormOrder::One => abs_values.sum(),
+        VectorNormOrder::Two => abs_values.map(|value| value * value).sum::<f64>().sqrt(),
+        VectorNormOrder::Inf => abs_values.fold(0.0, f64::max),
+        VectorNormOrder::NegInf => abs_values.fold(f64::INFINITY, f64::min),
+    };
+    Ok(result)
+}
+
+pub fn matrix_norm_2x2(
+    matrix: [[f64; 2]; 2],
+    ord: Option<MatrixNormOrder>,
+) -> Result<f64, LinAlgError> {
+    validate_finite_matrix_2x2(matrix)?;
+
+    let order = ord.unwrap_or(MatrixNormOrder::Fro);
+    let result = match order {
+        MatrixNormOrder::Fro => {
+            let mut sum_sq = 0.0;
+            for row in matrix {
+                for value in row {
+                    sum_sq += value * value;
+                }
+            }
+            sum_sq.sqrt()
+        }
+        MatrixNormOrder::One => {
+            let col0 = matrix[0][0].abs() + matrix[1][0].abs();
+            let col1 = matrix[0][1].abs() + matrix[1][1].abs();
+            col0.max(col1)
+        }
+        MatrixNormOrder::Inf => {
+            let row0 = matrix[0][0].abs() + matrix[0][1].abs();
+            let row1 = matrix[1][0].abs() + matrix[1][1].abs();
+            row0.max(row1)
+        }
+        MatrixNormOrder::Two => singular_values_2x2(matrix)?[0],
+        MatrixNormOrder::NegTwo => singular_values_2x2(matrix)?[1],
+        MatrixNormOrder::Nuclear => {
+            let singular_values = singular_values_2x2(matrix)?;
+            singular_values[0] + singular_values[1]
+        }
+    };
+    Ok(result)
+}
+
+pub fn eigvals_2x2(matrix: [[f64; 2]; 2], converged: bool) -> Result<[f64; 2], LinAlgError> {
+    if !converged {
+        return Err(LinAlgError::SpectralConvergenceFailed);
+    }
+    validate_finite_spectral_matrix_2x2(matrix)?;
+    real_eigenvalues_2x2(matrix)
+}
+
+pub fn eigh_2x2(
+    matrix: [[f64; 2]; 2],
+    uplo: &str,
+    converged: bool,
+) -> Result<([f64; 2], [[f64; 2]; 2]), LinAlgError> {
+    validate_spectral_branch(uplo, converged)?;
+    validate_finite_spectral_matrix_2x2(matrix)?;
+
+    let symmetric = match uplo {
+        "L" => [[matrix[0][0], matrix[1][0]], [matrix[1][0], matrix[1][1]]],
+        "U" => [[matrix[0][0], matrix[0][1]], [matrix[0][1], matrix[1][1]]],
+        _ => return Err(LinAlgError::SpectralConvergenceFailed),
+    };
+
+    let mut eigenvalues = real_eigenvalues_2x2(symmetric)?;
+    if eigenvalues[0] > eigenvalues[1] {
+        eigenvalues.swap(0, 1);
+    }
+
+    let mut eigenvectors = [[0.0_f64; 2]; 2];
+    let a = symmetric[0][0];
+    let b = symmetric[0][1];
+    let d = symmetric[1][1];
+
+    let lambda0 = eigenvalues[0];
+    let mut v0 = if b.abs() > f64::EPSILON {
+        [b, lambda0 - a]
+    } else if (a - lambda0).abs() <= (d - lambda0).abs() {
+        [1.0, 0.0]
+    } else {
+        [0.0, 1.0]
+    };
+    let v0_norm = v0[0].hypot(v0[1]);
+    if !v0_norm.is_finite() || v0_norm <= f64::EPSILON {
+        return Err(LinAlgError::SpectralConvergenceFailed);
+    }
+    v0[0] /= v0_norm;
+    v0[1] /= v0_norm;
+
+    let v1 = [-v0[1], v0[0]];
+    eigenvectors[0][0] = v0[0];
+    eigenvectors[1][0] = v0[1];
+    eigenvectors[0][1] = v1[0];
+    eigenvectors[1][1] = v1[1];
+
+    Ok((eigenvalues, eigenvectors))
+}
+
+fn validate_cholesky_uplo(uplo: &str) -> Result<(), LinAlgError> {
+    if uplo == "L" || uplo == "U" {
+        Ok(())
+    } else {
+        Err(LinAlgError::CholeskyContractViolation(
+            "cholesky uplo must be L or U",
+        ))
+    }
+}
+
+pub fn cholesky_2x2(matrix: [[f64; 2]; 2], uplo: &str) -> Result<[[f64; 2]; 2], LinAlgError> {
+    validate_cholesky_uplo(uplo)?;
+
+    let (a, b, d) = match uplo {
+        "L" => (matrix[0][0], matrix[1][0], matrix[1][1]),
+        "U" => (matrix[0][0], matrix[0][1], matrix[1][1]),
+        _ => unreachable!(),
+    };
+
+    if !a.is_finite() || !b.is_finite() || !d.is_finite() {
+        return Err(LinAlgError::CholeskyContractViolation(
+            "cholesky requires finite selected-triangle entries",
+        ));
+    }
+    if a <= 0.0 {
+        return Err(LinAlgError::CholeskyContractViolation(
+            "cholesky requires positive leading principal minor",
+        ));
+    }
+
+    let l11 = a.sqrt();
+    let l21 = b / l11;
+    let schur = d - l21 * l21;
+    if !schur.is_finite() || schur <= 0.0 {
+        return Err(LinAlgError::CholeskyContractViolation(
+            "matrix is not positive definite on selected triangle",
+        ));
+    }
+    let l22 = schur.sqrt();
+
+    let result = match uplo {
+        "L" => [[l11, 0.0], [l21, l22]],
+        "U" => [[l11, l21], [0.0, l22]],
+        _ => unreachable!(),
+    };
+    Ok(result)
+}
+
 pub fn validate_cholesky_diagonal(diagonal: &[f64]) -> Result<(), LinAlgError> {
     if diagonal.is_empty() {
         return Err(LinAlgError::CholeskyContractViolation(
@@ -444,6 +703,154 @@ pub fn qr_output_shapes(shape: &[usize], mode: QrMode) -> Result<QrOutputShapes,
         },
     };
     Ok(output)
+}
+
+pub fn qr_2x2(matrix: [[f64; 2]; 2], mode: QrMode) -> Result<Qr2x2Result, LinAlgError> {
+    if matrix.iter().flatten().any(|value| !value.is_finite()) {
+        return Err(LinAlgError::QrModeInvalid);
+    }
+    if mode == QrMode::Raw {
+        return Err(LinAlgError::QrModeInvalid);
+    }
+
+    let c1 = [matrix[0][0], matrix[1][0]];
+    let c2 = [matrix[0][1], matrix[1][1]];
+
+    let mut q1 = [1.0_f64, 0.0_f64];
+    let r11 = c1[0].hypot(c1[1]);
+    if r11 > f64::EPSILON {
+        q1 = [c1[0] / r11, c1[1] / r11];
+    }
+
+    let r12 = q1[0].mul_add(c2[0], q1[1] * c2[1]);
+    let u2 = [c2[0] - r12 * q1[0], c2[1] - r12 * q1[1]];
+    let mut q2 = [-q1[1], q1[0]];
+    let mut r22 = u2[0].hypot(u2[1]);
+    if r22 > f64::EPSILON {
+        q2 = [u2[0] / r22, u2[1] / r22];
+    } else {
+        r22 = q2[0].mul_add(c2[0], q2[1] * c2[1]);
+    }
+
+    if r22 < 0.0 {
+        q2[0] = -q2[0];
+        q2[1] = -q2[1];
+        r22 = -r22;
+    }
+
+    let q = [[q1[0], q2[0]], [q1[1], q2[1]]];
+    let r = [[r11, r12], [0.0, r22]];
+
+    let q_out = match mode {
+        QrMode::Reduced | QrMode::Complete => Some(q),
+        QrMode::R => None,
+        QrMode::Raw => unreachable!(),
+    };
+    Ok(Qr2x2Result { q: q_out, r })
+}
+
+pub fn svd_2x2(matrix: [[f64; 2]; 2], converged: bool) -> Result<Svd2x2Result, LinAlgError> {
+    if !converged {
+        return Err(LinAlgError::SvdNonConvergence);
+    }
+    if matrix.iter().flatten().any(|value| !value.is_finite()) {
+        return Err(LinAlgError::SvdNonConvergence);
+    }
+
+    let a = matrix[0][0];
+    let b = matrix[0][1];
+    let c = matrix[1][0];
+    let d = matrix[1][1];
+
+    // Right-singular vectors come from eigendecomposition of A^T A.
+    let m00 = a.mul_add(a, c * c);
+    let m01 = a.mul_add(b, c * d);
+    let m11 = b.mul_add(b, d * d);
+    let trace = m00 + m11;
+    let det = m00 * m11 - m01 * m01;
+    let mut disc = trace.mul_add(trace, -4.0 * det);
+    if disc < 0.0 && disc.abs() <= f64::EPSILON * 32.0 {
+        disc = 0.0;
+    }
+    if disc < 0.0 || !disc.is_finite() {
+        return Err(LinAlgError::SvdNonConvergence);
+    }
+
+    let sqrt_disc = disc.sqrt();
+    let lambda_1 = ((trace + sqrt_disc) * 0.5).max(0.0);
+    let lambda_2 = ((trace - sqrt_disc) * 0.5).max(0.0);
+    let sigma_1 = lambda_1.sqrt();
+    let sigma_2 = lambda_2.sqrt();
+    if !sigma_1.is_finite() || !sigma_2.is_finite() {
+        return Err(LinAlgError::SvdNonConvergence);
+    }
+
+    let mut v1 = if m01.abs() > f64::EPSILON {
+        [m01, lambda_1 - m00]
+    } else if m00 >= m11 {
+        [1.0, 0.0]
+    } else {
+        [0.0, 1.0]
+    };
+    let v1_norm = v1[0].hypot(v1[1]);
+    if !v1_norm.is_finite() || v1_norm <= f64::EPSILON {
+        return Err(LinAlgError::SvdNonConvergence);
+    }
+    v1[0] /= v1_norm;
+    v1[1] /= v1_norm;
+    let v2 = [-v1[1], v1[0]];
+    let vectors = [v1, v2];
+
+    let singular_values = [sigma_1, sigma_2];
+    let mut u_cols = [[0.0_f64; 2]; 2];
+    if sigma_1 <= f64::EPSILON {
+        u_cols[0] = [1.0, 0.0];
+        u_cols[1] = [0.0, 1.0];
+    } else {
+        for idx in 0..2 {
+            let sigma = singular_values[idx];
+            let v = vectors[idx];
+
+            let mut u = if sigma > f64::EPSILON {
+                [
+                    a.mul_add(v[0], b * v[1]) / sigma,
+                    c.mul_add(v[0], d * v[1]) / sigma,
+                ]
+            } else {
+                [-u_cols[0][1], u_cols[0][0]]
+            };
+
+            if idx == 1 && sigma > f64::EPSILON {
+                let proj = u_cols[0][0].mul_add(u[0], u_cols[0][1] * u[1]);
+                u[0] -= proj * u_cols[0][0];
+                u[1] -= proj * u_cols[0][1];
+            }
+
+            let norm = u[0].hypot(u[1]);
+            if !norm.is_finite() || norm <= f64::EPSILON {
+                if idx == 0 {
+                    return Err(LinAlgError::SvdNonConvergence);
+                }
+                u = [-u_cols[0][1], u_cols[0][0]];
+            } else {
+                u[0] /= norm;
+                u[1] /= norm;
+            }
+            u_cols[idx] = u;
+        }
+    }
+
+    let u = [[u_cols[0][0], u_cols[1][0]], [u_cols[0][1], u_cols[1][1]]];
+    let vt = [
+        [vectors[0][0], vectors[0][1]],
+        [vectors[1][0], vectors[1][1]],
+    ];
+
+    Ok(Svd2x2Result {
+        u,
+        singular_values,
+        vt,
+    })
 }
 
 pub fn svd_output_shapes(
@@ -537,6 +944,55 @@ pub fn lstsq_output_shapes(
     })
 }
 
+pub fn lstsq_2x2(
+    lhs: [[f64; 2]; 2],
+    rhs: [f64; 2],
+    rcond: f64,
+) -> Result<Lstsq2x2Result, LinAlgError> {
+    if !rcond.is_finite() || rcond < 0.0 {
+        return Err(LinAlgError::LstsqTupleContractViolation(
+            "rcond must be finite and >= 0 for lstsq_2x2",
+        ));
+    }
+    if lhs.iter().flatten().any(|value| !value.is_finite()) {
+        return Err(LinAlgError::LstsqTupleContractViolation(
+            "lhs entries must be finite for lstsq_2x2",
+        ));
+    }
+    if rhs.iter().any(|value| !value.is_finite()) {
+        return Err(LinAlgError::LstsqTupleContractViolation(
+            "rhs entries must be finite for lstsq_2x2",
+        ));
+    }
+
+    let pinv = pinv_2x2(lhs, rcond)
+        .map_err(|_| LinAlgError::LstsqTupleContractViolation("lstsq_2x2 pinv route failed"))?;
+    let solution = [
+        pinv[0][0].mul_add(rhs[0], pinv[0][1] * rhs[1]),
+        pinv[1][0].mul_add(rhs[0], pinv[1][1] * rhs[1]),
+    ];
+
+    let residual = [
+        lhs[0][0].mul_add(solution[0], lhs[0][1] * solution[1]) - rhs[0],
+        lhs[1][0].mul_add(solution[0], lhs[1][1] * solution[1]) - rhs[1],
+    ];
+    let residual_sum_squares = residual[0].mul_add(residual[0], residual[1] * residual[1]);
+
+    let rank = matrix_rank_2x2(lhs, rcond).map_err(|_| {
+        LinAlgError::LstsqTupleContractViolation("lstsq_2x2 rank evaluation failed")
+    })?;
+    let singular_values = singular_values_2x2(lhs).map_err(|_| {
+        LinAlgError::LstsqTupleContractViolation("lstsq_2x2 singular-value evaluation failed")
+    })?;
+
+    Ok(Lstsq2x2Result {
+        solution,
+        residual_sum_squares,
+        rank,
+        singular_values,
+    })
+}
+
 pub fn validate_tolerance_policy(rcond: f64, search_depth: usize) -> Result<(), LinAlgError> {
     if !rcond.is_finite() || rcond < 0.0 {
         return Err(LinAlgError::NormDetRankPolicyViolation(
@@ -588,11 +1044,12 @@ mod tests {
     use super::{
         LINALG_PACKET_ID, LINALG_PACKET_REASON_CODES, LinAlgError, LinAlgLogRecord,
         LinAlgRuntimeMode, MAX_BACKEND_REVALIDATION_ATTEMPTS, MAX_BATCH_SHAPE_CHECKS,
-        MAX_TOLERANCE_SEARCH_DEPTH, QrMode, det_2x2, inv_2x2, lstsq_output_shapes, matrix_rank_2x2,
-        pinv_2x2, qr_output_shapes, slogdet_2x2, solve_2x2, svd_output_shapes,
-        validate_backend_bridge, validate_cholesky_diagonal, validate_matrix_shape,
-        validate_policy_metadata, validate_spectral_branch, validate_square_matrix,
-        validate_tolerance_policy,
+        MAX_TOLERANCE_SEARCH_DEPTH, MatrixNormOrder, QrMode, VectorNormOrder, cholesky_2x2,
+        det_2x2, eigh_2x2, eigvals_2x2, inv_2x2, lstsq_2x2, lstsq_output_shapes, matrix_norm_2x2,
+        matrix_rank_2x2, pinv_2x2, qr_2x2, qr_output_shapes, slogdet_2x2, solve_2x2, svd_2x2,
+        svd_output_shapes, validate_backend_bridge, validate_cholesky_diagonal,
+        validate_matrix_shape, validate_policy_metadata, validate_spectral_branch,
+        validate_square_matrix, validate_tolerance_policy, vector_norm,
     };
 
     fn packet008_artifacts() -> Vec<String> {
@@ -825,6 +1282,233 @@ mod tests {
     }
 
     #[test]
+    fn norm_order_token_parsers_are_fail_closed() {
+        assert_eq!(
+            VectorNormOrder::from_token("1").expect("vector one"),
+            VectorNormOrder::One
+        );
+        assert_eq!(
+            VectorNormOrder::from_token("-inf").expect("vector neginf"),
+            VectorNormOrder::NegInf
+        );
+        assert_eq!(
+            MatrixNormOrder::from_token("fro").expect("matrix fro"),
+            MatrixNormOrder::Fro
+        );
+        assert_eq!(
+            MatrixNormOrder::from_token("nuc").expect("matrix nuc"),
+            MatrixNormOrder::Nuclear
+        );
+
+        let err = VectorNormOrder::from_token("hostile").expect_err("vector token should fail");
+        assert_eq!(err.reason_code(), "linalg_norm_det_rank_policy_violation");
+        let err = MatrixNormOrder::from_token("hostile").expect_err("matrix token should fail");
+        assert_eq!(err.reason_code(), "linalg_norm_det_rank_policy_violation");
+    }
+
+    #[test]
+    fn vector_norm_orders_match_first_wave_contracts() {
+        let values = [3.0, -4.0];
+        assert!(approx_equal(
+            vector_norm(&values, None).expect("default l2"),
+            5.0,
+            1e-12
+        ));
+        assert!(approx_equal(
+            vector_norm(&values, Some(VectorNormOrder::One)).expect("l1"),
+            7.0,
+            1e-12
+        ));
+        assert!(approx_equal(
+            vector_norm(&values, Some(VectorNormOrder::Inf)).expect("inf"),
+            4.0,
+            1e-12
+        ));
+        assert!(approx_equal(
+            vector_norm(&values, Some(VectorNormOrder::NegInf)).expect("-inf"),
+            3.0,
+            1e-12
+        ));
+
+        assert!(approx_equal(
+            vector_norm(&[], None).expect("empty default"),
+            0.0,
+            1e-12
+        ));
+        let err = vector_norm(&[], Some(VectorNormOrder::NegInf)).expect_err("empty -inf");
+        assert_eq!(err.reason_code(), "linalg_norm_det_rank_policy_violation");
+    }
+
+    #[test]
+    fn matrix_norm_orders_match_first_wave_contracts() {
+        let matrix = [[1.0, 2.0], [3.0, 4.0]];
+        assert!(approx_equal(
+            matrix_norm_2x2(matrix, None).expect("default fro"),
+            5.477225575051661,
+            1e-12
+        ));
+        assert!(approx_equal(
+            matrix_norm_2x2(matrix, Some(MatrixNormOrder::One)).expect("one"),
+            6.0,
+            1e-12
+        ));
+        assert!(approx_equal(
+            matrix_norm_2x2(matrix, Some(MatrixNormOrder::Inf)).expect("inf"),
+            7.0,
+            1e-12
+        ));
+        assert!(approx_equal(
+            matrix_norm_2x2(matrix, Some(MatrixNormOrder::Two)).expect("two"),
+            5.464985704219043,
+            1e-12
+        ));
+        assert!(approx_equal(
+            matrix_norm_2x2(matrix, Some(MatrixNormOrder::NegTwo)).expect("-two"),
+            0.36596619062625746,
+            1e-12
+        ));
+        assert!(approx_equal(
+            matrix_norm_2x2(matrix, Some(MatrixNormOrder::Nuclear)).expect("nuclear"),
+            5.8309518948453,
+            1e-12
+        ));
+    }
+
+    #[test]
+    fn norm_paths_reject_non_finite_inputs() {
+        let err = vector_norm(&[f64::NAN, 1.0], None).expect_err("vector nan");
+        assert_eq!(err.reason_code(), "linalg_norm_det_rank_policy_violation");
+
+        let err = matrix_norm_2x2([[f64::INFINITY, 0.0], [0.0, 1.0]], None).expect_err("inf");
+        assert_eq!(err.reason_code(), "linalg_norm_det_rank_policy_violation");
+    }
+
+    #[test]
+    fn eigvals_2x2_preserves_trace_and_determinant_relations() {
+        let matrix = [[4.0, 2.0], [1.0, 3.0]];
+        let eigvals = eigvals_2x2(matrix, true).expect("eigvals");
+        let trace = eigvals[0] + eigvals[1];
+        let det = eigvals[0] * eigvals[1];
+        assert!(approx_equal(trace, 7.0, 1e-12));
+        assert!(approx_equal(det, 10.0, 1e-12));
+    }
+
+    #[test]
+    fn eigh_2x2_returns_orthonormal_eigenvectors() {
+        let matrix = [[2.0, 1.0], [1.0, 2.0]];
+        let (eigvals, eigvecs) = eigh_2x2(matrix, "L", true).expect("eigh");
+        assert!(approx_equal(eigvals[0], 1.0, 1e-12));
+        assert!(approx_equal(eigvals[1], 3.0, 1e-12));
+
+        let dot = eigvecs[0][0] * eigvecs[0][1] + eigvecs[1][0] * eigvecs[1][1];
+        assert!(approx_equal(dot, 0.0, 1e-12));
+        let n0 = eigvecs[0][0].hypot(eigvecs[1][0]);
+        let n1 = eigvecs[0][1].hypot(eigvecs[1][1]);
+        assert!(approx_equal(n0, 1.0, 1e-12));
+        assert!(approx_equal(n1, 1.0, 1e-12));
+
+        for col in 0..2 {
+            let lambda = eigvals[col];
+            let v = [eigvecs[0][col], eigvecs[1][col]];
+            let av = [
+                matrix[0][0].mul_add(v[0], matrix[0][1] * v[1]),
+                matrix[1][0].mul_add(v[0], matrix[1][1] * v[1]),
+            ];
+            assert!(approx_equal(av[0], lambda * v[0], 1e-10));
+            assert!(approx_equal(av[1], lambda * v[1], 1e-10));
+        }
+    }
+
+    #[test]
+    fn eigh_2x2_respects_uplo_branch_choice() {
+        let matrix = [[2.0, 100.0], [1.0, 2.0]];
+        let (eigvals_l, _) = eigh_2x2(matrix, "L", true).expect("L");
+        let (eigvals_u, _) = eigh_2x2(matrix, "U", true).expect("U");
+
+        assert!(approx_equal(eigvals_l[0], 1.0, 1e-12));
+        assert!(approx_equal(eigvals_l[1], 3.0, 1e-12));
+        assert!(approx_equal(eigvals_u[0], -98.0, 1e-10));
+        assert!(approx_equal(eigvals_u[1], 102.0, 1e-10));
+    }
+
+    #[test]
+    fn spectral_kernels_fail_closed_for_invalid_inputs() {
+        let err = eigvals_2x2([[1.0, 2.0], [3.0, 4.0]], false).expect_err("non-converged");
+        assert_eq!(err.reason_code(), "linalg_spectral_convergence_failed");
+
+        let err = eigvals_2x2([[f64::NAN, 0.0], [0.0, 1.0]], true).expect_err("nan matrix");
+        assert_eq!(err.reason_code(), "linalg_spectral_convergence_failed");
+
+        let err = eigvals_2x2([[0.0, -1.0], [1.0, 0.0]], true).expect_err("complex spectrum");
+        assert_eq!(err.reason_code(), "linalg_spectral_convergence_failed");
+
+        let err = eigh_2x2([[1.0, 0.0], [0.0, 1.0]], "X", true).expect_err("invalid uplo");
+        assert_eq!(err.reason_code(), "linalg_spectral_convergence_failed");
+    }
+
+    #[test]
+    fn cholesky_2x2_lower_and_upper_reconstruct_matrix() {
+        let matrix = [[4.0, 1.0], [1.0, 3.0]];
+
+        let lower = cholesky_2x2(matrix, "L").expect("lower");
+        let ll_t = [
+            [
+                lower[0][0].mul_add(lower[0][0], lower[0][1] * lower[0][1]),
+                lower[0][0].mul_add(lower[1][0], lower[0][1] * lower[1][1]),
+            ],
+            [
+                lower[1][0].mul_add(lower[0][0], lower[1][1] * lower[0][1]),
+                lower[1][0].mul_add(lower[1][0], lower[1][1] * lower[1][1]),
+            ],
+        ];
+        assert!(approx_equal(ll_t[0][0], 4.0, 1e-12));
+        assert!(approx_equal(ll_t[0][1], 1.0, 1e-12));
+        assert!(approx_equal(ll_t[1][0], 1.0, 1e-12));
+        assert!(approx_equal(ll_t[1][1], 3.0, 1e-12));
+
+        let upper = cholesky_2x2(matrix, "U").expect("upper");
+        let u_tu = [
+            [
+                upper[0][0].mul_add(upper[0][0], upper[1][0] * upper[1][0]),
+                upper[0][0].mul_add(upper[0][1], upper[1][0] * upper[1][1]),
+            ],
+            [
+                upper[0][1].mul_add(upper[0][0], upper[1][1] * upper[1][0]),
+                upper[0][1].mul_add(upper[0][1], upper[1][1] * upper[1][1]),
+            ],
+        ];
+        assert!(approx_equal(u_tu[0][0], 4.0, 1e-12));
+        assert!(approx_equal(u_tu[0][1], 1.0, 1e-12));
+        assert!(approx_equal(u_tu[1][0], 1.0, 1e-12));
+        assert!(approx_equal(u_tu[1][1], 3.0, 1e-12));
+    }
+
+    #[test]
+    fn cholesky_2x2_uses_selected_triangle_only() {
+        let lower_only = [[4.0, 999.0], [1.0, 3.0]];
+        let lower = cholesky_2x2(lower_only, "L").expect("lower");
+        assert!(approx_equal(lower[0][0], 2.0, 1e-12));
+        assert!(approx_equal(lower[1][0], 0.5, 1e-12));
+
+        let upper_only = [[4.0, 1.0], [999.0, 3.0]];
+        let upper = cholesky_2x2(upper_only, "U").expect("upper");
+        assert!(approx_equal(upper[0][0], 2.0, 1e-12));
+        assert!(approx_equal(upper[0][1], 0.5, 1e-12));
+    }
+
+    #[test]
+    fn cholesky_2x2_fail_closed_for_invalid_inputs() {
+        let err = cholesky_2x2([[1.0, 2.0], [2.0, 1.0]], "L").expect_err("non-pd");
+        assert_eq!(err.reason_code(), "linalg_cholesky_contract_violation");
+
+        let err = cholesky_2x2([[4.0, 1.0], [1.0, 3.0]], "X").expect_err("bad uplo");
+        assert_eq!(err.reason_code(), "linalg_cholesky_contract_violation");
+
+        let err = cholesky_2x2([[f64::NAN, 0.0], [0.0, 1.0]], "U").expect_err("non-finite");
+        assert_eq!(err.reason_code(), "linalg_cholesky_contract_violation");
+    }
+
+    #[test]
     fn cholesky_diagonal_contract_is_enforced() {
         validate_cholesky_diagonal(&[4.0, 3.0, 2.0]).expect("pd diagonal should pass");
         let err = validate_cholesky_diagonal(&[3.0, 0.0]).expect_err("zero diagonal should fail");
@@ -847,6 +1531,164 @@ mod tests {
 
         let err = QrMode::from_mode_token("hostile_mode").expect_err("mode should fail");
         assert_eq!(err.reason_code(), "linalg_qr_mode_invalid");
+    }
+
+    #[test]
+    fn qr_2x2_reduced_reconstructs_input_and_is_orthonormal() {
+        let matrix = [[1.0, 2.0], [3.0, 4.0]];
+        let out = qr_2x2(matrix, QrMode::Reduced).expect("qr reduced");
+        let q = out.q.expect("reduced has q");
+        let r = out.r;
+
+        let qtq = [
+            [
+                q[0][0].mul_add(q[0][0], q[1][0] * q[1][0]),
+                q[0][0].mul_add(q[0][1], q[1][0] * q[1][1]),
+            ],
+            [
+                q[0][1].mul_add(q[0][0], q[1][1] * q[1][0]),
+                q[0][1].mul_add(q[0][1], q[1][1] * q[1][1]),
+            ],
+        ];
+        assert!(approx_equal(qtq[0][0], 1.0, 1e-12));
+        assert!(approx_equal(qtq[0][1], 0.0, 1e-12));
+        assert!(approx_equal(qtq[1][0], 0.0, 1e-12));
+        assert!(approx_equal(qtq[1][1], 1.0, 1e-12));
+
+        let qr = [
+            [
+                q[0][0].mul_add(r[0][0], q[0][1] * r[1][0]),
+                q[0][0].mul_add(r[0][1], q[0][1] * r[1][1]),
+            ],
+            [
+                q[1][0].mul_add(r[0][0], q[1][1] * r[1][0]),
+                q[1][0].mul_add(r[0][1], q[1][1] * r[1][1]),
+            ],
+        ];
+        assert!(approx_equal(qr[0][0], matrix[0][0], 1e-10));
+        assert!(approx_equal(qr[0][1], matrix[0][1], 1e-10));
+        assert!(approx_equal(qr[1][0], matrix[1][0], 1e-10));
+        assert!(approx_equal(qr[1][1], matrix[1][1], 1e-10));
+    }
+
+    #[test]
+    fn qr_2x2_r_mode_and_complete_mode_contracts() {
+        let matrix = [[1.0, 2.0], [3.0, 4.0]];
+        let reduced = qr_2x2(matrix, QrMode::Reduced).expect("reduced");
+        let complete = qr_2x2(matrix, QrMode::Complete).expect("complete");
+        let r_only = qr_2x2(matrix, QrMode::R).expect("r");
+
+        assert_eq!(complete.q, reduced.q);
+        assert_eq!(complete.r, reduced.r);
+        assert!(r_only.q.is_none());
+        assert_eq!(r_only.r, reduced.r);
+        assert!(approx_equal(r_only.r[1][0], 0.0, 1e-12));
+    }
+
+    #[test]
+    fn qr_2x2_handles_rank_deficient_input() {
+        let matrix = [[1.0, 2.0], [2.0, 4.0]];
+        let out = qr_2x2(matrix, QrMode::Reduced).expect("rank-def qr");
+        assert!(approx_equal(out.r[1][1], 0.0, 1e-10));
+
+        let q = out.q.expect("q");
+        let qr = [
+            [
+                q[0][0].mul_add(out.r[0][0], q[0][1] * out.r[1][0]),
+                q[0][0].mul_add(out.r[0][1], q[0][1] * out.r[1][1]),
+            ],
+            [
+                q[1][0].mul_add(out.r[0][0], q[1][1] * out.r[1][0]),
+                q[1][0].mul_add(out.r[0][1], q[1][1] * out.r[1][1]),
+            ],
+        ];
+        assert!(approx_equal(qr[0][0], matrix[0][0], 1e-10));
+        assert!(approx_equal(qr[0][1], matrix[0][1], 1e-10));
+        assert!(approx_equal(qr[1][0], matrix[1][0], 1e-10));
+        assert!(approx_equal(qr[1][1], matrix[1][1], 1e-10));
+    }
+
+    #[test]
+    fn qr_2x2_fail_closed_for_non_finite_and_raw_mode() {
+        let err = qr_2x2([[f64::NAN, 0.0], [0.0, 1.0]], QrMode::Reduced).expect_err("nan");
+        assert_eq!(err.reason_code(), "linalg_qr_mode_invalid");
+
+        let err = qr_2x2([[1.0, 0.0], [0.0, 1.0]], QrMode::Raw).expect_err("raw");
+        assert_eq!(err.reason_code(), "linalg_qr_mode_invalid");
+    }
+
+    #[test]
+    fn svd_2x2_reconstructs_and_orders_singular_values() {
+        let matrix = [[3.0, 1.0], [1.0, 3.0]];
+        let out = svd_2x2(matrix, true).expect("svd");
+        assert!(out.singular_values[0] >= out.singular_values[1]);
+        assert!(out.singular_values[1] >= 0.0);
+
+        let u = out.u;
+        let vt = out.vt;
+        let s = out.singular_values;
+
+        let utu = [
+            [
+                u[0][0].mul_add(u[0][0], u[1][0] * u[1][0]),
+                u[0][0].mul_add(u[0][1], u[1][0] * u[1][1]),
+            ],
+            [
+                u[0][1].mul_add(u[0][0], u[1][1] * u[1][0]),
+                u[0][1].mul_add(u[0][1], u[1][1] * u[1][1]),
+            ],
+        ];
+        assert!(approx_equal(utu[0][0], 1.0, 1e-10));
+        assert!(approx_equal(utu[0][1], 0.0, 1e-10));
+        assert!(approx_equal(utu[1][0], 0.0, 1e-10));
+        assert!(approx_equal(utu[1][1], 1.0, 1e-10));
+
+        let vvt = [
+            [
+                vt[0][0].mul_add(vt[0][0], vt[0][1] * vt[0][1]),
+                vt[0][0].mul_add(vt[1][0], vt[0][1] * vt[1][1]),
+            ],
+            [
+                vt[1][0].mul_add(vt[0][0], vt[1][1] * vt[0][1]),
+                vt[1][0].mul_add(vt[1][0], vt[1][1] * vt[1][1]),
+            ],
+        ];
+        assert!(approx_equal(vvt[0][0], 1.0, 1e-10));
+        assert!(approx_equal(vvt[0][1], 0.0, 1e-10));
+        assert!(approx_equal(vvt[1][0], 0.0, 1e-10));
+        assert!(approx_equal(vvt[1][1], 1.0, 1e-10));
+
+        let us = [
+            [u[0][0] * s[0], u[0][1] * s[1]],
+            [u[1][0] * s[0], u[1][1] * s[1]],
+        ];
+        let recon = [
+            [
+                us[0][0].mul_add(vt[0][0], us[0][1] * vt[1][0]),
+                us[0][0].mul_add(vt[0][1], us[0][1] * vt[1][1]),
+            ],
+            [
+                us[1][0].mul_add(vt[0][0], us[1][1] * vt[1][0]),
+                us[1][0].mul_add(vt[0][1], us[1][1] * vt[1][1]),
+            ],
+        ];
+        assert!(approx_equal(recon[0][0], matrix[0][0], 1e-10));
+        assert!(approx_equal(recon[0][1], matrix[0][1], 1e-10));
+        assert!(approx_equal(recon[1][0], matrix[1][0], 1e-10));
+        assert!(approx_equal(recon[1][1], matrix[1][1], 1e-10));
+    }
+
+    #[test]
+    fn svd_2x2_handles_rank_deficient_and_fail_closed_paths() {
+        let rank_def = [[1.0, 2.0], [2.0, 4.0]];
+        let out = svd_2x2(rank_def, true).expect("rank-def svd");
+        assert!(approx_equal(out.singular_values[1], 0.0, 1e-10));
+
+        let err = svd_2x2([[f64::NAN, 0.0], [0.0, 1.0]], true).expect_err("nan");
+        assert_eq!(err.reason_code(), "linalg_svd_nonconvergence");
+
+        let err = svd_2x2([[1.0, 0.0], [0.0, 1.0]], false).expect_err("non-converged");
+        assert_eq!(err.reason_code(), "linalg_svd_nonconvergence");
     }
 
     #[test]
@@ -886,6 +1728,48 @@ mod tests {
         assert_eq!(matrix_rhs.residuals_shape, vec![2]);
 
         let err = lstsq_output_shapes(&[5, 3], &[4, 2]).expect_err("mismatch rows");
+        assert_eq!(err.reason_code(), "linalg_lstsq_tuple_contract_violation");
+    }
+
+    #[test]
+    fn lstsq_2x2_runtime_outputs_match_contract() {
+        let lhs = [[3.0, 1.0], [1.0, 2.0]];
+        let rhs = [5.0, 5.0];
+        let out = lstsq_2x2(lhs, rhs, 1e-12).expect("lstsq runtime");
+        assert!(approx_equal(out.solution[0], 1.0, 1e-12));
+        assert!(approx_equal(out.solution[1], 2.0, 1e-12));
+        assert!(approx_equal(out.residual_sum_squares, 0.0, 1e-12));
+        assert_eq!(out.rank, 2);
+        assert!(out.singular_values[0] >= out.singular_values[1]);
+
+        let rank_def = [[1.0, 2.0], [2.0, 4.0]];
+        let rank_def_rhs = [3.0, 6.0];
+        let rank_def_out = lstsq_2x2(rank_def, rank_def_rhs, 1e-12).expect("rank-def");
+        assert!(approx_equal(rank_def_out.solution[0], 0.6, 1e-10));
+        assert!(approx_equal(rank_def_out.solution[1], 1.2, 1e-10));
+        assert!(approx_equal(rank_def_out.residual_sum_squares, 0.0, 1e-10));
+        assert_eq!(rank_def_out.rank, 1);
+    }
+
+    #[test]
+    fn lstsq_2x2_reports_residual_for_inconsistent_rhs() {
+        let lhs = [[1.0, 2.0], [2.0, 4.0]];
+        let rhs = [1.0, 0.0];
+        let out = lstsq_2x2(lhs, rhs, 1e-12).expect("inconsistent");
+        assert!(out.residual_sum_squares > 0.1);
+        assert_eq!(out.rank, 1);
+    }
+
+    #[test]
+    fn lstsq_2x2_fail_closed_policy_checks() {
+        let err = lstsq_2x2([[1.0, 0.0], [0.0, 1.0]], [1.0, 2.0], -1.0).expect_err("rcond");
+        assert_eq!(err.reason_code(), "linalg_lstsq_tuple_contract_violation");
+
+        let err =
+            lstsq_2x2([[f64::INFINITY, 0.0], [0.0, 1.0]], [1.0, 2.0], 1e-12).expect_err("lhs");
+        assert_eq!(err.reason_code(), "linalg_lstsq_tuple_contract_violation");
+
+        let err = lstsq_2x2([[1.0, 0.0], [0.0, 1.0]], [f64::NAN, 2.0], 1e-12).expect_err("rhs");
         assert_eq!(err.reason_code(), "linalg_lstsq_tuple_contract_violation");
     }
 

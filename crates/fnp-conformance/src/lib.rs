@@ -22,9 +22,10 @@ use fnp_iter::{
     validate_flatiter_write, validate_nditer_flags,
 };
 use fnp_linalg::{
-    LinAlgError, QrMode, lstsq_output_shapes, qr_output_shapes, solve_2x2, svd_output_shapes,
-    validate_backend_bridge, validate_policy_metadata as validate_linalg_policy_metadata,
-    validate_spectral_branch, validate_tolerance_policy,
+    LinAlgError, QrMode, lstsq_output_shapes, qr_2x2, qr_output_shapes, solve_2x2, svd_2x2,
+    svd_output_shapes, validate_backend_bridge,
+    validate_policy_metadata as validate_linalg_policy_metadata, validate_spectral_branch,
+    validate_tolerance_policy,
 };
 use fnp_ndarray::{MemoryOrder, NdLayout, broadcast_shape, contiguous_strides};
 use fnp_random::{DeterministicRng, RandomError};
@@ -300,7 +301,14 @@ struct UFuncAdversarialCase {
     rhs_dtype: Option<String>,
     axis: Option<isize>,
     keepdims: Option<bool>,
+    #[serde(default)]
     expected_error_contains: String,
+    #[serde(default)]
+    expect_success: bool,
+    #[serde(default)]
+    expected_shape: Option<Vec<usize>>,
+    #[serde(default)]
+    expect_non_finite: bool,
     #[serde(default)]
     expected_reason_code: String,
     #[serde(default)]
@@ -513,6 +521,8 @@ struct LinalgDifferentialCase {
     #[serde(default)]
     expected_solution: Vec<f64>,
     #[serde(default)]
+    expected_q_present: Option<bool>,
+    #[serde(default)]
     expected_q_shape: Option<Vec<usize>>,
     #[serde(default)]
     expected_r_shape: Vec<usize>,
@@ -530,6 +540,10 @@ struct LinalgDifferentialCase {
     expected_rank_upper_bound: usize,
     #[serde(default)]
     expected_singular_values_shape: Vec<usize>,
+    #[serde(default)]
+    expected_singular_values: Vec<f64>,
+    #[serde(default)]
+    expected_tolerance: f64,
     #[serde(default)]
     expected_error_contains: String,
     #[serde(default)]
@@ -3960,9 +3974,22 @@ pub fn run_ufunc_adversarial_suite(config: &HarnessConfig) -> Result<SuiteReport
             ));
             continue;
         }
-        if case.expected_error_contains.trim().is_empty() {
+        let expected_error_contains = case.expected_error_contains.trim().to_lowercase();
+        if case.expect_success {
+            if case.expected_shape.is_none() {
+                report.failures.push(format!(
+                    "{}: expect_success=true requires expected_shape, reason_code={}, mode={}, env_fingerprint={}, artifact_refs={}",
+                    case.id,
+                    reason_code,
+                    mode,
+                    env_fingerprint,
+                    artifact_refs.join(",")
+                ));
+                continue;
+            }
+        } else if expected_error_contains.is_empty() {
             report.failures.push(format!(
-                "{}: expected_error_contains must be non-empty, reason_code={}, mode={}, env_fingerprint={}, artifact_refs={}",
+                "{}: expected_error_contains must be non-empty for error-expected adversarial cases, reason_code={}, mode={}, env_fingerprint={}, artifact_refs={}",
                 case.id,
                 reason_code,
                 mode,
@@ -3997,28 +4024,47 @@ pub fn run_ufunc_adversarial_suite(config: &HarnessConfig) -> Result<SuiteReport
         };
 
         match ufunc_differential::execute_input_case(&input) {
-            Ok((shape, _, _)) => {
-                report.failures.push(format!(
-                    "{}: severity={severity} seed={} reason_code={} mode={} env_fingerprint={} artifact_refs={} expected error containing '{}' with reason_code='{}' but execution succeeded with shape={shape:?}",
-                    case.id,
-                    case.seed,
-                    reason_code,
-                    mode,
-                    env_fingerprint,
-                    artifact_refs.join(","),
-                    case.expected_error_contains,
-                    expected_reason_code
-                ));
-            }
-            Err(err) => {
-                let expected = case.expected_error_contains.to_lowercase();
-                let actual = err.to_lowercase();
-                let actual_reason_code = classify_ufunc_reason_code(case.op, &err);
-                if actual.contains(&expected) && actual_reason_code == expected_reason_code {
+            Ok((shape, values, _)) => {
+                if case.expect_success {
+                    let Some(expected_shape) = case.expected_shape.as_ref() else {
+                        report.failures.push(format!(
+                            "{}: internal contract error expected_shape missing at success validation, reason_code={}, mode={}, env_fingerprint={}, artifact_refs={}",
+                            case.id,
+                            reason_code,
+                            mode,
+                            env_fingerprint,
+                            artifact_refs.join(",")
+                        ));
+                        continue;
+                    };
+                    if &shape != expected_shape {
+                        report.failures.push(format!(
+                            "{}: severity={severity} seed={} reason_code={} mode={} env_fingerprint={} artifact_refs={} expect_success shape mismatch expected={expected_shape:?} actual={shape:?}",
+                            case.id,
+                            case.seed,
+                            reason_code,
+                            mode,
+                            env_fingerprint,
+                            artifact_refs.join(",")
+                        ));
+                        continue;
+                    }
+                    if case.expect_non_finite && values.iter().all(|value| value.is_finite()) {
+                        report.failures.push(format!(
+                            "{}: severity={severity} seed={} reason_code={} mode={} env_fingerprint={} artifact_refs={} expect_non_finite=true but output contained only finite values",
+                            case.id,
+                            case.seed,
+                            reason_code,
+                            mode,
+                            env_fingerprint,
+                            artifact_refs.join(",")
+                        ));
+                        continue;
+                    }
                     report.pass_count += 1;
                 } else {
                     report.failures.push(format!(
-                        "{}: severity={severity} seed={} reason_code={} mode={} env_fingerprint={} artifact_refs={} expected error containing '{}' with reason_code='{}' but got '{}' (reason_code='{}')",
+                        "{}: severity={severity} seed={} reason_code={} mode={} env_fingerprint={} artifact_refs={} expected error containing '{}' with reason_code='{}' but execution succeeded with shape={shape:?}",
                         case.id,
                         case.seed,
                         reason_code,
@@ -4026,10 +4072,46 @@ pub fn run_ufunc_adversarial_suite(config: &HarnessConfig) -> Result<SuiteReport
                         env_fingerprint,
                         artifact_refs.join(","),
                         case.expected_error_contains,
-                        expected_reason_code,
+                        expected_reason_code
+                    ));
+                }
+            }
+            Err(err) => {
+                if case.expect_success {
+                    let actual_reason_code = classify_ufunc_reason_code(case.op, &err);
+                    report.failures.push(format!(
+                        "{}: severity={severity} seed={} reason_code={} mode={} env_fingerprint={} artifact_refs={} expected success but got '{}' (reason_code='{}')",
+                        case.id,
+                        case.seed,
+                        reason_code,
+                        mode,
+                        env_fingerprint,
+                        artifact_refs.join(","),
                         err,
                         actual_reason_code
                     ));
+                } else {
+                    let actual = err.to_lowercase();
+                    let actual_reason_code = classify_ufunc_reason_code(case.op, &err);
+                    if actual.contains(&expected_error_contains)
+                        && actual_reason_code == expected_reason_code
+                    {
+                        report.pass_count += 1;
+                    } else {
+                        report.failures.push(format!(
+                            "{}: severity={severity} seed={} reason_code={} mode={} env_fingerprint={} artifact_refs={} expected error containing '{}' with reason_code='{}' but got '{}' (reason_code='{}')",
+                            case.id,
+                            case.seed,
+                            reason_code,
+                            mode,
+                            env_fingerprint,
+                            artifact_refs.join(","),
+                            case.expected_error_contains,
+                            expected_reason_code,
+                            err,
+                            actual_reason_code
+                        ));
+                    }
                 }
             }
         }
@@ -4046,6 +4128,10 @@ enum LinalgOperationOutcome {
         q_shape: Option<Vec<usize>>,
         r_shape: Vec<usize>,
     },
+    QrDecomposition {
+        q: Option<[[f64; 2]; 2]>,
+        r: [[f64; 2]; 2],
+    },
     SvdShapes {
         u_shape: Vec<usize>,
         s_shape: Vec<usize>,
@@ -4056,6 +4142,11 @@ enum LinalgOperationOutcome {
         residuals_shape: Vec<usize>,
         rank_upper_bound: usize,
         singular_values_shape: Vec<usize>,
+    },
+    SvdDecomposition {
+        u: [[f64; 2]; 2],
+        singular_values: [f64; 2],
+        vt: [[f64; 2]; 2],
     },
 }
 
@@ -5532,6 +5623,41 @@ fn decode_rhs_2(rhs: &[f64]) -> Result<[f64; 2], LinAlgError> {
     Ok([rhs[0], rhs[1]])
 }
 
+fn transpose_2x2(matrix: [[f64; 2]; 2]) -> [[f64; 2]; 2] {
+    [[matrix[0][0], matrix[1][0]], [matrix[0][1], matrix[1][1]]]
+}
+
+fn matmul_2x2(lhs: [[f64; 2]; 2], rhs: [[f64; 2]; 2]) -> [[f64; 2]; 2] {
+    [
+        [
+            lhs[0][0].mul_add(rhs[0][0], lhs[0][1] * rhs[1][0]),
+            lhs[0][0].mul_add(rhs[0][1], lhs[0][1] * rhs[1][1]),
+        ],
+        [
+            lhs[1][0].mul_add(rhs[0][0], lhs[1][1] * rhs[1][0]),
+            lhs[1][0].mul_add(rhs[0][1], lhs[1][1] * rhs[1][1]),
+        ],
+    ]
+}
+
+fn flatten_2x2(matrix: [[f64; 2]; 2]) -> [f64; 4] {
+    [matrix[0][0], matrix[0][1], matrix[1][0], matrix[1][1]]
+}
+
+fn is_orthonormal_2x2(matrix: [[f64; 2]; 2], tolerance: f64) -> bool {
+    let gram = matmul_2x2(transpose_2x2(matrix), matrix);
+    approx_equal_values(
+        &[1.0, 0.0, 0.0, 1.0],
+        &flatten_2x2(gram),
+        tolerance,
+        tolerance,
+    )
+}
+
+fn is_upper_triangular_2x2(matrix: [[f64; 2]; 2], tolerance: f64) -> bool {
+    matrix[1][0].abs() <= tolerance
+}
+
 fn execute_linalg_differential_operation(
     case: &LinalgDifferentialCase,
 ) -> Result<LinalgOperationOutcome, LinAlgError> {
@@ -5594,12 +5720,30 @@ fn execute_linalg_operation(
                 r_shape: output.r_shape,
             })
         }
+        "qr_2x2" => {
+            let matrix = decode_matrix_2x2(input.matrix)?;
+            let mode = QrMode::from_mode_token(input.qr_mode)?;
+            let output = qr_2x2(matrix, mode)?;
+            Ok(LinalgOperationOutcome::QrDecomposition {
+                q: output.q,
+                r: output.r,
+            })
+        }
         "svd_shapes" => {
             let output = svd_output_shapes(input.shape, input.full_matrices, input.converged)?;
             Ok(LinalgOperationOutcome::SvdShapes {
                 u_shape: output.u_shape,
                 s_shape: output.s_shape,
                 vh_shape: output.vh_shape,
+            })
+        }
+        "svd_2x2" => {
+            let matrix = decode_matrix_2x2(input.matrix)?;
+            let output = svd_2x2(matrix, input.converged)?;
+            Ok(LinalgOperationOutcome::SvdDecomposition {
+                u: output.u,
+                singular_values: output.singular_values,
+                vt: output.vt,
             })
         }
         "lstsq_shapes" => {
@@ -5663,6 +5807,60 @@ fn validate_linalg_differential_expectation(
             }
             Ok(())
         }
+        ("qr_2x2", LinalgOperationOutcome::QrDecomposition { q, r }) => {
+            let tolerance = if case.expected_tolerance > 0.0 {
+                case.expected_tolerance
+            } else {
+                1e-9
+            };
+            if !is_upper_triangular_2x2(*r, tolerance) {
+                return Err(format!("qr_2x2 expected upper-triangular R, got {r:?}"));
+            }
+            if r[1][1] < -tolerance {
+                return Err(format!(
+                    "qr_2x2 expected non-negative trailing diagonal in R, got {:?}",
+                    r[1][1]
+                ));
+            }
+
+            if let Some(expected_q_present) = case.expected_q_present {
+                let actual_q_present = q.is_some();
+                if actual_q_present != expected_q_present {
+                    return Err(format!(
+                        "qr_2x2 q-presence mismatch expected={expected_q_present} actual={actual_q_present}"
+                    ));
+                }
+            }
+
+            if case.qr_mode == "r" {
+                if q.is_some() {
+                    return Err("qr_2x2 in r mode must omit Q output".to_string());
+                }
+                return Ok(());
+            }
+
+            let Some(q_matrix) = q else {
+                return Err("qr_2x2 expected Q output for non-r modes".to_string());
+            };
+            if !is_orthonormal_2x2(*q_matrix, tolerance) {
+                return Err(format!("qr_2x2 Q is not orthonormal: {q_matrix:?}"));
+            }
+
+            let expected_matrix = decode_matrix_2x2(&case.matrix)
+                .map_err(|err| format!("qr_2x2 fixture matrix invalid: {err}"))?;
+            let reconstructed = matmul_2x2(*q_matrix, *r);
+            if !approx_equal_values(
+                &flatten_2x2(expected_matrix),
+                &flatten_2x2(reconstructed),
+                tolerance,
+                tolerance,
+            ) {
+                return Err(format!(
+                    "qr_2x2 reconstruction mismatch expected={expected_matrix:?} actual={reconstructed:?}"
+                ));
+            }
+            Ok(())
+        }
         (
             "svd_shapes",
             LinalgOperationOutcome::SvdShapes {
@@ -5703,6 +5901,61 @@ fn validate_linalg_differential_expectation(
                     case.expected_rank_upper_bound,
                     case.expected_singular_values_shape,
                     rank_upper_bound
+                ));
+            }
+            Ok(())
+        }
+        (
+            "svd_2x2",
+            LinalgOperationOutcome::SvdDecomposition {
+                u,
+                singular_values,
+                vt,
+            },
+        ) => {
+            if case.expected_singular_values.len() != 2 {
+                return Err(
+                    "svd_2x2 requires expected_singular_values with exactly two entries"
+                        .to_string(),
+                );
+            }
+
+            let tolerance = if case.expected_tolerance > 0.0 {
+                case.expected_tolerance
+            } else {
+                1e-9
+            };
+            if !approx_equal_values(
+                &case.expected_singular_values,
+                singular_values.as_slice(),
+                tolerance,
+                tolerance,
+            ) {
+                return Err(format!(
+                    "svd_2x2 singular-values mismatch expected={:?} actual={singular_values:?}",
+                    case.expected_singular_values
+                ));
+            }
+
+            if !is_orthonormal_2x2(*u, tolerance) {
+                return Err(format!("svd_2x2 U is not orthonormal: {u:?}"));
+            }
+            if !is_orthonormal_2x2(transpose_2x2(*vt), tolerance) {
+                return Err(format!("svd_2x2 V^T is not orthonormal: {vt:?}"));
+            }
+
+            let sigma = [[singular_values[0], 0.0], [0.0, singular_values[1]]];
+            let reconstructed = matmul_2x2(matmul_2x2(*u, sigma), *vt);
+            let expected_matrix = decode_matrix_2x2(&case.matrix)
+                .map_err(|err| format!("svd_2x2 fixture matrix invalid: {err}"))?;
+            if !approx_equal_values(
+                &flatten_2x2(expected_matrix),
+                &flatten_2x2(reconstructed),
+                tolerance,
+                tolerance,
+            ) {
+                return Err(format!(
+                    "svd_2x2 reconstruction mismatch expected={expected_matrix:?} actual={reconstructed:?}"
                 ));
             }
             Ok(())

@@ -1315,11 +1315,31 @@ fn validate_ufunc_adversarial_fixtures(
             "ufunc_adversarial_cases missing op".to_string(),
         );
 
-        record_check(
-            report,
-            has_non_empty_string(obj, "expected_error_contains"),
-            "ufunc_adversarial_cases missing expected_error_contains".to_string(),
-        );
+        let expect_success = obj
+            .get("expect_success")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if expect_success {
+            record_check(
+                report,
+                has_usize_array(obj, "expected_shape"),
+                "ufunc_adversarial_cases expect_success=true requires expected_shape array"
+                    .to_string(),
+            );
+            record_check(
+                report,
+                obj.get("expect_non_finite")
+                    .is_none_or(serde_json::Value::is_boolean),
+                "ufunc_adversarial_cases expect_non_finite must be boolean when present"
+                    .to_string(),
+            );
+        } else {
+            record_check(
+                report,
+                has_non_empty_string(obj, "expected_error_contains"),
+                "ufunc_adversarial_cases missing expected_error_contains".to_string(),
+            );
+        }
 
         let severity = required_string(obj, "severity");
         if let Some(severity) = severity {
@@ -2063,6 +2083,13 @@ fn has_non_empty_string_array(obj: &serde_json::Map<String, Value>, key: &str) -
         && values
             .iter()
             .all(|item| item.as_str().is_some_and(|value| !value.trim().is_empty()))
+}
+
+fn has_usize_array(obj: &serde_json::Map<String, Value>, key: &str) -> bool {
+    let Some(values) = obj.get(key).and_then(serde_json::Value::as_array) else {
+        return false;
+    };
+    values.iter().all(serde_json::Value::is_u64)
 }
 
 fn record_check(report: &mut SuiteReport, passed: bool, failure: String) {

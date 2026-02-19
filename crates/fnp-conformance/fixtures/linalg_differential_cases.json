@@ -289,5 +289,85 @@
     "expected_reason_code": "linalg_differential_expected_success",
     "rcond": 0.0,
     "search_depth": 128
+  },
+  {
+    "id": "linalg_svd_2x2_runtime_full_rank_diagonal",
+    "operation": "svd_2x2",
+    "seed": 8218,
+    "mode": "strict",
+    "env_fingerprint": "fnp-linalg-packet-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-008/contract_table.md",
+      "crates/fnp-conformance/fixtures/linalg_differential_cases.json"
+    ],
+    "reason_code": "linalg_differential_expected_success",
+    "expected_reason_code": "linalg_differential_expected_success",
+    "matrix": [
+      [3.0, 0.0],
+      [0.0, 1.0]
+    ],
+    "converged": true,
+    "expected_singular_values": [3.0, 1.0],
+    "expected_tolerance": 1e-10
+  },
+  {
+    "id": "linalg_svd_2x2_runtime_rank_deficient",
+    "operation": "svd_2x2",
+    "seed": 8219,
+    "mode": "hardened",
+    "env_fingerprint": "fnp-linalg-packet-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-008/contract_table.md",
+      "crates/fnp-conformance/fixtures/linalg_differential_cases.json"
+    ],
+    "reason_code": "linalg_differential_expected_success",
+    "expected_reason_code": "linalg_differential_expected_success",
+    "matrix": [
+      [2.0, 4.0],
+      [1.0, 2.0]
+    ],
+    "converged": true,
+    "expected_singular_values": [5.0, 0.0],
+    "expected_tolerance": 1e-9
+  },
+  {
+    "id": "linalg_qr_2x2_runtime_reduced_reconstruct",
+    "operation": "qr_2x2",
+    "seed": 8220,
+    "mode": "strict",
+    "env_fingerprint": "fnp-linalg-packet-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-008/contract_table.md",
+      "crates/fnp-conformance/fixtures/linalg_differential_cases.json"
+    ],
+    "reason_code": "linalg_differential_expected_success",
+    "expected_reason_code": "linalg_differential_expected_success",
+    "matrix": [
+      [3.0, 1.0],
+      [1.0, 2.0]
+    ],
+    "qr_mode": "reduced",
+    "expected_q_present": true,
+    "expected_tolerance": 1e-9
+  },
+  {
+    "id": "linalg_qr_2x2_runtime_r_mode_no_q",
+    "operation": "qr_2x2",
+    "seed": 8221,
+    "mode": "hardened",
+    "env_fingerprint": "fnp-linalg-packet-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-008/contract_table.md",
+      "crates/fnp-conformance/fixtures/linalg_differential_cases.json"
+    ],
+    "reason_code": "linalg_differential_expected_success",
+    "expected_reason_code": "linalg_differential_expected_success",
+    "matrix": [
+      [3.0, 1.0],
+      [1.0, 2.0]
+    ],
+    "qr_mode": "r",
+    "expected_q_present": false,
+    "expected_tolerance": 1e-9
   }
 ]
