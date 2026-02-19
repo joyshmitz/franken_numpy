@@ -1,7 +1,8 @@
 #![forbid(unsafe_code)]
 
 use fnp_conformance::{
-    HarnessConfig, SuiteReport, run_crash_signature_regression_suite, run_io_adversarial_suite,
+    HarnessConfig, SuiteReport, run_crash_signature_regression_suite, run_dtype_adversarial_suite,
+    run_dtype_differential_suite, run_dtype_metamorphic_suite, run_io_adversarial_suite,
     run_io_differential_suite, run_io_metamorphic_suite, run_iter_adversarial_suite,
     run_iter_differential_suite, run_iter_metamorphic_suite, run_linalg_adversarial_suite,
     run_linalg_differential_suite, run_linalg_metamorphic_suite, run_rng_adversarial_suite,
@@ -342,6 +343,9 @@ fn parse_args() -> Result<GateOptions, String> {
 }
 
 fn run_gate_suites(cfg: &HarnessConfig, log_path: &Path) -> Result<Vec<SuiteReport>, String> {
+    let mut packet002_dtype_cfg = cfg.clone();
+    packet002_dtype_cfg.fixture_root = cfg.fixture_root.join("packet002_dtype");
+
     Ok(vec![
         test_contracts::run_test_contract_suite(cfg)?,
         run_runtime_policy_suite(cfg)?,
@@ -355,6 +359,9 @@ fn run_gate_suites(cfg: &HarnessConfig, log_path: &Path) -> Result<Vec<SuiteRepo
         run_ufunc_differential_suite(cfg)?,
         run_ufunc_metamorphic_suite(cfg)?,
         run_ufunc_adversarial_suite(cfg)?,
+        run_dtype_differential_suite(&packet002_dtype_cfg)?,
+        run_dtype_metamorphic_suite(&packet002_dtype_cfg)?,
+        run_dtype_adversarial_suite(&packet002_dtype_cfg)?,
         run_rng_differential_suite(cfg)?,
         run_rng_metamorphic_suite(cfg)?,
         run_rng_adversarial_suite(cfg)?,
