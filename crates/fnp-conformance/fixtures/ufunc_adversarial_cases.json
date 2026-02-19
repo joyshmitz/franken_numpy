@@ -244,5 +244,91 @@
     "rhs_values": null,
     "rhs_dtype": "f64",
     "expected_error_contains": "rhs_values"
+  },
+  {
+    "id": "add_broadcast_middle_dim_conflict_2x3x4_vs_2x5x4",
+    "seed": 412,
+    "severity": "high",
+    "mode": "strict",
+    "env_fingerprint": "fnp-ufunc-packet-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-005/contract_table.md",
+      "crates/fnp-conformance/fixtures/ufunc_adversarial_cases.json"
+    ],
+    "reason_code": "ufunc_dispatch_resolution_failed",
+    "expected_reason_code": "ufunc_dispatch_resolution_failed",
+    "op": "add",
+    "lhs_shape": [2, 3, 4],
+    "lhs_values": [
+      1.0, 2.0, 3.0, 4.0,
+      5.0, 6.0, 7.0, 8.0,
+      9.0, 10.0, 11.0, 12.0,
+      13.0, 14.0, 15.0, 16.0,
+      17.0, 18.0, 19.0, 20.0,
+      21.0, 22.0, 23.0, 24.0
+    ],
+    "lhs_dtype": "f64",
+    "rhs_shape": [2, 5, 4],
+    "rhs_values": [
+      1.0, 2.0, 3.0, 4.0,
+      5.0, 6.0, 7.0, 8.0,
+      9.0, 10.0, 11.0, 12.0,
+      13.0, 14.0, 15.0, 16.0,
+      17.0, 18.0, 19.0, 20.0,
+      21.0, 22.0, 23.0, 24.0,
+      25.0, 26.0, 27.0, 28.0,
+      29.0, 30.0, 31.0, 32.0,
+      33.0, 34.0, 35.0, 36.0,
+      37.0, 38.0, 39.0, 40.0
+    ],
+    "rhs_dtype": "f64",
+    "expected_error_contains": "cannot broadcast"
+  },
+  {
+    "id": "sum_axis_out_of_bounds_large_keepdims_2x3x4",
+    "seed": 413,
+    "severity": "critical",
+    "mode": "hardened",
+    "env_fingerprint": "fnp-ufunc-packet-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-005/contract_table.md",
+      "crates/fnp-conformance/fixtures/ufunc_adversarial_cases.json"
+    ],
+    "reason_code": "ufunc_reduction_contract_violation",
+    "expected_reason_code": "ufunc_reduction_contract_violation",
+    "op": "sum",
+    "lhs_shape": [2, 3, 4],
+    "lhs_values": [
+      1.0, 2.0, 3.0, 4.0,
+      5.0, 6.0, 7.0, 8.0,
+      9.0, 10.0, 11.0, 12.0,
+      13.0, 14.0, 15.0, 16.0,
+      17.0, 18.0, 19.0, 20.0,
+      21.0, 22.0, 23.0, 24.0
+    ],
+    "lhs_dtype": "f64",
+    "axis": 10,
+    "keepdims": true,
+    "expected_error_contains": "axis"
+  },
+  {
+    "id": "sum_axis_out_of_bounds_rank_two_2x1_axis_2",
+    "seed": 414,
+    "severity": "critical",
+    "mode": "hardened",
+    "env_fingerprint": "fnp-ufunc-packet-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-005/contract_table.md",
+      "crates/fnp-conformance/fixtures/ufunc_adversarial_cases.json"
+    ],
+    "reason_code": "ufunc_reduction_contract_violation",
+    "expected_reason_code": "ufunc_reduction_contract_violation",
+    "op": "sum",
+    "lhs_shape": [2, 1],
+    "lhs_values": [1.0, 2.0],
+    "lhs_dtype": "f64",
+    "axis": 2,
+    "keepdims": false,
+    "expected_error_contains": "axis"
   }
 ]
