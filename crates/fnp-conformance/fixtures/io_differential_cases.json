@@ -220,5 +220,91 @@
     "payload_prefix": [128, 5, 149],
     "allow_pickle": true,
     "expected_dispatch": "pickle"
+  },
+  {
+    "id": "io_dtype_decode_bool_golden",
+    "operation": "dtype_decode",
+    "seed": 9921,
+    "mode": "strict",
+    "env_fingerprint": "fnp-io-packet-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-009/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-009/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/io_differential_cases.json"
+    ],
+    "reason_code": "io_dtype_descriptor_contract",
+    "expected_reason_code": "io_dtype_descriptor_contract",
+    "dtype_descr": "|b1"
+  },
+  {
+    "id": "io_memmap_contract_copy_on_write_budget_edge",
+    "operation": "memmap_contract",
+    "seed": 9922,
+    "mode": "hardened",
+    "env_fingerprint": "fnp-io-packet-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-009/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-009/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/io_differential_cases.json"
+    ],
+    "reason_code": "io_memmap_contract",
+    "expected_reason_code": "io_memmap_contract",
+    "memmap_mode": "c",
+    "dtype_descr": "<i4",
+    "file_len_bytes": 8192,
+    "expected_bytes": 4096,
+    "validation_retries": 64
+  },
+  {
+    "id": "io_npz_archive_budget_member_retry_edges_golden",
+    "operation": "npz_archive_budget",
+    "seed": 9923,
+    "mode": "hardened",
+    "env_fingerprint": "fnp-io-packet-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-009/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-009/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/io_differential_cases.json"
+    ],
+    "reason_code": "io_npz_archive_contract",
+    "expected_reason_code": "io_npz_archive_contract",
+    "member_count": 4096,
+    "uncompressed_bytes": 1048576,
+    "dispatch_retries": 8
+  },
+  {
+    "id": "io_read_payload_f32_vector_golden",
+    "operation": "read_payload",
+    "seed": 9924,
+    "mode": "strict",
+    "env_fingerprint": "fnp-io-packet-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-009/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-009/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/io_differential_cases.json"
+    ],
+    "reason_code": "io_read_payload_contract",
+    "expected_reason_code": "io_read_payload_contract",
+    "shape": [5],
+    "dtype_descr": "<f4",
+    "payload_len_bytes": 20,
+    "expected_count": 5
+  },
+  {
+    "id": "io_load_dispatch_unknown_prefix_rejected",
+    "operation": "load_dispatch",
+    "seed": 9925,
+    "mode": "strict",
+    "env_fingerprint": "fnp-io-packet-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-009/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-009/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/io_differential_cases.json"
+    ],
+    "reason_code": "io_load_dispatch_invalid",
+    "expected_reason_code": "io_load_dispatch_invalid",
+    "expected_error_contains": "payload prefix does not map to allowed npy/npz/pickle branch",
+    "payload_prefix": [1, 2, 3, 4, 5],
+    "allow_pickle": false
   }
 ]

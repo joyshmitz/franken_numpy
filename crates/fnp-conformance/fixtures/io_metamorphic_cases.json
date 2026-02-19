@@ -151,5 +151,68 @@
     "reason_code": "io_policy_metadata_contract",
     "mode_raw": "hardened",
     "class_raw": "unknown_semantics"
+  },
+  {
+    "id": "io_header_schema_descriptor_roundtrip_fortran_i32",
+    "relation": "header_schema_descriptor_roundtrip",
+    "seed": 9926,
+    "mode": "hardened",
+    "env_fingerprint": "fnp-io-packet-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-009/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-009/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/io_metamorphic_cases.json"
+    ],
+    "reason_code": "io_header_schema_contract",
+    "shape": [1, 2, 3],
+    "fortran_order": true,
+    "dtype_descr": "<i4",
+    "header_len": 256
+  },
+  {
+    "id": "io_dispatch_stability_npy_prefix",
+    "relation": "dispatch_stability",
+    "seed": 9927,
+    "mode": "strict",
+    "env_fingerprint": "fnp-io-packet-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-009/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-009/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/io_metamorphic_cases.json"
+    ],
+    "reason_code": "io_load_dispatch_contract",
+    "payload_prefix": [147, 78, 85, 77, 80, 89],
+    "allow_pickle": false
+  },
+  {
+    "id": "io_npz_budget_idempotent_member_retry_edges",
+    "relation": "npz_budget_idempotent",
+    "seed": 9928,
+    "mode": "hardened",
+    "env_fingerprint": "fnp-io-packet-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-009/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-009/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/io_metamorphic_cases.json"
+    ],
+    "reason_code": "io_npz_archive_contract",
+    "member_count": 4096,
+    "uncompressed_bytes": 1048576,
+    "dispatch_retries": 8
+  },
+  {
+    "id": "io_policy_metadata_idempotent_strict_high_risk",
+    "relation": "policy_metadata_idempotent",
+    "seed": 9929,
+    "mode": "strict",
+    "env_fingerprint": "fnp-io-packet-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-009/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-009/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/io_metamorphic_cases.json"
+    ],
+    "reason_code": "io_policy_metadata_contract",
+    "mode_raw": "strict",
+    "class_raw": "known_compatible_high_risk"
   }
 ]

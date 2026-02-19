@@ -193,5 +193,89 @@
     "reason_code": "io_policy_unknown_metadata",
     "mode_raw": "strict",
     "class_raw": "legacy_semantics"
+  },
+  {
+    "id": "io_magic_invalid_wrong_prefix_8bytes",
+    "operation": "magic_version",
+    "expected_error_contains": "invalid or unsupported npy/npz magic/version",
+    "expected_reason_code": "io_magic_invalid",
+    "severity": "high",
+    "seed": 913,
+    "env_fingerprint": "linux-x86_64-rust2024",
+    "artifact_refs": [
+      "artifacts/contracts/security_control_checks_v1.yaml",
+      "artifacts/phase2c/FNP-P2C-009/contract_table.md"
+    ],
+    "reason_code": "io_magic_invalid",
+    "payload_prefix": [0, 0, 0, 0, 0, 0, 1, 0]
+  },
+  {
+    "id": "io_memmap_write_empty_expected_bytes",
+    "operation": "memmap_contract",
+    "expected_error_contains": "write memmap requires non-empty expected byte footprint",
+    "expected_reason_code": "io_memmap_contract_violation",
+    "severity": "high",
+    "seed": 914,
+    "env_fingerprint": "linux-x86_64-rust2024",
+    "artifact_refs": [
+      "artifacts/contracts/security_control_checks_v1.yaml",
+      "artifacts/phase2c/FNP-P2C-009/contract_table.md"
+    ],
+    "reason_code": "io_memmap_contract_violation",
+    "memmap_mode": "w+",
+    "dtype_descr": "<f8",
+    "file_len_bytes": 1024,
+    "expected_bytes": 0,
+    "validation_retries": 0
+  },
+  {
+    "id": "io_npz_dispatch_retries_exceeded",
+    "operation": "npz_archive_budget",
+    "expected_error_contains": "dispatch retries exceeded bounded budget",
+    "expected_reason_code": "io_load_dispatch_invalid",
+    "severity": "critical",
+    "seed": 915,
+    "env_fingerprint": "linux-x86_64-rust2024",
+    "artifact_refs": [
+      "artifacts/contracts/security_control_checks_v1.yaml",
+      "artifacts/phase2c/FNP-P2C-009/contract_table.md"
+    ],
+    "reason_code": "io_load_dispatch_invalid",
+    "member_count": 4,
+    "uncompressed_bytes": 1024,
+    "dispatch_retries": 9
+  },
+  {
+    "id": "io_read_payload_object_dtype_requires_pickle_path",
+    "operation": "read_payload",
+    "expected_error_contains": "object dtype payload requires pickle/object decode path",
+    "expected_reason_code": "io_read_payload_incomplete",
+    "severity": "high",
+    "seed": 916,
+    "env_fingerprint": "linux-x86_64-rust2024",
+    "artifact_refs": [
+      "artifacts/contracts/security_control_checks_v1.yaml",
+      "artifacts/phase2c/FNP-P2C-009/unit_property_evidence.json"
+    ],
+    "reason_code": "io_read_payload_incomplete",
+    "shape": [2],
+    "dtype_descr": "|O",
+    "payload_len_bytes": 16
+  },
+  {
+    "id": "io_policy_unknown_class_hardened_fail_closed",
+    "operation": "policy_metadata",
+    "expected_error_contains": "unknown mode/class metadata rejected fail-closed",
+    "expected_reason_code": "io_policy_unknown_metadata",
+    "severity": "critical",
+    "seed": 917,
+    "env_fingerprint": "linux-x86_64-rust2024",
+    "artifact_refs": [
+      "artifacts/contracts/security_control_checks_v1.yaml",
+      "artifacts/contracts/hardened_mode_allowlist_v1.yaml"
+    ],
+    "reason_code": "io_policy_unknown_metadata",
+    "mode_raw": "hardened",
+    "class_raw": "legacy_semantics"
   }
 ]
