@@ -19,7 +19,7 @@ impl UFuncRuntimeMode {
     }
 }
 
-pub const UFUNC_PACKET_REASON_CODES: [&str; 9] = [
+pub const UFUNC_PACKET_REASON_CODES: [&str; 16] = [
     "ufunc_shape_contract_violation",
     "ufunc_invalid_input_length",
     "ufunc_axis_out_of_bounds",
@@ -29,6 +29,13 @@ pub const UFUNC_PACKET_REASON_CODES: [&str; 9] = [
     "ufunc_reduce_axis_contract",
     "ufunc_scalar_broadcast_contract",
     "ufunc_dtype_promotion_contract",
+    "ufunc_signature_conflict",
+    "ufunc_signature_parse_failed",
+    "ufunc_fixed_signature_invalid",
+    "ufunc_override_precedence_violation",
+    "gufunc_loop_exception_propagated",
+    "ufunc_loop_registry_invalid",
+    "ufunc_policy_unknown_metadata",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +56,150 @@ impl BinaryOp {
             Self::Div => lhs / rhs,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GufuncSignature {
+    pub inputs: Vec<Vec<String>>,
+    pub outputs: Vec<Vec<String>>,
+    canonical: String,
+}
+
+impl GufuncSignature {
+    #[must_use]
+    pub fn canonical(&self) -> &str {
+        &self.canonical
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinaryDispatchPlan {
+    pub out_shape: Vec<usize>,
+    pub out_count: usize,
+    pub out_dtype: DType,
+}
+
+pub fn normalize_signature_keywords(
+    sig: Option<&str>,
+    signature: Option<&str>,
+) -> Result<Option<String>, UFuncError> {
+    let sig_trimmed = sig.map(str::trim);
+    let signature_trimmed = signature.map(str::trim);
+
+    if sig.is_some() && sig_trimmed.is_some_and(str::is_empty) {
+        return Err(UFuncError::FixedSignatureInvalid {
+            detail: "sig keyword must not be empty".to_string(),
+        });
+    }
+
+    if signature.is_some() && signature_trimmed.is_some_and(str::is_empty) {
+        return Err(UFuncError::FixedSignatureInvalid {
+            detail: "signature keyword must not be empty".to_string(),
+        });
+    }
+
+    match (sig_trimmed, signature_trimmed) {
+        (Some(sig_raw), Some(signature_raw)) => {
+            if sig_raw != signature_raw {
+                return Err(UFuncError::SignatureConflict {
+                    sig: sig_raw.to_string(),
+                    signature: signature_raw.to_string(),
+                });
+            }
+            Ok(Some(sig_raw.to_string()))
+        }
+        (Some(sig_raw), None) => Ok(Some(sig_raw.to_string())),
+        (None, Some(signature_raw)) => Ok(Some(signature_raw.to_string())),
+        (None, None) => Ok(None),
+    }
+}
+
+pub fn parse_gufunc_signature(
+    sig: Option<&str>,
+    signature: Option<&str>,
+) -> Result<Option<GufuncSignature>, UFuncError> {
+    let Some(normalized) = normalize_signature_keywords(sig, signature)? else {
+        return Ok(None);
+    };
+
+    let (inputs_raw, outputs_raw) =
+        normalized
+            .split_once("->")
+            .ok_or_else(|| UFuncError::SignatureParse {
+                detail: format!(
+                    "signature '{}' must contain exactly one '->' separator",
+                    normalized
+                ),
+            })?;
+
+    if outputs_raw.contains("->") {
+        return Err(UFuncError::SignatureParse {
+            detail: format!(
+                "signature '{}' must contain exactly one '->' separator",
+                normalized
+            ),
+        });
+    }
+
+    let inputs = parse_signature_groups(inputs_raw, "input signature")?;
+    let outputs = parse_signature_groups(outputs_raw, "output signature")?;
+    let canonical = format!(
+        "{}->{}",
+        canonicalize_signature_groups(&inputs),
+        canonicalize_signature_groups(&outputs)
+    );
+    Ok(Some(GufuncSignature {
+        inputs,
+        outputs,
+        canonical,
+    }))
+}
+
+pub fn validate_override_payload_class(payload_class: &str) -> Result<(), UFuncError> {
+    let normalized = payload_class.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return Err(UFuncError::OverridePrecedenceViolation {
+            detail: "override payload class must not be empty".to_string(),
+        });
+    }
+
+    if matches!(
+        normalized.as_str(),
+        "ndarray" | "notimplemented" | "not_implemented" | "override_result"
+    ) {
+        Ok(())
+    } else {
+        Err(UFuncError::OverridePrecedenceViolation {
+            detail: format!("unsupported override payload class '{payload_class}'"),
+        })
+    }
+}
+
+pub fn register_custom_loop(loop_name: &str) -> Result<(), UFuncError> {
+    let loop_name = loop_name.trim();
+    if loop_name.is_empty() {
+        return Err(UFuncError::LoopRegistryInvalid {
+            detail: "custom loop name must not be empty".to_string(),
+        });
+    }
+
+    Err(UFuncError::LoopRegistryInvalid {
+        detail: format!("custom loop registration unsupported for '{loop_name}'"),
+    })
+}
+
+pub fn plan_binary_dispatch(
+    lhs: &UFuncArray,
+    rhs: &UFuncArray,
+) -> Result<BinaryDispatchPlan, UFuncError> {
+    let out_shape = broadcast_shape(lhs.shape(), rhs.shape()).map_err(UFuncError::Shape)?;
+    let out_count = element_count(&out_shape).map_err(UFuncError::Shape)?;
+    let out_dtype = promote(lhs.dtype(), rhs.dtype());
+    Ok(BinaryDispatchPlan {
+        out_shape,
+        out_count,
+        out_dtype,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -99,9 +250,10 @@ impl UFuncArray {
     }
 
     pub fn elementwise_binary(&self, rhs: &Self, op: BinaryOp) -> Result<Self, UFuncError> {
-        let out_shape = broadcast_shape(&self.shape, &rhs.shape).map_err(UFuncError::Shape)?;
-        let out_count = element_count(&out_shape).map_err(UFuncError::Shape)?;
-        let out_dtype = promote(self.dtype, rhs.dtype);
+        let plan = plan_binary_dispatch(self, rhs)?;
+        let out_shape = plan.out_shape;
+        let out_count = plan.out_count;
+        let out_dtype = plan.out_dtype;
 
         if self.shape == rhs.shape {
             let values = self
@@ -178,7 +330,6 @@ impl UFuncArray {
             }
             Some(axis) => {
                 let axis = normalize_axis(axis, self.shape.len())?;
-
                 let out_shape = reduced_shape(&self.shape, axis, keepdims);
                 let out_count = element_count(&out_shape).map_err(UFuncError::Shape)?;
                 let mut out_values = vec![0.0f64; out_count];
@@ -199,6 +350,11 @@ pub enum UFuncError {
     Shape(ShapeError),
     InvalidInputLength { expected: usize, actual: usize },
     AxisOutOfBounds { axis: isize, ndim: usize },
+    SignatureConflict { sig: String, signature: String },
+    SignatureParse { detail: String },
+    FixedSignatureInvalid { detail: String },
+    OverridePrecedenceViolation { detail: String },
+    LoopRegistryInvalid { detail: String },
 }
 
 impl std::fmt::Display for UFuncError {
@@ -214,6 +370,24 @@ impl std::fmt::Display for UFuncError {
             Self::AxisOutOfBounds { axis, ndim } => {
                 write!(f, "axis {axis} out of bounds for ndim={ndim}")
             }
+            Self::SignatureConflict { sig, signature } => {
+                write!(
+                    f,
+                    "ufunc signature conflict: sig='{sig}' differs from signature='{signature}'"
+                )
+            }
+            Self::SignatureParse { detail } => {
+                write!(f, "ufunc signature parse failed: {detail}")
+            }
+            Self::FixedSignatureInvalid { detail } => {
+                write!(f, "ufunc fixed signature invalid: {detail}")
+            }
+            Self::OverridePrecedenceViolation { detail } => {
+                write!(f, "ufunc override precedence violation: {detail}")
+            }
+            Self::LoopRegistryInvalid { detail } => {
+                write!(f, "ufunc loop registry invalid: {detail}")
+            }
         }
     }
 }
@@ -227,6 +401,11 @@ impl UFuncError {
             Self::Shape(_) => "ufunc_shape_contract_violation",
             Self::InvalidInputLength { .. } => "ufunc_invalid_input_length",
             Self::AxisOutOfBounds { .. } => "ufunc_axis_out_of_bounds",
+            Self::SignatureConflict { .. } => "ufunc_signature_conflict",
+            Self::SignatureParse { .. } => "ufunc_signature_parse_failed",
+            Self::FixedSignatureInvalid { .. } => "ufunc_fixed_signature_invalid",
+            Self::OverridePrecedenceViolation { .. } => "ufunc_override_precedence_violation",
+            Self::LoopRegistryInvalid { .. } => "ufunc_loop_registry_invalid",
         }
     }
 }
@@ -255,6 +434,128 @@ impl UFuncLogRecord {
                 .iter()
                 .all(|artifact| !artifact.trim().is_empty())
     }
+}
+
+#[must_use]
+fn canonicalize_signature_groups(groups: &[Vec<String>]) -> String {
+    groups
+        .iter()
+        .map(|group| format!("({})", group.join(",")))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn validate_core_dim_identifier(token: &str) -> Result<(), UFuncError> {
+    let mut chars = token.chars();
+    let Some(first) = chars.next() else {
+        return Err(UFuncError::SignatureParse {
+            detail: "signature dimension token must not be empty".to_string(),
+        });
+    };
+
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return Err(UFuncError::SignatureParse {
+            detail: format!("signature dimension '{}' must start with [A-Za-z_]", token),
+        });
+    }
+
+    if chars.any(|ch| !(ch.is_ascii_alphanumeric() || ch == '_')) {
+        return Err(UFuncError::SignatureParse {
+            detail: format!(
+                "signature dimension '{}' must contain only [A-Za-z0-9_]",
+                token
+            ),
+        });
+    }
+
+    Ok(())
+}
+
+fn parse_signature_dims(raw: &str) -> Result<Vec<String>, UFuncError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut dims = Vec::new();
+    for token in trimmed.split(',') {
+        let dim = token.trim();
+        if dim.is_empty() {
+            return Err(UFuncError::SignatureParse {
+                detail: "signature dimension list contains an empty token".to_string(),
+            });
+        }
+        validate_core_dim_identifier(dim)?;
+        dims.push(dim.to_string());
+    }
+    Ok(dims)
+}
+
+fn parse_signature_groups(raw: &str, side: &str) -> Result<Vec<Vec<String>>, UFuncError> {
+    let bytes = raw.as_bytes();
+    let mut idx = 0usize;
+    let mut groups = Vec::new();
+
+    while idx < bytes.len() {
+        while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+            idx += 1;
+        }
+        if idx >= bytes.len() {
+            break;
+        }
+
+        if bytes[idx] != b'(' {
+            return Err(UFuncError::SignatureParse {
+                detail: format!("{side} must start tuple groups with '(' at byte {idx}"),
+            });
+        }
+        idx += 1;
+        let tuple_start = idx;
+        let mut depth = 1usize;
+        while idx < bytes.len() && depth > 0 {
+            match bytes[idx] {
+                b'(' => depth += 1,
+                b')' => depth -= 1,
+                _ => {}
+            }
+            idx += 1;
+        }
+
+        if depth != 0 {
+            return Err(UFuncError::SignatureParse {
+                detail: format!("{side} has an unclosed tuple group"),
+            });
+        }
+
+        let tuple_body = &raw[tuple_start..idx - 1];
+        if tuple_body.contains('(') || tuple_body.contains(')') {
+            return Err(UFuncError::SignatureParse {
+                detail: format!("{side} contains nested tuple groups, which are unsupported"),
+            });
+        }
+        groups.push(parse_signature_dims(tuple_body)?);
+
+        while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+            idx += 1;
+        }
+        if idx >= bytes.len() {
+            break;
+        }
+
+        if bytes[idx] != b',' {
+            return Err(UFuncError::SignatureParse {
+                detail: format!("{side} expected ',' between tuple groups at byte {idx}"),
+            });
+        }
+        idx += 1;
+    }
+
+    if groups.is_empty() {
+        return Err(UFuncError::SignatureParse {
+            detail: format!("{side} must contain at least one tuple group"),
+        });
+    }
+    Ok(groups)
 }
 
 #[must_use]
@@ -362,7 +663,8 @@ fn normalize_axis(axis: isize, ndim: usize) -> Result<usize, UFuncError> {
 mod tests {
     use super::{
         BinaryOp, UFUNC_PACKET_REASON_CODES, UFuncArray, UFuncError, UFuncLogRecord,
-        UFuncRuntimeMode,
+        UFuncRuntimeMode, normalize_signature_keywords, parse_gufunc_signature,
+        plan_binary_dispatch, register_custom_loop, validate_override_payload_class,
     };
     use fnp_dtype::{DType, promote};
     use fnp_ndarray::broadcast_shape;
@@ -568,6 +870,83 @@ mod tests {
     }
 
     #[test]
+    fn normalize_signature_keywords_accepts_matching_sig_and_signature() {
+        let normalized = normalize_signature_keywords(
+            Some(" (batch,m),(m,n)->(batch,n) "),
+            Some("(batch,m),(m,n)->(batch,n)"),
+        )
+        .expect("matching signature keywords should normalize");
+        assert_eq!(normalized.as_deref(), Some("(batch,m),(m,n)->(batch,n)"));
+    }
+
+    #[test]
+    fn parse_gufunc_signature_conflict_is_rejected() {
+        let err = parse_gufunc_signature(Some("(i)->(i)"), Some("(j)->(j)"))
+            .expect_err("conflicting sig/signature should fail");
+        assert!(matches!(err, UFuncError::SignatureConflict { .. }));
+        assert_eq!(err.reason_code(), "ufunc_signature_conflict");
+    }
+
+    #[test]
+    fn parse_gufunc_signature_normalizes_grammar() {
+        let signature = parse_gufunc_signature(Some(" (batch,m),(m,n) -> (batch,n) "), None)
+            .expect("valid signature should parse")
+            .expect("signature should be present");
+        assert_eq!(signature.inputs.len(), 2);
+        assert_eq!(signature.outputs.len(), 1);
+        assert_eq!(signature.inputs[0], vec!["batch", "m"]);
+        assert_eq!(signature.inputs[1], vec!["m", "n"]);
+        assert_eq!(signature.outputs[0], vec!["batch", "n"]);
+        assert_eq!(signature.canonical(), "(batch,m),(m,n)->(batch,n)");
+    }
+
+    #[test]
+    fn parse_gufunc_signature_invalid_grammar_is_rejected() {
+        let err = parse_gufunc_signature(Some("(i,j)->i,j"), None)
+            .expect_err("invalid grammar must fail");
+        assert!(matches!(err, UFuncError::SignatureParse { .. }));
+        assert_eq!(err.reason_code(), "ufunc_signature_parse_failed");
+    }
+
+    #[test]
+    fn dispatch_plan_is_deterministic() {
+        let lhs = UFuncArray::new(
+            vec![2, 1, 3],
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            DType::I32,
+        )
+        .expect("lhs");
+        let rhs =
+            UFuncArray::new(vec![1, 4, 1], vec![10.0, 20.0, 30.0, 40.0], DType::F32).expect("rhs");
+
+        let first = plan_binary_dispatch(&lhs, &rhs).expect("dispatch plan");
+        let second = plan_binary_dispatch(&lhs, &rhs).expect("dispatch plan repeat");
+        assert_eq!(first, second);
+        assert_eq!(first.out_shape, vec![2, 4, 3]);
+        assert_eq!(first.out_count, 24);
+        assert_eq!(first.out_dtype, DType::F64);
+    }
+
+    #[test]
+    fn override_payload_validation_rejects_unknown_class() {
+        let err = validate_override_payload_class("bogus_payload")
+            .expect_err("unknown override payload class must fail");
+        assert!(matches!(
+            err,
+            UFuncError::OverridePrecedenceViolation { .. }
+        ));
+        assert_eq!(err.reason_code(), "ufunc_override_precedence_violation");
+    }
+
+    #[test]
+    fn custom_loop_registration_is_fail_closed() {
+        let err = register_custom_loop("fused_add_loop")
+            .expect_err("loop registration is unsupported in packet-D boundary");
+        assert!(matches!(err, UFuncError::LoopRegistryInvalid { .. }));
+        assert_eq!(err.reason_code(), "ufunc_loop_registry_invalid");
+    }
+
+    #[test]
     fn axis_out_of_bounds_is_rejected() {
         let arr = UFuncArray::new(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0], DType::F64).expect("arr");
         let err = arr
@@ -618,6 +997,13 @@ mod tests {
                 "ufunc_reduce_axis_contract",
                 "ufunc_scalar_broadcast_contract",
                 "ufunc_dtype_promotion_contract",
+                "ufunc_signature_conflict",
+                "ufunc_signature_parse_failed",
+                "ufunc_fixed_signature_invalid",
+                "ufunc_override_precedence_violation",
+                "gufunc_loop_exception_propagated",
+                "ufunc_loop_registry_invalid",
+                "ufunc_policy_unknown_metadata",
             ]
         );
     }

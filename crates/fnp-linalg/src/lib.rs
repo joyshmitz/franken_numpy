@@ -249,6 +249,161 @@ pub fn solve_2x2(lhs: [[f64; 2]; 2], rhs: [f64; 2]) -> Result<[f64; 2], LinAlgEr
     Ok([x0, x1])
 }
 
+fn validate_finite_matrix_2x2(matrix: [[f64; 2]; 2]) -> Result<(), LinAlgError> {
+    if matrix.iter().flatten().any(|value| !value.is_finite()) {
+        return Err(LinAlgError::NormDetRankPolicyViolation(
+            "matrix entries must be finite for norm/det/rank/pinv operations",
+        ));
+    }
+    Ok(())
+}
+
+pub fn det_2x2(matrix: [[f64; 2]; 2]) -> Result<f64, LinAlgError> {
+    validate_finite_matrix_2x2(matrix)?;
+    Ok(matrix[0][0] * matrix[1][1] - matrix[0][1] * matrix[1][0])
+}
+
+pub fn slogdet_2x2(matrix: [[f64; 2]; 2]) -> Result<(f64, f64), LinAlgError> {
+    let det = det_2x2(matrix)?;
+    if det > 0.0 {
+        Ok((1.0, det.ln()))
+    } else if det < 0.0 {
+        Ok((-1.0, (-det).ln()))
+    } else {
+        Ok((0.0, f64::NEG_INFINITY))
+    }
+}
+
+pub fn inv_2x2(matrix: [[f64; 2]; 2]) -> Result<[[f64; 2]; 2], LinAlgError> {
+    let det = det_2x2(matrix)?;
+    if det.abs() <= f64::EPSILON {
+        return Err(LinAlgError::SolverSingularity);
+    }
+
+    let inv_det = 1.0 / det;
+    Ok([
+        [matrix[1][1] * inv_det, -matrix[0][1] * inv_det],
+        [-matrix[1][0] * inv_det, matrix[0][0] * inv_det],
+    ])
+}
+
+fn singular_values_2x2(matrix: [[f64; 2]; 2]) -> Result<[f64; 2], LinAlgError> {
+    validate_finite_matrix_2x2(matrix)?;
+    let a = matrix[0][0];
+    let b = matrix[0][1];
+    let c = matrix[1][0];
+    let d = matrix[1][1];
+
+    let trace = a.mul_add(a, b.mul_add(b, c.mul_add(c, d * d)));
+    let det = a * d - b * c;
+    let mut disc = trace.mul_add(trace, -4.0 * det * det);
+    if disc < 0.0 && disc.abs() <= f64::EPSILON * 32.0 {
+        disc = 0.0;
+    }
+    if disc < 0.0 || !disc.is_finite() {
+        return Err(LinAlgError::NormDetRankPolicyViolation(
+            "singular-value discriminant became invalid",
+        ));
+    }
+
+    let sqrt_disc = disc.sqrt();
+    let lambda_max = ((trace + sqrt_disc) * 0.5).max(0.0);
+    let lambda_min = ((trace - sqrt_disc) * 0.5).max(0.0);
+    Ok([lambda_max.sqrt(), lambda_min.sqrt()])
+}
+
+pub fn matrix_rank_2x2(matrix: [[f64; 2]; 2], rcond: f64) -> Result<usize, LinAlgError> {
+    validate_tolerance_policy(rcond, 0)?;
+    let singular_values = singular_values_2x2(matrix)?;
+    let sigma_max = singular_values[0];
+    if sigma_max <= f64::EPSILON {
+        return Ok(0);
+    }
+
+    let threshold = sigma_max * rcond;
+    Ok(singular_values
+        .iter()
+        .filter(|&&sigma| sigma > threshold)
+        .count())
+}
+
+pub fn pinv_2x2(matrix: [[f64; 2]; 2], rcond: f64) -> Result<[[f64; 2]; 2], LinAlgError> {
+    validate_tolerance_policy(rcond, 0)?;
+    validate_finite_matrix_2x2(matrix)?;
+
+    let a = matrix[0][0];
+    let b = matrix[0][1];
+    let c = matrix[1][0];
+    let d = matrix[1][1];
+
+    // Right-singular vectors are eigenvectors of A^T A.
+    let m00 = a.mul_add(a, c * c);
+    let m01 = a.mul_add(b, c * d);
+    let m11 = b.mul_add(b, d * d);
+    let trace = m00 + m11;
+    let det = m00 * m11 - m01 * m01;
+    let mut disc = trace.mul_add(trace, -4.0 * det);
+    if disc < 0.0 && disc.abs() <= f64::EPSILON * 32.0 {
+        disc = 0.0;
+    }
+    if disc < 0.0 || !disc.is_finite() {
+        return Err(LinAlgError::NormDetRankPolicyViolation(
+            "pinv eigendecomposition discriminant became invalid",
+        ));
+    }
+
+    let sqrt_disc = disc.sqrt();
+    let lambda_1 = ((trace + sqrt_disc) * 0.5).max(0.0);
+    let lambda_2 = ((trace - sqrt_disc) * 0.5).max(0.0);
+    let sigma_1 = lambda_1.sqrt();
+    let sigma_2 = lambda_2.sqrt();
+
+    let mut v1 = if m01.abs() > f64::EPSILON {
+        [m01, lambda_1 - m00]
+    } else if m00 >= m11 {
+        [1.0, 0.0]
+    } else {
+        [0.0, 1.0]
+    };
+    let v1_norm = (v1[0].mul_add(v1[0], v1[1] * v1[1])).sqrt();
+    if !v1_norm.is_finite() || v1_norm <= f64::EPSILON {
+        return Err(LinAlgError::NormDetRankPolicyViolation(
+            "pinv eigenvector normalization failed",
+        ));
+    }
+    v1[0] /= v1_norm;
+    v1[1] /= v1_norm;
+    let v2 = [-v1[1], v1[0]];
+    let sigmas = [sigma_1, sigma_2];
+    let vectors = [v1, v2];
+
+    let sigma_max = sigma_1;
+    if sigma_max <= f64::EPSILON {
+        return Ok([[0.0, 0.0], [0.0, 0.0]]);
+    }
+    let cutoff = sigma_max * rcond;
+
+    let mut pinv = [[0.0_f64; 2]; 2];
+    for idx in 0..2 {
+        let sigma = sigmas[idx];
+        if sigma <= cutoff {
+            continue;
+        }
+
+        let v = vectors[idx];
+        let av = [a.mul_add(v[0], b * v[1]), c.mul_add(v[0], d * v[1])];
+        let u = [av[0] / sigma, av[1] / sigma];
+        let inv_sigma = 1.0 / sigma;
+
+        pinv[0][0] += inv_sigma * v[0] * u[0];
+        pinv[0][1] += inv_sigma * v[0] * u[1];
+        pinv[1][0] += inv_sigma * v[1] * u[0];
+        pinv[1][1] += inv_sigma * v[1] * u[1];
+    }
+
+    Ok(pinv)
+}
+
 pub fn validate_cholesky_diagonal(diagonal: &[f64]) -> Result<(), LinAlgError> {
     if diagonal.is_empty() {
         return Err(LinAlgError::CholeskyContractViolation(
@@ -433,10 +588,11 @@ mod tests {
     use super::{
         LINALG_PACKET_ID, LINALG_PACKET_REASON_CODES, LinAlgError, LinAlgLogRecord,
         LinAlgRuntimeMode, MAX_BACKEND_REVALIDATION_ATTEMPTS, MAX_BATCH_SHAPE_CHECKS,
-        MAX_TOLERANCE_SEARCH_DEPTH, QrMode, lstsq_output_shapes, qr_output_shapes, solve_2x2,
-        svd_output_shapes, validate_backend_bridge, validate_cholesky_diagonal,
-        validate_matrix_shape, validate_policy_metadata, validate_spectral_branch,
-        validate_square_matrix, validate_tolerance_policy,
+        MAX_TOLERANCE_SEARCH_DEPTH, QrMode, det_2x2, inv_2x2, lstsq_output_shapes, matrix_rank_2x2,
+        pinv_2x2, qr_output_shapes, slogdet_2x2, solve_2x2, svd_output_shapes,
+        validate_backend_bridge, validate_cholesky_diagonal, validate_matrix_shape,
+        validate_policy_metadata, validate_spectral_branch, validate_square_matrix,
+        validate_tolerance_policy,
     };
 
     fn packet008_artifacts() -> Vec<String> {
@@ -587,6 +743,85 @@ mod tests {
         let err = solve_2x2([[1.0, 2.0], [2.0, 4.0]], [1.0, 2.0])
             .expect_err("singular matrix should fail");
         assert_eq!(err.reason_code(), "linalg_solver_singularity");
+    }
+
+    #[test]
+    fn det_and_slogdet_are_deterministic() {
+        let matrix = [[4.0, 7.0], [2.0, 6.0]];
+        let det = det_2x2(matrix).expect("det");
+        assert!(approx_equal(det, 10.0, 1e-12));
+
+        let (sign, log_abs_det) = slogdet_2x2(matrix).expect("slogdet");
+        assert!(approx_equal(sign, 1.0, 1e-12));
+        assert!(approx_equal(log_abs_det, 10.0_f64.ln(), 1e-12));
+
+        let singular = [[1.0, 2.0], [2.0, 4.0]];
+        let (sign, log_abs_det) = slogdet_2x2(singular).expect("singular slogdet");
+        assert_eq!(sign, 0.0);
+        assert_eq!(log_abs_det, f64::NEG_INFINITY);
+    }
+
+    #[test]
+    fn inv_2x2_matches_identity_reconstruction() {
+        let matrix = [[4.0, 7.0], [2.0, 6.0]];
+        let inv = inv_2x2(matrix).expect("inverse");
+        let m00 = matrix[0][0].mul_add(inv[0][0], matrix[0][1] * inv[1][0]);
+        let m01 = matrix[0][0].mul_add(inv[0][1], matrix[0][1] * inv[1][1]);
+        let m10 = matrix[1][0].mul_add(inv[0][0], matrix[1][1] * inv[1][0]);
+        let m11 = matrix[1][0].mul_add(inv[0][1], matrix[1][1] * inv[1][1]);
+        assert!(approx_equal(m00, 1.0, 1e-12));
+        assert!(approx_equal(m01, 0.0, 1e-12));
+        assert!(approx_equal(m10, 0.0, 1e-12));
+        assert!(approx_equal(m11, 1.0, 1e-12));
+
+        let err = inv_2x2([[1.0, 2.0], [2.0, 4.0]]).expect_err("singular inverse");
+        assert_eq!(err.reason_code(), "linalg_solver_singularity");
+    }
+
+    #[test]
+    fn matrix_rank_2x2_detects_rank_profiles() {
+        let full_rank = matrix_rank_2x2([[3.0, 1.0], [2.0, 4.0]], 1e-12).expect("rank");
+        assert_eq!(full_rank, 2);
+
+        let rank_one = matrix_rank_2x2([[1.0, 2.0], [2.0, 4.0]], 1e-12).expect("rank");
+        assert_eq!(rank_one, 1);
+
+        let rank_zero = matrix_rank_2x2([[0.0, 0.0], [0.0, 0.0]], 1e-12).expect("rank");
+        assert_eq!(rank_zero, 0);
+    }
+
+    #[test]
+    fn pinv_2x2_full_rank_and_rank_deficient_paths() {
+        let matrix = [[4.0, 7.0], [2.0, 6.0]];
+        let pinv = pinv_2x2(matrix, 1e-12).expect("pinv");
+        let inv = inv_2x2(matrix).expect("inv");
+        for row in 0..2 {
+            for col in 0..2 {
+                assert!(approx_equal(pinv[row][col], inv[row][col], 1e-10));
+            }
+        }
+
+        let rank_def = [[1.0, 2.0], [2.0, 4.0]];
+        let pinv_rank_def = pinv_2x2(rank_def, 1e-12).expect("rank-def pinv");
+        let expected = [[1.0 / 25.0, 2.0 / 25.0], [2.0 / 25.0, 4.0 / 25.0]];
+        for row in 0..2 {
+            for col in 0..2 {
+                assert!(approx_equal(
+                    pinv_rank_def[row][col],
+                    expected[row][col],
+                    1e-10
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn norm_det_rank_pinv_reject_non_finite_inputs() {
+        let err = det_2x2([[f64::NAN, 1.0], [2.0, 3.0]]).expect_err("nan matrix");
+        assert_eq!(err.reason_code(), "linalg_norm_det_rank_policy_violation");
+
+        let err = pinv_2x2([[f64::INFINITY, 0.0], [0.0, 1.0]], 1e-12).expect_err("inf matrix");
+        assert_eq!(err.reason_code(), "linalg_norm_det_rank_policy_violation");
     }
 
     #[test]
