@@ -159,3 +159,7 @@ cargo bench
 3. Expand `FNP-P2C-007` (RNG), `FNP-P2C-008` (linalg), and `FNP-P2C-009` (npy/npz) from first-wave coverage to full legacy-matrix parity breadth.
 4. Promote benchmark + sidecar checks to mandatory CI gates.
 5. Publish and continuously burn down full legacy NumPy parity debt until zero.
+
+## License
+
+MIT License (with OpenAI/Anthropic Rider). See `LICENSE`.
