@@ -71,5 +71,108 @@
       "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
     ],
     "reason_code": "dtype_lossless_cast_destination"
+  },
+  {
+    "id": "dtype002_commutative_i64_f32",
+    "relation": "commutative",
+    "lhs": "i64",
+    "rhs": "f32",
+    "seed": 2206,
+    "mode": "strict",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_permutation_invariant"
+  },
+  {
+    "id": "dtype002_commutative_bool_f32",
+    "relation": "commutative",
+    "lhs": "bool",
+    "rhs": "f32",
+    "seed": 2207,
+    "mode": "hardened",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_permutation_invariant"
+  },
+  {
+    "id": "dtype002_idempotent_bool",
+    "relation": "idempotent",
+    "lhs": "bool",
+    "seed": 2208,
+    "mode": "strict",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_idempotent"
+  },
+  {
+    "id": "dtype002_idempotent_f64",
+    "relation": "idempotent",
+    "lhs": "f64",
+    "seed": 2209,
+    "mode": "hardened",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_idempotent"
+  },
+  {
+    "id": "dtype002_lossless_cast_destination_bool_f32",
+    "relation": "lossless_cast_destination",
+    "lhs": "bool",
+    "rhs": "f32",
+    "seed": 2210,
+    "mode": "strict",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_lossless_cast_destination"
+  },
+  {
+    "id": "dtype002_lossless_cast_destination_i32_f64",
+    "relation": "lossless_cast_destination",
+    "lhs": "i32",
+    "rhs": "f64",
+    "seed": 2211,
+    "mode": "hardened",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_lossless_cast_destination"
+  },
+  {
+    "id": "dtype002_lossless_cast_destination_f32_f64",
+    "relation": "lossless_cast_destination",
+    "lhs": "f32",
+    "rhs": "f64",
+    "seed": 2212,
+    "mode": "strict",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_lossless_cast_destination"
   }
 ]

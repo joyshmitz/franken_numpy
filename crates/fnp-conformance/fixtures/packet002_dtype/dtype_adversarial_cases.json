@@ -100,5 +100,73 @@
       "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
     ],
     "reason_code": "dtype_normalization_failed"
+  },
+  {
+    "id": "dtype002_adv_unknown_rhs_empty",
+    "lhs": "i64",
+    "rhs": "",
+    "expected_error_contains": "unknown rhs dtype",
+    "expected_reason_code": "dtype_normalization_failed",
+    "severity": "high",
+    "seed": 2307,
+    "mode": "strict",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/risk_note.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_normalization_failed"
+  },
+  {
+    "id": "dtype002_adv_unknown_lhs_uppercase_bool",
+    "lhs": "BOOL",
+    "rhs": "f64",
+    "expected_error_contains": "unknown lhs dtype",
+    "expected_reason_code": "dtype_normalization_failed",
+    "severity": "medium",
+    "seed": 2308,
+    "mode": "hardened",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/risk_note.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_normalization_failed"
+  },
+  {
+    "id": "dtype002_adv_unknown_rhs_trimmed_token",
+    "lhs": "f32",
+    "rhs": " f32 ",
+    "expected_error_contains": "unknown rhs dtype",
+    "expected_reason_code": "dtype_normalization_failed",
+    "severity": "medium",
+    "seed": 2309,
+    "mode": "strict",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/risk_note.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_normalization_failed"
+  },
+  {
+    "id": "dtype002_adv_unknown_lhs_numeric_literal",
+    "lhs": "1",
+    "rhs": "i32",
+    "expected_error_contains": "unknown lhs dtype",
+    "expected_reason_code": "dtype_normalization_failed",
+    "severity": "high",
+    "seed": 2310,
+    "mode": "hardened",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/risk_note.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_normalization_failed"
   }
 ]

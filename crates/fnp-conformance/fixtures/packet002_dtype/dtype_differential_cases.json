@@ -158,5 +158,345 @@
       "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
     ],
     "reason_code": "dtype_promotion_matrix_core"
+  },
+  {
+    "id": "dtype002_bool_bool_golden",
+    "lhs": "bool",
+    "rhs": "bool",
+    "expected": "bool",
+    "expected_reason_code": "dtype_promotion_matrix_core",
+    "minimal_repro_artifacts": [
+      "crates/fnp-conformance/fixtures/packet002_dtype/dtype_differential_cases.json",
+      "artifacts/phase2c/FNP-P2C-002/fixture_manifest.json"
+    ],
+    "seed": 2109,
+    "mode": "strict",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_promotion_matrix_core"
+  },
+  {
+    "id": "dtype002_bool_i64_golden",
+    "lhs": "bool",
+    "rhs": "i64",
+    "expected": "i64",
+    "expected_reason_code": "dtype_promotion_matrix_core",
+    "minimal_repro_artifacts": [
+      "crates/fnp-conformance/fixtures/packet002_dtype/dtype_differential_cases.json",
+      "artifacts/phase2c/FNP-P2C-002/fixture_manifest.json"
+    ],
+    "seed": 2110,
+    "mode": "hardened",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_promotion_matrix_core"
+  },
+  {
+    "id": "dtype002_bool_f32_golden",
+    "lhs": "bool",
+    "rhs": "f32",
+    "expected": "f32",
+    "expected_reason_code": "dtype_promotion_matrix_core",
+    "minimal_repro_artifacts": [
+      "crates/fnp-conformance/fixtures/packet002_dtype/dtype_differential_cases.json",
+      "artifacts/phase2c/FNP-P2C-002/fixture_manifest.json"
+    ],
+    "seed": 2111,
+    "mode": "strict",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_promotion_matrix_core"
+  },
+  {
+    "id": "dtype002_i32_bool_golden",
+    "lhs": "i32",
+    "rhs": "bool",
+    "expected": "i32",
+    "expected_reason_code": "dtype_promotion_matrix_core",
+    "minimal_repro_artifacts": [
+      "crates/fnp-conformance/fixtures/packet002_dtype/dtype_differential_cases.json",
+      "artifacts/phase2c/FNP-P2C-002/fixture_manifest.json"
+    ],
+    "seed": 2112,
+    "mode": "hardened",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_promotion_matrix_core"
+  },
+  {
+    "id": "dtype002_i32_i32_golden",
+    "lhs": "i32",
+    "rhs": "i32",
+    "expected": "i32",
+    "expected_reason_code": "dtype_promotion_matrix_core",
+    "minimal_repro_artifacts": [
+      "crates/fnp-conformance/fixtures/packet002_dtype/dtype_differential_cases.json",
+      "artifacts/phase2c/FNP-P2C-002/fixture_manifest.json"
+    ],
+    "seed": 2113,
+    "mode": "strict",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_promotion_matrix_core"
+  },
+  {
+    "id": "dtype002_i32_f64_golden",
+    "lhs": "i32",
+    "rhs": "f64",
+    "expected": "f64",
+    "expected_reason_code": "dtype_promotion_matrix_core",
+    "minimal_repro_artifacts": [
+      "crates/fnp-conformance/fixtures/packet002_dtype/dtype_differential_cases.json",
+      "artifacts/phase2c/FNP-P2C-002/fixture_manifest.json"
+    ],
+    "seed": 2114,
+    "mode": "hardened",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_promotion_matrix_core"
+  },
+  {
+    "id": "dtype002_i64_bool_golden",
+    "lhs": "i64",
+    "rhs": "bool",
+    "expected": "i64",
+    "expected_reason_code": "dtype_promotion_matrix_core",
+    "minimal_repro_artifacts": [
+      "crates/fnp-conformance/fixtures/packet002_dtype/dtype_differential_cases.json",
+      "artifacts/phase2c/FNP-P2C-002/fixture_manifest.json"
+    ],
+    "seed": 2115,
+    "mode": "strict",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_promotion_matrix_core"
+  },
+  {
+    "id": "dtype002_i64_i64_golden",
+    "lhs": "i64",
+    "rhs": "i64",
+    "expected": "i64",
+    "expected_reason_code": "dtype_promotion_matrix_core",
+    "minimal_repro_artifacts": [
+      "crates/fnp-conformance/fixtures/packet002_dtype/dtype_differential_cases.json",
+      "artifacts/phase2c/FNP-P2C-002/fixture_manifest.json"
+    ],
+    "seed": 2116,
+    "mode": "hardened",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_promotion_matrix_core"
+  },
+  {
+    "id": "dtype002_i64_f64_golden",
+    "lhs": "i64",
+    "rhs": "f64",
+    "expected": "f64",
+    "expected_reason_code": "dtype_promotion_matrix_core",
+    "minimal_repro_artifacts": [
+      "crates/fnp-conformance/fixtures/packet002_dtype/dtype_differential_cases.json",
+      "artifacts/phase2c/FNP-P2C-002/fixture_manifest.json"
+    ],
+    "seed": 2117,
+    "mode": "strict",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_promotion_matrix_core"
+  },
+  {
+    "id": "dtype002_f32_bool_golden",
+    "lhs": "f32",
+    "rhs": "bool",
+    "expected": "f32",
+    "expected_reason_code": "dtype_promotion_matrix_core",
+    "minimal_repro_artifacts": [
+      "crates/fnp-conformance/fixtures/packet002_dtype/dtype_differential_cases.json",
+      "artifacts/phase2c/FNP-P2C-002/fixture_manifest.json"
+    ],
+    "seed": 2118,
+    "mode": "hardened",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_promotion_matrix_core"
+  },
+  {
+    "id": "dtype002_f32_i32_golden",
+    "lhs": "f32",
+    "rhs": "i32",
+    "expected": "f64",
+    "expected_reason_code": "dtype_promotion_matrix_core",
+    "minimal_repro_artifacts": [
+      "crates/fnp-conformance/fixtures/packet002_dtype/dtype_differential_cases.json",
+      "artifacts/phase2c/FNP-P2C-002/fixture_manifest.json"
+    ],
+    "seed": 2119,
+    "mode": "strict",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_promotion_matrix_core"
+  },
+  {
+    "id": "dtype002_f32_i64_golden",
+    "lhs": "f32",
+    "rhs": "i64",
+    "expected": "f64",
+    "expected_reason_code": "dtype_promotion_matrix_core",
+    "minimal_repro_artifacts": [
+      "crates/fnp-conformance/fixtures/packet002_dtype/dtype_differential_cases.json",
+      "artifacts/phase2c/FNP-P2C-002/fixture_manifest.json"
+    ],
+    "seed": 2120,
+    "mode": "hardened",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_promotion_matrix_core"
+  },
+  {
+    "id": "dtype002_f32_f32_golden",
+    "lhs": "f32",
+    "rhs": "f32",
+    "expected": "f32",
+    "expected_reason_code": "dtype_promotion_matrix_core",
+    "minimal_repro_artifacts": [
+      "crates/fnp-conformance/fixtures/packet002_dtype/dtype_differential_cases.json",
+      "artifacts/phase2c/FNP-P2C-002/fixture_manifest.json"
+    ],
+    "seed": 2121,
+    "mode": "strict",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_promotion_matrix_core"
+  },
+  {
+    "id": "dtype002_f64_i32_golden",
+    "lhs": "f64",
+    "rhs": "i32",
+    "expected": "f64",
+    "expected_reason_code": "dtype_promotion_matrix_core",
+    "minimal_repro_artifacts": [
+      "crates/fnp-conformance/fixtures/packet002_dtype/dtype_differential_cases.json",
+      "artifacts/phase2c/FNP-P2C-002/fixture_manifest.json"
+    ],
+    "seed": 2122,
+    "mode": "hardened",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_promotion_matrix_core"
+  },
+  {
+    "id": "dtype002_f64_i64_golden",
+    "lhs": "f64",
+    "rhs": "i64",
+    "expected": "f64",
+    "expected_reason_code": "dtype_promotion_matrix_core",
+    "minimal_repro_artifacts": [
+      "crates/fnp-conformance/fixtures/packet002_dtype/dtype_differential_cases.json",
+      "artifacts/phase2c/FNP-P2C-002/fixture_manifest.json"
+    ],
+    "seed": 2123,
+    "mode": "strict",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_promotion_matrix_core"
+  },
+  {
+    "id": "dtype002_f64_f32_golden",
+    "lhs": "f64",
+    "rhs": "f32",
+    "expected": "f64",
+    "expected_reason_code": "dtype_promotion_matrix_core",
+    "minimal_repro_artifacts": [
+      "crates/fnp-conformance/fixtures/packet002_dtype/dtype_differential_cases.json",
+      "artifacts/phase2c/FNP-P2C-002/fixture_manifest.json"
+    ],
+    "seed": 2124,
+    "mode": "hardened",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_promotion_matrix_core"
+  },
+  {
+    "id": "dtype002_f64_f64_golden",
+    "lhs": "f64",
+    "rhs": "f64",
+    "expected": "f64",
+    "expected_reason_code": "dtype_promotion_matrix_core",
+    "minimal_repro_artifacts": [
+      "crates/fnp-conformance/fixtures/packet002_dtype/dtype_differential_cases.json",
+      "artifacts/phase2c/FNP-P2C-002/fixture_manifest.json"
+    ],
+    "seed": 2125,
+    "mode": "strict",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_promotion_matrix_core"
   }
 ]
