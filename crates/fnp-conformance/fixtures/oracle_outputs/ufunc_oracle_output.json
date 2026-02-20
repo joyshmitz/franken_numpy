@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "oracle_source": "system",
-  "generated_at_unix_ms": 1771593362126,
+  "generated_at_unix_ms": 1771599566118,
   "cases": [
     {
       "id": "add_broadcast_2x3_plus_3",
@@ -2098,6 +2098,704 @@
         1.0,
         2.0,
         3.0
+      ],
+      "dtype": "float64"
+    },
+    {
+      "id": "positive_identity",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        4
+      ],
+      "values": [
+        -3.0,
+        0.0,
+        5.0,
+        -1.5
+      ],
+      "dtype": "float64"
+    },
+    {
+      "id": "spacing_standard_values",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        4
+      ],
+      "values": [
+        2.220446049250313e-16,
+        1.9073486328125e-6,
+        1.2924697071141056e-26,
+        5e-324
+      ],
+      "dtype": "float64"
+    },
+    {
+      "id": "heaviside_step_function",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        3
+      ],
+      "values": [
+        0.0,
+        0.5,
+        1.0
+      ],
+      "dtype": "float64"
+    },
+    {
+      "id": "heaviside_broadcast_scalar",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        5
+      ],
+      "values": [
+        0.0,
+        0.0,
+        0.5,
+        1.0,
+        1.0
+      ],
+      "dtype": "float64"
+    },
+    {
+      "id": "nextafter_toward_positive",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        3
+      ],
+      "values": [
+        1.0000000000000002,
+        -5e-324,
+        -1.0
+      ],
+      "dtype": "float64"
+    },
+    {
+      "id": "nextafter_broadcast",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        2,
+        2
+      ],
+      "values": [
+        1.0,
+        -1.0,
+        0.0,
+        2.0
+      ],
+      "dtype": "float64"
+    },
+    {
+      "id": "logical_not_truthiness",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        5
+      ],
+      "values": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "dtype": "bool"
+    },
+    {
+      "id": "logical_and_basic",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        4
+      ],
+      "values": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "dtype": "bool"
+    },
+    {
+      "id": "logical_or_basic",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        4
+      ],
+      "values": [
+        1.0,
+        1.0,
+        1.0,
+        0.0
+      ],
+      "dtype": "bool"
+    },
+    {
+      "id": "logical_xor_basic",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        4
+      ],
+      "values": [
+        0.0,
+        1.0,
+        1.0,
+        0.0
+      ],
+      "dtype": "bool"
+    },
+    {
+      "id": "equal_basic",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        4
+      ],
+      "values": [
+        0.0,
+        1.0,
+        0.0,
+        1.0
+      ],
+      "dtype": "bool"
+    },
+    {
+      "id": "not_equal_basic",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        4
+      ],
+      "values": [
+        1.0,
+        0.0,
+        1.0,
+        0.0
+      ],
+      "dtype": "bool"
+    },
+    {
+      "id": "less_basic",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        4
+      ],
+      "values": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "dtype": "bool"
+    },
+    {
+      "id": "less_equal_basic",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        4
+      ],
+      "values": [
+        1.0,
+        1.0,
+        0.0,
+        1.0
+      ],
+      "dtype": "bool"
+    },
+    {
+      "id": "greater_basic",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        4
+      ],
+      "values": [
+        0.0,
+        0.0,
+        1.0,
+        0.0
+      ],
+      "dtype": "bool"
+    },
+    {
+      "id": "greater_equal_basic",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        4
+      ],
+      "values": [
+        0.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "dtype": "bool"
+    },
+    {
+      "id": "equal_broadcast_2x3_by_scalar",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        2,
+        3
+      ],
+      "values": [
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0
+      ],
+      "dtype": "bool"
+    },
+    {
+      "id": "hypot_pythagorean",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        3
+      ],
+      "values": [
+        5.0,
+        13.0,
+        1.0
+      ],
+      "dtype": "float64"
+    },
+    {
+      "id": "hypot_broadcast_scalar",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        2,
+        3
+      ],
+      "values": [
+        5.0,
+        6.4031242374328485,
+        8.94427190999916,
+        8.06225774829855,
+        4.0,
+        4.123105625617661
+      ],
+      "dtype": "float64"
+    },
+    {
+      "id": "logaddexp_basic",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        3
+      ],
+      "values": [
+        2.313261687518223,
+        0.6931471805599453,
+        -0.6867383124817772
+      ],
+      "dtype": "float64"
+    },
+    {
+      "id": "logaddexp2_basic",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        3
+      ],
+      "values": [
+        2.584962500721156,
+        1.0,
+        3.321928094887362
+      ],
+      "dtype": "float64"
+    },
+    {
+      "id": "ldexp_basic",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        4
+      ],
+      "values": [
+        4.0,
+        12.0,
+        2.0,
+        8.0
+      ],
+      "dtype": "float64"
+    },
+    {
+      "id": "ldexp_broadcast",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        2,
+        2
+      ],
+      "values": [
+        8.0,
+        16.0,
+        24.0,
+        32.0
+      ],
+      "dtype": "float64"
+    },
+    {
+      "id": "isnan_finite_values",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        5
+      ],
+      "values": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "dtype": "bool"
+    },
+    {
+      "id": "isinf_finite_values",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        5
+      ],
+      "values": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "dtype": "bool"
+    },
+    {
+      "id": "isfinite_standard",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        5
+      ],
+      "values": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "dtype": "bool"
+    },
+    {
+      "id": "signbit_mixed_signs",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        6
+      ],
+      "values": [
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0
+      ],
+      "dtype": "bool"
+    },
+    {
+      "id": "exp2_basic",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        4
+      ],
+      "values": [
+        1.0,
+        2.0,
+        4.0,
+        8.0
+      ],
+      "dtype": "float64"
+    },
+    {
+      "id": "exp2_negative",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        3
+      ],
+      "values": [
+        0.5,
+        0.25,
+        1.4142135623730951
+      ],
+      "dtype": "float64"
+    },
+    {
+      "id": "fabs_mixed",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        5
+      ],
+      "values": [
+        3.0,
+        0.0,
+        5.0,
+        1.5,
+        2.7
+      ],
+      "dtype": "float64"
+    },
+    {
+      "id": "floor_divide_basic",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        4
+      ],
+      "values": [
+        2.0,
+        -3.0,
+        -3.0,
+        2.0
+      ],
+      "dtype": "float64"
+    },
+    {
+      "id": "floor_divide_broadcast",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        2,
+        3
+      ],
+      "values": [
+        3.0,
+        2.0,
+        1.0,
+        1.0,
+        3.0,
+        0.0
+      ],
+      "dtype": "float64"
+    },
+    {
+      "id": "float_power_basic",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        3
+      ],
+      "values": [
+        8.0,
+        9.0,
+        2.0
+      ],
+      "dtype": "float64"
+    },
+    {
+      "id": "arccosh_basic",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        3
+      ],
+      "values": [
+        0.0,
+        1.3169578969248166,
+        2.993222846126381
+      ],
+      "dtype": "float64"
+    },
+    {
+      "id": "arcsinh_basic",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        4
+      ],
+      "values": [
+        0.0,
+        0.881373587019543,
+        -0.881373587019543,
+        1.4436354751788103
+      ],
+      "dtype": "float64"
+    },
+    {
+      "id": "arctanh_basic",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        3
+      ],
+      "values": [
+        0.0,
+        0.5493061443340548,
+        -0.5493061443340548
+      ],
+      "dtype": "float64"
+    },
+    {
+      "id": "cumsum_axis_none_flat",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        6
+      ],
+      "values": [
+        1.0,
+        3.0,
+        6.0,
+        10.0,
+        15.0,
+        21.0
+      ],
+      "dtype": "float64"
+    },
+    {
+      "id": "cumsum_axis_0_2x3",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        2,
+        3
+      ],
+      "values": [
+        1.0,
+        2.0,
+        3.0,
+        5.0,
+        7.0,
+        9.0
+      ],
+      "dtype": "float64"
+    },
+    {
+      "id": "cumsum_axis_1_2x3",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        2,
+        3
+      ],
+      "values": [
+        1.0,
+        3.0,
+        6.0,
+        4.0,
+        9.0,
+        15.0
+      ],
+      "dtype": "float64"
+    },
+    {
+      "id": "cumprod_axis_none_flat",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        6
+      ],
+      "values": [
+        1.0,
+        2.0,
+        6.0,
+        24.0,
+        120.0,
+        720.0
+      ],
+      "dtype": "float64"
+    },
+    {
+      "id": "cumprod_axis_1_2x3",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        2,
+        3
+      ],
+      "values": [
+        1.0,
+        2.0,
+        6.0,
+        4.0,
+        20.0,
+        120.0
+      ],
+      "dtype": "float64"
+    },
+    {
+      "id": "clip_basic_bounds",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        2,
+        3
+      ],
+      "values": [
+        2.0,
+        5.0,
+        3.0,
+        6.0,
+        2.0,
+        6.0
+      ],
+      "dtype": "float64"
+    },
+    {
+      "id": "clip_min_only",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        6
+      ],
+      "values": [
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        3.0,
+        5.0
+      ],
+      "dtype": "float64"
+    },
+    {
+      "id": "cumsum_3d_axis_2",
+      "status": "ok",
+      "error": null,
+      "shape": [
+        2,
+        2,
+        3
+      ],
+      "values": [
+        1.0,
+        3.0,
+        6.0,
+        4.0,
+        9.0,
+        15.0,
+        7.0,
+        15.0,
+        24.0,
+        10.0,
+        21.0,
+        33.0
       ],
       "dtype": "float64"
     }

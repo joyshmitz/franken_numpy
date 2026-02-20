@@ -30,8 +30,7 @@ use fnp_linalg::{
 use fnp_ndarray::{MemoryOrder, NdLayout, broadcast_shape, contiguous_strides};
 use fnp_random::{
     BitGenerator, BitGeneratorError, BitGeneratorKind, DeterministicRng, RandomError,
-    RandomPolicyError, SeedMaterial, SeedSequence, SeedSequenceError,
-    validate_rng_policy_metadata,
+    RandomPolicyError, SeedMaterial, SeedSequence, SeedSequenceError, validate_rng_policy_metadata,
 };
 use fnp_runtime::{
     CompatibilityClass, DecisionAction, DecisionAuditContext, EvidenceLedger, RuntimeMode,
@@ -305,6 +304,8 @@ struct UFuncAdversarialCase {
     rhs_dtype: Option<String>,
     axis: Option<isize>,
     keepdims: Option<bool>,
+    clip_min: Option<f64>,
+    clip_max: Option<f64>,
     #[serde(default)]
     expected_error_contains: String,
     #[serde(default)]
@@ -3693,6 +3694,8 @@ pub fn run_ufunc_metamorphic_suite(config: &HarnessConfig) -> Result<SuiteReport
                     rhs_dtype: Some(rhs_dtype.clone()),
                     axis: None,
                     keepdims: None,
+                    clip_min: None,
+                    clip_max: None,
                     seed: case.seed,
                     mode: mode.clone(),
                     env_fingerprint: env_fingerprint.clone(),
@@ -3712,6 +3715,8 @@ pub fn run_ufunc_metamorphic_suite(config: &HarnessConfig) -> Result<SuiteReport
                     rhs_dtype: Some(case.lhs_dtype.clone()),
                     axis: None,
                     keepdims: None,
+                    clip_min: None,
+                    clip_max: None,
                     seed: case.seed,
                     mode: mode.clone(),
                     env_fingerprint: env_fingerprint.clone(),
@@ -3773,6 +3778,8 @@ pub fn run_ufunc_metamorphic_suite(config: &HarnessConfig) -> Result<SuiteReport
                     rhs_dtype: Some(rhs_dtype.clone()),
                     axis: None,
                     keepdims: None,
+                    clip_min: None,
+                    clip_max: None,
                     seed: case.seed,
                     mode: mode.clone(),
                     env_fingerprint: env_fingerprint.clone(),
@@ -3792,6 +3799,8 @@ pub fn run_ufunc_metamorphic_suite(config: &HarnessConfig) -> Result<SuiteReport
                     rhs_dtype: Some(case.lhs_dtype.clone()),
                     axis: None,
                     keepdims: None,
+                    clip_min: None,
+                    clip_max: None,
                     seed: case.seed,
                     mode: mode.clone(),
                     env_fingerprint: env_fingerprint.clone(),
@@ -3825,6 +3834,8 @@ pub fn run_ufunc_metamorphic_suite(config: &HarnessConfig) -> Result<SuiteReport
                     rhs_dtype: None,
                     axis: None,
                     keepdims: Some(false),
+                    clip_min: None,
+                    clip_max: None,
                     seed: case.seed,
                     mode: mode.clone(),
                     env_fingerprint: env_fingerprint.clone(),
@@ -3844,6 +3855,8 @@ pub fn run_ufunc_metamorphic_suite(config: &HarnessConfig) -> Result<SuiteReport
                     rhs_dtype: Some(default_f64_dtype_name()),
                     axis: None,
                     keepdims: None,
+                    clip_min: None,
+                    clip_max: None,
                     seed: case.seed,
                     mode: mode.clone(),
                     env_fingerprint: env_fingerprint.clone(),
@@ -3892,6 +3905,8 @@ pub fn run_ufunc_metamorphic_suite(config: &HarnessConfig) -> Result<SuiteReport
                     rhs_dtype: None,
                     axis: None,
                     keepdims: Some(false),
+                    clip_min: None,
+                    clip_max: None,
                     seed: case.seed,
                     mode: mode.clone(),
                     env_fingerprint: env_fingerprint.clone(),
@@ -4034,6 +4049,8 @@ pub fn run_ufunc_adversarial_suite(config: &HarnessConfig) -> Result<SuiteReport
             rhs_dtype: case.rhs_dtype.clone(),
             axis: case.axis,
             keepdims: case.keepdims,
+            clip_min: case.clip_min,
+            clip_max: case.clip_max,
             seed: case.seed,
             mode: mode.clone(),
             env_fingerprint: env_fingerprint.clone(),
@@ -5616,7 +5633,9 @@ fn classify_ufunc_reason_code(op: UFuncOperation, detail: &str) -> String {
             | UFuncOperation::Min
             | UFuncOperation::Max
             | UFuncOperation::Mean
-    ) && (lowered.contains("axis") || lowered.contains("keepdims") || lowered.contains("reduce"))
+    ) && (lowered.contains("axis")
+        || lowered.contains("keepdims")
+        || lowered.contains("reduce"))
     {
         "ufunc_reduction_contract_violation".to_string()
     } else if lowered.contains("override") {
@@ -6250,11 +6269,9 @@ fn execute_rng_adversarial_operation(case: &RngAdversarialCase) -> Result<(), Rn
         "seedsequence_empty_entropy" => SeedSequence::new(&[])
             .map(|_| ())
             .map_err(map_seedsequence_error_to_rng_suite),
-        "seedsequence_pool_size_invalid" => {
-            SeedSequence::with_spawn_key(&[1], &[], case.pool_size)
-                .map(|_| ())
-                .map_err(map_seedsequence_error_to_rng_suite)
-        }
+        "seedsequence_pool_size_invalid" => SeedSequence::with_spawn_key(&[1], &[], case.pool_size)
+            .map(|_| ())
+            .map_err(map_seedsequence_error_to_rng_suite),
         "seedsequence_generate_state_exceeded" => {
             let ss = SeedSequence::new(&[1]).map_err(map_seedsequence_error_to_rng_suite)?;
             ss.generate_state_u32(case.words)

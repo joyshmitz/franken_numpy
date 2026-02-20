@@ -163,6 +163,67 @@ def py_binary(lhs_vals, lhs_shape, rhs_vals, rhs_shape, op):
                 out_vals.append(l)
             else:
                 out_vals.append(min(l, r))
+        elif op == 'heaviside':
+            if math.isnan(l):
+                out_vals.append(float('nan'))
+            elif l < 0:
+                out_vals.append(0.0)
+            elif l == 0:
+                out_vals.append(r)
+            else:
+                out_vals.append(1.0)
+        elif op == 'nextafter':
+            out_vals.append(math.nextafter(l, r))
+        elif op == 'logical_and':
+            out_vals.append(1.0 if (l != 0.0 and r != 0.0) else 0.0)
+        elif op == 'logical_or':
+            out_vals.append(1.0 if (l != 0.0 or r != 0.0) else 0.0)
+        elif op == 'logical_xor':
+            out_vals.append(1.0 if ((l != 0.0) != (r != 0.0)) else 0.0)
+        elif op == 'equal':
+            out_vals.append(1.0 if l == r else 0.0)
+        elif op == 'not_equal':
+            out_vals.append(1.0 if l != r else 0.0)
+        elif op == 'less':
+            out_vals.append(1.0 if l < r else 0.0)
+        elif op == 'less_equal':
+            out_vals.append(1.0 if l <= r else 0.0)
+        elif op == 'greater':
+            out_vals.append(1.0 if l > r else 0.0)
+        elif op == 'greater_equal':
+            out_vals.append(1.0 if l >= r else 0.0)
+        elif op == 'hypot':
+            out_vals.append(math.hypot(l, r))
+        elif op == 'logaddexp':
+            mx = max(l, r)
+            mn = min(l, r)
+            if mx == float('inf'):
+                out_vals.append(float('inf'))
+            elif math.isnan(l) or math.isnan(r):
+                out_vals.append(float('nan'))
+            else:
+                out_vals.append(mx + math.log1p(math.exp(mn - mx)))
+        elif op == 'logaddexp2':
+            mx = max(l, r)
+            mn = min(l, r)
+            if mx == float('inf'):
+                out_vals.append(float('inf'))
+            elif math.isnan(l) or math.isnan(r):
+                out_vals.append(float('nan'))
+            else:
+                out_vals.append(mx + math.log1p(2.0 ** (mn - mx)) / math.log(2.0))
+        elif op == 'ldexp':
+            out_vals.append(math.ldexp(l, int(r)))
+        elif op == 'floor_divide':
+            if r == 0.0:
+                if l == 0.0:
+                    out_vals.append(float('nan'))
+                else:
+                    out_vals.append(math.copysign(float('inf'), l))
+            else:
+                out_vals.append(math.floor(l / r))
+        elif op == 'float_power':
+            out_vals.append(l ** r)
         else:
             raise ValueError(f'unsupported op {op}')
     return out_shape, out_vals
@@ -270,6 +331,62 @@ def py_reduce(vals, shape, axis, keepdims, op):
 
     return out_shape, out
 
+def py_cumsum(vals, shape, axis):
+    if axis is None:
+        out = []
+        acc = 0.0
+        for v in vals:
+            acc += v
+            out.append(acc)
+        return [len(out)], out
+    raw_axis = axis
+    if axis < 0:
+        axis += len(shape)
+    if axis < 0 or axis >= len(shape):
+        raise ValueError(f'axis {raw_axis} out of bounds for shape {shape}')
+    axis_len = shape[axis]
+    inner = math.prod(shape[axis+1:]) if axis+1 < len(shape) else 1
+    outer = math.prod(shape[:axis]) if axis > 0 else 1
+    out = list(vals)
+    for oi in range(outer):
+        base = oi * axis_len * inner
+        for ii in range(inner):
+            acc = 0.0
+            offset = base + ii
+            for _ in range(axis_len):
+                acc += out[offset]
+                out[offset] = acc
+                offset += inner
+    return list(shape), out
+
+def py_cumprod(vals, shape, axis):
+    if axis is None:
+        out = []
+        acc = 1.0
+        for v in vals:
+            acc *= v
+            out.append(acc)
+        return [len(out)], out
+    raw_axis = axis
+    if axis < 0:
+        axis += len(shape)
+    if axis < 0 or axis >= len(shape):
+        raise ValueError(f'axis {raw_axis} out of bounds for shape {shape}')
+    axis_len = shape[axis]
+    inner = math.prod(shape[axis+1:]) if axis+1 < len(shape) else 1
+    outer = math.prod(shape[:axis]) if axis > 0 else 1
+    out = list(vals)
+    for oi in range(outer):
+        base = oi * axis_len * inner
+        for ii in range(inner):
+            acc = 1.0
+            offset = base + ii
+            for _ in range(axis_len):
+                acc *= out[offset]
+                out[offset] = acc
+                offset += inner
+    return list(shape), out
+
 def normalize_dtype_name(name):
     aliases = {
         'f64': 'float64',
@@ -335,7 +452,7 @@ for case in cases:
             lhs_dtype = normalize_dtype_name(case.get('lhs_dtype', 'float64'))
             lhs = np.array(case['lhs_values'], dtype=lhs_dtype).reshape(tuple(case['lhs_shape']))
 
-            if op in ('add', 'sub', 'mul', 'div', 'power', 'remainder', 'minimum', 'maximum', 'arctan2', 'fmod', 'copysign', 'fmax', 'fmin'):
+            if op in ('add', 'sub', 'mul', 'div', 'power', 'remainder', 'minimum', 'maximum', 'arctan2', 'fmod', 'copysign', 'fmax', 'fmin', 'heaviside', 'nextafter', 'logical_and', 'logical_or', 'logical_xor', 'equal', 'not_equal', 'less', 'less_equal', 'greater', 'greater_equal', 'hypot', 'logaddexp', 'logaddexp2', 'ldexp', 'floor_divide', 'float_power'):
                 rhs_dtype = normalize_dtype_name(case.get('rhs_dtype', 'float64'))
                 rhs = np.array(case['rhs_values'], dtype=rhs_dtype).reshape(tuple(case['rhs_shape']))
                 if op == 'add':
@@ -364,6 +481,40 @@ for case in cases:
                     out = np.fmax(lhs, rhs)
                 elif op == 'fmin':
                     out = np.fmin(lhs, rhs)
+                elif op == 'heaviside':
+                    out = np.heaviside(lhs, rhs)
+                elif op == 'nextafter':
+                    out = np.nextafter(lhs, rhs)
+                elif op == 'logical_and':
+                    out = np.logical_and(lhs, rhs)
+                elif op == 'logical_or':
+                    out = np.logical_or(lhs, rhs)
+                elif op == 'logical_xor':
+                    out = np.logical_xor(lhs, rhs)
+                elif op == 'equal':
+                    out = np.equal(lhs, rhs)
+                elif op == 'not_equal':
+                    out = np.not_equal(lhs, rhs)
+                elif op == 'less':
+                    out = np.less(lhs, rhs)
+                elif op == 'less_equal':
+                    out = np.less_equal(lhs, rhs)
+                elif op == 'greater':
+                    out = np.greater(lhs, rhs)
+                elif op == 'greater_equal':
+                    out = np.greater_equal(lhs, rhs)
+                elif op == 'hypot':
+                    out = np.hypot(lhs, rhs)
+                elif op == 'logaddexp':
+                    out = np.logaddexp(lhs, rhs)
+                elif op == 'logaddexp2':
+                    out = np.logaddexp2(lhs, rhs)
+                elif op == 'ldexp':
+                    out = np.ldexp(lhs, rhs.astype(np.int32))
+                elif op == 'floor_divide':
+                    out = np.floor_divide(lhs, rhs)
+                elif op == 'float_power':
+                    out = np.float_power(lhs, rhs)
             elif op == 'sum':
                 axis = case.get('axis')
                 keepdims = bool(case.get('keepdims', False))
@@ -384,6 +535,16 @@ for case in cases:
                 axis = case.get('axis')
                 keepdims = bool(case.get('keepdims', False))
                 out = lhs.mean(axis=axis, keepdims=keepdims)
+            elif op == 'cumsum':
+                axis = case.get('axis')
+                out = np.cumsum(lhs, axis=axis)
+            elif op == 'cumprod':
+                axis = case.get('axis')
+                out = np.cumprod(lhs, axis=axis)
+            elif op == 'clip':
+                clip_min = case.get('clip_min')
+                clip_max = case.get('clip_max')
+                out = np.clip(lhs, clip_min, clip_max)
             elif op == 'abs':
                 out = np.abs(lhs)
             elif op == 'negative':
@@ -442,6 +603,30 @@ for case in cases:
                 out = np.rint(lhs)
             elif op == 'trunc':
                 out = np.trunc(lhs)
+            elif op == 'positive':
+                out = np.positive(lhs)
+            elif op == 'spacing':
+                out = np.spacing(lhs)
+            elif op == 'logical_not':
+                out = np.logical_not(lhs)
+            elif op == 'isnan':
+                out = np.isnan(lhs)
+            elif op == 'isinf':
+                out = np.isinf(lhs)
+            elif op == 'isfinite':
+                out = np.isfinite(lhs)
+            elif op == 'signbit':
+                out = np.signbit(lhs)
+            elif op == 'exp2':
+                out = np.exp2(lhs)
+            elif op == 'fabs':
+                out = np.fabs(lhs)
+            elif op == 'arccosh':
+                out = np.arccosh(lhs)
+            elif op == 'arcsinh':
+                out = np.arcsinh(lhs)
+            elif op == 'arctanh':
+                out = np.arctanh(lhs)
             else:
                 raise ValueError(f'unsupported op: {op}')
 
@@ -453,12 +638,12 @@ for case in cases:
             lhs_shape = case['lhs_shape']
             lhs_vals = [float(v) for v in case['lhs_values']]
             lhs_dtype = normalize_fallback_dtype(case.get('lhs_dtype', 'f64'))
-            if op in ('add', 'sub', 'mul', 'div', 'power', 'remainder', 'minimum', 'maximum', 'arctan2', 'fmod', 'copysign', 'fmax', 'fmin'):
+            if op in ('add', 'sub', 'mul', 'div', 'power', 'remainder', 'minimum', 'maximum', 'arctan2', 'fmod', 'copysign', 'fmax', 'fmin', 'heaviside', 'nextafter', 'logical_and', 'logical_or', 'logical_xor', 'equal', 'not_equal', 'less', 'less_equal', 'greater', 'greater_equal', 'hypot', 'logaddexp', 'logaddexp2', 'ldexp', 'floor_divide', 'float_power'):
                 rhs_shape = case['rhs_shape']
                 rhs_vals = [float(v) for v in case['rhs_values']]
                 rhs_dtype = normalize_fallback_dtype(case.get('rhs_dtype', 'f64'))
                 shape, values = py_binary(lhs_vals, lhs_shape, rhs_vals, rhs_shape, op)
-                dtype = fallback_promote(lhs_dtype, rhs_dtype)
+                dtype = 'bool' if op in ('logical_and', 'logical_or', 'logical_xor', 'equal', 'not_equal', 'less', 'less_equal', 'greater', 'greater_equal') else fallback_promote(lhs_dtype, rhs_dtype)
             elif op == 'sum':
                 axis = case.get('axis')
                 keepdims = bool(case.get('keepdims', False))
@@ -590,6 +775,70 @@ for case in cases:
                 shape = lhs_shape
                 values = [math.trunc(v) for v in lhs_vals]
                 dtype = lhs_dtype
+            elif op == 'positive':
+                shape = lhs_shape
+                values = [+v for v in lhs_vals]
+                dtype = lhs_dtype
+            elif op == 'spacing':
+                shape = lhs_shape
+                values = [math.nextafter(abs(v), float('inf')) - abs(v) if not (math.isnan(v) or math.isinf(v)) else float('nan') for v in lhs_vals]
+                dtype = lhs_dtype
+            elif op == 'logical_not':
+                shape = lhs_shape
+                values = [1.0 if v == 0.0 else 0.0 for v in lhs_vals]
+                dtype = 'bool'
+            elif op == 'isnan':
+                shape = lhs_shape
+                values = [1.0 if math.isnan(v) else 0.0 for v in lhs_vals]
+                dtype = 'bool'
+            elif op == 'isinf':
+                shape = lhs_shape
+                values = [1.0 if math.isinf(v) else 0.0 for v in lhs_vals]
+                dtype = 'bool'
+            elif op == 'isfinite':
+                shape = lhs_shape
+                values = [1.0 if math.isfinite(v) else 0.0 for v in lhs_vals]
+                dtype = 'bool'
+            elif op == 'signbit':
+                shape = lhs_shape
+                values = [1.0 if math.copysign(1.0, v) < 0 else 0.0 for v in lhs_vals]
+                dtype = 'bool'
+            elif op == 'exp2':
+                shape = lhs_shape
+                values = [2.0 ** v for v in lhs_vals]
+                dtype = lhs_dtype
+            elif op == 'fabs':
+                shape = lhs_shape
+                values = [abs(v) for v in lhs_vals]
+                dtype = lhs_dtype
+            elif op == 'arccosh':
+                shape = lhs_shape
+                values = [math.acosh(v) for v in lhs_vals]
+                dtype = lhs_dtype
+            elif op == 'arcsinh':
+                shape = lhs_shape
+                values = [math.asinh(v) for v in lhs_vals]
+                dtype = lhs_dtype
+            elif op == 'arctanh':
+                shape = lhs_shape
+                values = [math.atanh(v) for v in lhs_vals]
+                dtype = lhs_dtype
+            elif op == 'cumsum':
+                axis = case.get('axis')
+                shape, values = py_cumsum(lhs_vals, lhs_shape, axis)
+                dtype = lhs_dtype
+            elif op == 'cumprod':
+                axis = case.get('axis')
+                shape, values = py_cumprod(lhs_vals, lhs_shape, axis)
+                dtype = lhs_dtype
+            elif op == 'clip':
+                clip_min = case.get('clip_min')
+                clip_max = case.get('clip_max')
+                shape = lhs_shape
+                lo = clip_min if clip_min is not None else float('-inf')
+                hi = clip_max if clip_max is not None else float('inf')
+                values = [max(lo, min(hi, v)) for v in lhs_vals]
+                dtype = lhs_dtype
             else:
                 raise ValueError(f'unsupported op: {op}')
 
@@ -672,6 +921,38 @@ pub enum UFuncOperation {
     Copysign,
     Fmax,
     Fmin,
+    Positive,
+    Spacing,
+    Heaviside,
+    Nextafter,
+    LogicalNot,
+    LogicalAnd,
+    LogicalOr,
+    LogicalXor,
+    Equal,
+    NotEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+    Isnan,
+    Isinf,
+    Isfinite,
+    Signbit,
+    Hypot,
+    Logaddexp,
+    Logaddexp2,
+    Ldexp,
+    Exp2,
+    Fabs,
+    Arccosh,
+    Arcsinh,
+    Arctanh,
+    FloorDivide,
+    FloatPower,
+    Cumsum,
+    Cumprod,
+    Clip,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -687,6 +968,8 @@ pub struct UFuncInputCase {
     pub rhs_dtype: Option<String>,
     pub axis: Option<isize>,
     pub keepdims: Option<bool>,
+    pub clip_min: Option<f64>,
+    pub clip_max: Option<f64>,
     #[serde(default)]
     pub seed: u64,
     #[serde(default)]
@@ -1190,7 +1473,24 @@ pub fn execute_input_case(case: &UFuncInputCase) -> Result<(Vec<usize>, Vec<f64>
         | UFuncOperation::Fmod
         | UFuncOperation::Copysign
         | UFuncOperation::Fmax
-        | UFuncOperation::Fmin => {
+        | UFuncOperation::Fmin
+        | UFuncOperation::Heaviside
+        | UFuncOperation::Nextafter
+        | UFuncOperation::LogicalAnd
+        | UFuncOperation::LogicalOr
+        | UFuncOperation::LogicalXor
+        | UFuncOperation::Equal
+        | UFuncOperation::NotEqual
+        | UFuncOperation::Less
+        | UFuncOperation::LessEqual
+        | UFuncOperation::Greater
+        | UFuncOperation::GreaterEqual
+        | UFuncOperation::Hypot
+        | UFuncOperation::Logaddexp
+        | UFuncOperation::Logaddexp2
+        | UFuncOperation::Ldexp
+        | UFuncOperation::FloorDivide
+        | UFuncOperation::FloatPower => {
             let rhs_shape = case
                 .rhs_shape
                 .clone()
@@ -1218,6 +1518,23 @@ pub fn execute_input_case(case: &UFuncInputCase) -> Result<(Vec<usize>, Vec<f64>
                 UFuncOperation::Copysign => BinaryOp::Copysign,
                 UFuncOperation::Fmax => BinaryOp::Fmax,
                 UFuncOperation::Fmin => BinaryOp::Fmin,
+                UFuncOperation::Heaviside => BinaryOp::Heaviside,
+                UFuncOperation::Nextafter => BinaryOp::Nextafter,
+                UFuncOperation::LogicalAnd => BinaryOp::LogicalAnd,
+                UFuncOperation::LogicalOr => BinaryOp::LogicalOr,
+                UFuncOperation::LogicalXor => BinaryOp::LogicalXor,
+                UFuncOperation::Equal => BinaryOp::Equal,
+                UFuncOperation::NotEqual => BinaryOp::NotEqual,
+                UFuncOperation::Less => BinaryOp::Less,
+                UFuncOperation::LessEqual => BinaryOp::LessEqual,
+                UFuncOperation::Greater => BinaryOp::Greater,
+                UFuncOperation::GreaterEqual => BinaryOp::GreaterEqual,
+                UFuncOperation::Hypot => BinaryOp::Hypot,
+                UFuncOperation::Logaddexp => BinaryOp::Logaddexp,
+                UFuncOperation::Logaddexp2 => BinaryOp::Logaddexp2,
+                UFuncOperation::Ldexp => BinaryOp::Ldexp,
+                UFuncOperation::FloorDivide => BinaryOp::FloorDivide,
+                UFuncOperation::FloatPower => BinaryOp::FloatPower,
                 _ => unreachable!("handled above"),
             };
 
@@ -1249,6 +1566,17 @@ pub fn execute_input_case(case: &UFuncInputCase) -> Result<(Vec<usize>, Vec<f64>
             lhs.reduce_mean(case.axis, keepdims)
                 .map_err(|err| format!("reduce mean error: {err}"))?
         }
+        UFuncOperation::Cumsum => lhs
+            .cumsum(case.axis)
+            .map_err(|err| format!("cumsum error: {err}"))?,
+        UFuncOperation::Cumprod => lhs
+            .cumprod(case.axis)
+            .map_err(|err| format!("cumprod error: {err}"))?,
+        UFuncOperation::Clip => {
+            let min_val = case.clip_min.unwrap_or(f64::NEG_INFINITY);
+            let max_val = case.clip_max.unwrap_or(f64::INFINITY);
+            lhs.clip(min_val, max_val)
+        }
         UFuncOperation::Abs => lhs.elementwise_unary(UnaryOp::Abs),
         UFuncOperation::Negative => lhs.elementwise_unary(UnaryOp::Negative),
         UFuncOperation::Sign => lhs.elementwise_unary(UnaryOp::Sign),
@@ -1278,6 +1606,18 @@ pub fn execute_input_case(case: &UFuncInputCase) -> Result<(Vec<usize>, Vec<f64>
         UFuncOperation::Radians => lhs.elementwise_unary(UnaryOp::Radians),
         UFuncOperation::Rint => lhs.elementwise_unary(UnaryOp::Rint),
         UFuncOperation::Trunc => lhs.elementwise_unary(UnaryOp::Trunc),
+        UFuncOperation::Positive => lhs.elementwise_unary(UnaryOp::Positive),
+        UFuncOperation::Spacing => lhs.elementwise_unary(UnaryOp::Spacing),
+        UFuncOperation::LogicalNot => lhs.elementwise_unary(UnaryOp::LogicalNot),
+        UFuncOperation::Isnan => lhs.elementwise_unary(UnaryOp::Isnan),
+        UFuncOperation::Isinf => lhs.elementwise_unary(UnaryOp::Isinf),
+        UFuncOperation::Isfinite => lhs.elementwise_unary(UnaryOp::Isfinite),
+        UFuncOperation::Signbit => lhs.elementwise_unary(UnaryOp::Signbit),
+        UFuncOperation::Exp2 => lhs.elementwise_unary(UnaryOp::Exp2),
+        UFuncOperation::Fabs => lhs.elementwise_unary(UnaryOp::Fabs),
+        UFuncOperation::Arccosh => lhs.elementwise_unary(UnaryOp::Arccosh),
+        UFuncOperation::Arcsinh => lhs.elementwise_unary(UnaryOp::Arcsinh),
+        UFuncOperation::Arctanh => lhs.elementwise_unary(UnaryOp::Arctanh),
     };
 
     Ok((
@@ -1438,6 +1778,8 @@ mod tests {
             rhs_dtype: None,
             axis: Some(-1),
             keepdims: Some(false),
+            clip_min: None,
+            clip_max: None,
             seed: 0,
             mode: "strict".to_string(),
             env_fingerprint: "tests".to_string(),
@@ -1466,6 +1808,8 @@ mod tests {
             rhs_dtype: None,
             axis: Some(-3),
             keepdims: Some(false),
+            clip_min: None,
+            clip_max: None,
             seed: 0,
             mode: "strict".to_string(),
             env_fingerprint: "tests".to_string(),
