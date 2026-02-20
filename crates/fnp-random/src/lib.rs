@@ -317,10 +317,7 @@ impl SeedSequence {
 fn seed_material_to_u64(words: &[u32]) -> u64 {
     let mut mixed = splitmix64(DEFAULT_RNG_SEED);
     for (idx, word) in words.iter().copied().enumerate() {
-        let idx_u64 = match u64::try_from(idx) {
-            Ok(value) => value,
-            Err(_) => u64::MAX,
-        };
+        let idx_u64 = u64::try_from(idx).unwrap_or(u64::MAX);
         let contribution = u64::from(word).wrapping_add((idx_u64 + 1).wrapping_mul(GOLDEN_GAMMA));
         mixed = splitmix64(mixed ^ contribution);
     }
