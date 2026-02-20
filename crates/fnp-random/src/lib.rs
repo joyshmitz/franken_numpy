@@ -59,6 +59,10 @@ pub enum SeedMaterial {
     None,
     U64(u64),
     U32Words(Vec<u32>),
+    SeedSequence(SeedSequence),
+    BitGenerator(BitGenerator),
+    Generator(Generator),
+    RandomState(RandomState),
     State { seed: u64, counter: u64 },
 }
 
@@ -111,6 +115,32 @@ impl std::fmt::Display for RandomError {
 }
 
 impl std::error::Error for RandomError {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RandomPolicyError {
+    UnknownMetadata,
+}
+
+impl RandomPolicyError {
+    #[must_use]
+    pub const fn reason_code(self) -> &'static str {
+        match self {
+            Self::UnknownMetadata => "rng_policy_unknown_metadata",
+        }
+    }
+}
+
+impl std::fmt::Display for RandomPolicyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownMetadata => {
+                write!(f, "unknown mode/class metadata rejected fail-closed")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RandomPolicyError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SeedSequenceError {
@@ -185,6 +215,7 @@ impl BitGeneratorKind {
 pub enum BitGeneratorError {
     GeneratorBindingInvalid(&'static str),
     InitFailed(&'static str),
+    SpawnContractViolation(&'static str),
     JumpContractViolation(&'static str),
     StateSchemaInvalid(&'static str),
     PickleStateMismatch(&'static str),
@@ -196,6 +227,7 @@ impl BitGeneratorError {
         match self {
             Self::GeneratorBindingInvalid(_) => "rng_generator_binding_invalid",
             Self::InitFailed(_) => "rng_bitgenerator_init_failed",
+            Self::SpawnContractViolation(_) => "rng_seedsequence_spawn_contract_violation",
             Self::JumpContractViolation(_) => "rng_jump_contract_violation",
             Self::StateSchemaInvalid(_) => "rng_state_schema_invalid",
             Self::PickleStateMismatch(_) => "rng_pickle_state_mismatch",
@@ -208,6 +240,7 @@ impl std::fmt::Display for BitGeneratorError {
         match self {
             Self::GeneratorBindingInvalid(msg)
             | Self::InitFailed(msg)
+            | Self::SpawnContractViolation(msg)
             | Self::JumpContractViolation(msg)
             | Self::StateSchemaInvalid(msg)
             | Self::PickleStateMismatch(msg) => write!(f, "{msg}"),
@@ -390,6 +423,25 @@ impl SeedSequence {
         Ok(generated)
     }
 
+    pub fn generate_state_u64(&self, words: usize) -> Result<Vec<u64>, SeedSequenceError> {
+        let doubled_words = words
+            .checked_mul(2)
+            .ok_or(SeedSequenceError::GenerateStateContractViolation)?;
+        if doubled_words > MAX_SEED_SEQUENCE_WORDS {
+            return Err(SeedSequenceError::GenerateStateContractViolation);
+        }
+        if words == 0 {
+            return Ok(Vec::new());
+        }
+
+        let u32_words = self.generate_state_u32(doubled_words)?;
+        let mut generated = Vec::with_capacity(words);
+        for pair in u32_words.chunks_exact(2) {
+            generated.push(u64::from(pair[0]) | (u64::from(pair[1]) << 32));
+        }
+        Ok(generated)
+    }
+
     pub fn spawn(&mut self, n_children: usize) -> Result<Vec<Self>, SeedSequenceError> {
         if n_children == 0 || n_children > MAX_SEED_SEQUENCE_CHILDREN {
             return Err(SeedSequenceError::SpawnContractViolation);
@@ -458,6 +510,8 @@ impl BitGeneratorState {
         let mut counter = None;
         let mut algorithm_tag = None;
         let mut schema_version = None;
+        let mut algorithm_state = None;
+        let expected_algorithm_key = algorithm_state_schema_key(self.kind);
 
         for (key, value) in &self.schema_entries {
             let normalized = key.trim();
@@ -479,6 +533,9 @@ impl BitGeneratorState {
                 "schema_version" => schema_version = Some(*value),
                 _ => {}
             }
+            if normalized == expected_algorithm_key {
+                algorithm_state = Some(*value);
+            }
         }
 
         if stream_seed != Some(self.seed) || counter != Some(self.counter) {
@@ -499,7 +556,33 @@ impl BitGeneratorState {
             ));
         }
 
+        let expected_algorithm_state =
+            algorithm_state_schema_value(self.kind, self.seed, self.counter);
+        if algorithm_state != Some(expected_algorithm_state) {
+            return Err(BitGeneratorError::StateSchemaInvalid(
+                "bit-generator algorithm-specific state metadata mismatch",
+            ));
+        }
+
         Ok(())
+    }
+}
+
+fn algorithm_state_schema_key(kind: BitGeneratorKind) -> &'static str {
+    match kind {
+        BitGeneratorKind::Mt19937 => "mt19937_index",
+        BitGeneratorKind::Pcg64 => "pcg64_stream",
+        BitGeneratorKind::Philox => "philox_key",
+        BitGeneratorKind::Sfc64 => "sfc64_carry",
+    }
+}
+
+fn algorithm_state_schema_value(kind: BitGeneratorKind, seed: u64, counter: u64) -> u64 {
+    match kind {
+        BitGeneratorKind::Mt19937 => counter % 624,
+        BitGeneratorKind::Pcg64 => splitmix64(seed ^ 0x5043_4736_3400_0001_u64),
+        BitGeneratorKind::Philox => seed.rotate_left(17) ^ counter.rotate_right(7),
+        BitGeneratorKind::Sfc64 => splitmix64(counter ^ seed ^ 0x5346_4336_3400_0001_u64),
     }
 }
 
@@ -508,6 +591,8 @@ fn default_state_schema_entries(
     seed: u64,
     counter: u64,
 ) -> Vec<(String, u64)> {
+    let algorithm_key = algorithm_state_schema_key(kind);
+    let algorithm_value = algorithm_state_schema_value(kind, seed, counter);
     vec![
         ("stream_seed".to_string(), seed),
         ("counter".to_string(), counter),
@@ -516,6 +601,7 @@ fn default_state_schema_entries(
             "schema_version".to_string(),
             u64::from(BIT_GENERATOR_STATE_SCHEMA_VERSION),
         ),
+        (algorithm_key.to_string(), algorithm_value),
     ]
 }
 
@@ -536,7 +622,7 @@ impl BitGenerator {
         let (stream_seed, counter) = match seed {
             SeedMaterial::State { seed, counter } => (seed, counter),
             material => {
-                let rng = default_rng(material).map_err(|_| {
+                let rng = deterministic_rng_from_seed_material(material).map_err(|_| {
                     BitGeneratorError::InitFailed(
                         "bit-generator constructor rejected seed material",
                     )
@@ -555,7 +641,7 @@ impl BitGenerator {
         kind: BitGeneratorKind,
         seed_sequence: &SeedSequence,
     ) -> Result<Self, BitGeneratorError> {
-        let rng = generator_from_seed_sequence(seed_sequence).map_err(|_| {
+        let rng = rng_from_seed_sequence(seed_sequence).map_err(|_| {
             BitGeneratorError::InitFailed("bit-generator constructor rejected SeedSequence state")
         })?;
         let (seed, counter) = rng.state();
@@ -615,6 +701,48 @@ impl BitGenerator {
         Ok(jumped)
     }
 
+    pub fn spawn(&mut self, n_children: usize) -> Result<Vec<Self>, BitGeneratorError> {
+        if n_children == 0 || n_children > MAX_SEED_SEQUENCE_CHILDREN {
+            return Err(BitGeneratorError::SpawnContractViolation(
+                "bit-generator spawn request violated packet-007 child bounds",
+            ));
+        }
+
+        let n_children_u64 = u64::try_from(n_children).map_err(|_| {
+            BitGeneratorError::SpawnContractViolation(
+                "bit-generator spawn request exceeded deterministic child budget",
+            )
+        })?;
+        let (parent_seed, parent_counter) = self.raw_state();
+
+        let mut children = Vec::with_capacity(n_children);
+        for child_index in 0..n_children {
+            let child_index_u64 = u64::try_from(child_index).map_err(|_| {
+                BitGeneratorError::SpawnContractViolation(
+                    "bit-generator child index exceeded deterministic budget",
+                )
+            })?;
+            let child_ordinal = child_index_u64 + 1;
+            let child_seed = splitmix64(
+                parent_seed ^ self.kind.stream_tag() ^ child_ordinal.wrapping_mul(GOLDEN_GAMMA),
+            );
+            let child_counter = parent_counter.wrapping_add(
+                child_ordinal.checked_mul(self.kind.jump_stride()).ok_or(
+                    BitGeneratorError::SpawnContractViolation(
+                        "bit-generator child counter overflowed deterministic budget",
+                    ),
+                )?,
+            );
+            children.push(Self {
+                kind: self.kind,
+                rng: DeterministicRng::from_state(child_seed, child_counter),
+            });
+        }
+
+        self.rng.jump_ahead(n_children_u64);
+        Ok(children)
+    }
+
     #[must_use]
     pub fn state(&self) -> BitGeneratorState {
         let (seed, counter) = self.raw_state();
@@ -639,13 +767,167 @@ impl BitGenerator {
     }
 }
 
+macro_rules! define_algorithm_adapter {
+    ($name:ident, $kind:path) => {
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        pub struct $name {
+            inner: BitGenerator,
+        }
+
+        impl $name {
+            pub fn new(seed: SeedMaterial) -> Result<Self, BitGeneratorError> {
+                Ok(Self {
+                    inner: BitGenerator::new($kind, seed)?,
+                })
+            }
+
+            pub fn from_seed_sequence(
+                seed_sequence: &SeedSequence,
+            ) -> Result<Self, BitGeneratorError> {
+                Ok(Self {
+                    inner: BitGenerator::from_seed_sequence($kind, seed_sequence)?,
+                })
+            }
+
+            #[must_use]
+            pub fn as_bit_generator(&self) -> &BitGenerator {
+                &self.inner
+            }
+
+            #[must_use]
+            pub fn as_bit_generator_mut(&mut self) -> &mut BitGenerator {
+                &mut self.inner
+            }
+
+            #[must_use]
+            pub fn into_bit_generator(self) -> BitGenerator {
+                self.inner
+            }
+
+            #[must_use]
+            pub fn next_u64(&mut self) -> u64 {
+                self.inner.next_u64()
+            }
+
+            #[must_use]
+            pub fn next_f64(&mut self) -> f64 {
+                self.inner.next_f64()
+            }
+
+            pub fn bounded_u64(&mut self, upper_bound: u64) -> Result<u64, RandomError> {
+                self.inner.bounded_u64(upper_bound)
+            }
+
+            #[must_use]
+            pub fn fill_u64(&mut self, len: usize) -> Vec<u64> {
+                self.inner.fill_u64(len)
+            }
+
+            pub fn jump_in_place(&mut self, jumps: u64) -> Result<(), BitGeneratorError> {
+                self.inner.jump_in_place(jumps)
+            }
+
+            pub fn jumped(&self, jumps: u64) -> Result<Self, BitGeneratorError> {
+                Ok(Self {
+                    inner: self.inner.jumped(jumps)?,
+                })
+            }
+
+            pub fn spawn(&mut self, n_children: usize) -> Result<Vec<Self>, BitGeneratorError> {
+                let children = self.inner.spawn(n_children)?;
+                Ok(children
+                    .into_iter()
+                    .map(|inner| Self { inner })
+                    .collect::<Vec<_>>())
+            }
+
+            #[must_use]
+            pub fn state(&self) -> BitGeneratorState {
+                self.inner.state()
+            }
+
+            pub fn set_state(
+                &mut self,
+                state: &BitGeneratorState,
+            ) -> Result<(), BitGeneratorError> {
+                self.inner.set_state(state)
+            }
+        }
+    };
+}
+
+define_algorithm_adapter!(Mt19937, BitGeneratorKind::Mt19937);
+define_algorithm_adapter!(Pcg64, BitGeneratorKind::Pcg64);
+define_algorithm_adapter!(Philox, BitGeneratorKind::Philox);
+define_algorithm_adapter!(Sfc64, BitGeneratorKind::Sfc64);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GeneratorFacade {
+pub struct RandomState {
+    bit_generator: BitGenerator,
+}
+
+impl RandomState {
+    pub fn new(seed: SeedMaterial) -> Result<Self, BitGeneratorError> {
+        let bit_generator = BitGenerator::new(BitGeneratorKind::Mt19937, seed)?;
+        Ok(Self { bit_generator })
+    }
+
+    #[must_use]
+    pub fn from_bit_generator(bit_generator: BitGenerator) -> Self {
+        Self { bit_generator }
+    }
+
+    #[must_use]
+    pub fn bit_generator(&self) -> &BitGenerator {
+        &self.bit_generator
+    }
+
+    #[must_use]
+    pub fn next_u64(&mut self) -> u64 {
+        self.bit_generator.next_u64()
+    }
+
+    #[must_use]
+    pub fn next_f64(&mut self) -> f64 {
+        self.bit_generator.next_f64()
+    }
+
+    pub fn bounded_u64(&mut self, upper_bound: u64) -> Result<u64, RandomError> {
+        self.bit_generator.bounded_u64(upper_bound)
+    }
+
+    #[must_use]
+    pub fn fill_u64(&mut self, len: usize) -> Vec<u64> {
+        self.bit_generator.fill_u64(len)
+    }
+
+    pub fn jump_in_place(&mut self, jumps: u64) -> Result<(), BitGeneratorError> {
+        self.bit_generator.jump_in_place(jumps)
+    }
+
+    pub fn jumped(&self, jumps: u64) -> Result<Self, BitGeneratorError> {
+        Ok(Self {
+            bit_generator: self.bit_generator.jumped(jumps)?,
+        })
+    }
+
+    #[must_use]
+    pub fn state(&self) -> BitGeneratorState {
+        self.bit_generator.state()
+    }
+
+    pub fn set_state(&mut self, state: &BitGeneratorState) -> Result<(), BitGeneratorError> {
+        self.bit_generator.set_state(state)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Generator {
     bit_generator: BitGenerator,
     seed_sequence: Option<SeedSequence>,
 }
 
-impl GeneratorFacade {
+impl Generator {
     #[must_use]
     pub fn from_bit_generator(bit_generator: BitGenerator) -> Self {
         Self {
@@ -696,6 +978,20 @@ impl GeneratorFacade {
         self.bit_generator.next_u64()
     }
 
+    #[must_use]
+    pub fn next_f64(&mut self) -> f64 {
+        self.bit_generator.next_f64()
+    }
+
+    pub fn bounded_u64(&mut self, upper_bound: u64) -> Result<u64, RandomError> {
+        self.bit_generator.bounded_u64(upper_bound)
+    }
+
+    #[must_use]
+    pub fn fill_u64(&mut self, len: usize) -> Vec<u64> {
+        self.bit_generator.fill_u64(len)
+    }
+
     pub fn jump_in_place(&mut self, jumps: u64) -> Result<(), BitGeneratorError> {
         self.bit_generator.jump_in_place(jumps)
     }
@@ -705,6 +1001,44 @@ impl GeneratorFacade {
             bit_generator: self.bit_generator.jumped(jumps)?,
             seed_sequence: self.seed_sequence.clone(),
         })
+    }
+
+    pub fn spawn(&mut self, n_children: usize) -> Result<Vec<Self>, BitGeneratorError> {
+        if n_children == 0 || n_children > MAX_SEED_SEQUENCE_CHILDREN {
+            return Err(BitGeneratorError::SpawnContractViolation(
+                "generator spawn request violated packet-007 child bounds",
+            ));
+        }
+
+        if let Some(seed_sequence) = self.seed_sequence.as_mut() {
+            let child_sequences = seed_sequence.spawn(n_children).map_err(|_| {
+                BitGeneratorError::SpawnContractViolation(
+                    "generator seed-sequence spawn failed deterministic contract",
+                )
+            })?;
+
+            let mut children = Vec::with_capacity(child_sequences.len());
+            for child_sequence in child_sequences {
+                let bit_generator =
+                    BitGenerator::from_seed_sequence(self.bit_generator.kind(), &child_sequence)
+                        .map_err(|_| {
+                            BitGeneratorError::SpawnContractViolation(
+                                "generator child bit-generator derivation failed",
+                            )
+                        })?;
+                children.push(Self {
+                    bit_generator,
+                    seed_sequence: Some(child_sequence),
+                });
+            }
+            return Ok(children);
+        }
+
+        let children = self.bit_generator.spawn(n_children)?;
+        Ok(children
+            .into_iter()
+            .map(Self::from_bit_generator)
+            .collect::<Vec<_>>())
     }
 
     #[must_use]
@@ -779,7 +1113,9 @@ fn seed_material_to_u64(words: &[u32]) -> u64 {
     mixed
 }
 
-pub fn default_rng(seed: SeedMaterial) -> Result<DeterministicRng, RngConstructorError> {
+fn deterministic_rng_from_seed_material(
+    seed: SeedMaterial,
+) -> Result<DeterministicRng, RngConstructorError> {
     match seed {
         SeedMaterial::None => Ok(DeterministicRng::new(DEFAULT_RNG_SEED)),
         SeedMaterial::U64(value) => Ok(DeterministicRng::new(value)),
@@ -789,16 +1125,72 @@ pub fn default_rng(seed: SeedMaterial) -> Result<DeterministicRng, RngConstructo
             }
             Ok(DeterministicRng::new(seed_material_to_u64(&words)))
         }
+        SeedMaterial::SeedSequence(seed_sequence) => rng_from_seed_sequence(&seed_sequence)
+            .map_err(|_| RngConstructorError::SeedMetadataInvalid),
+        SeedMaterial::BitGenerator(bit_generator) => {
+            let (seed, counter) = bit_generator.raw_state();
+            Ok(DeterministicRng::from_state(seed, counter))
+        }
+        SeedMaterial::Generator(generator) => {
+            let (seed, counter) = generator.bit_generator().raw_state();
+            Ok(DeterministicRng::from_state(seed, counter))
+        }
+        SeedMaterial::RandomState(random_state) => {
+            let (seed, counter) = random_state.bit_generator().raw_state();
+            Ok(DeterministicRng::from_state(seed, counter))
+        }
         SeedMaterial::State { seed, counter } => Ok(DeterministicRng::from_state(seed, counter)),
     }
 }
 
-pub fn generator_from_seed_sequence(
+fn rng_from_seed_sequence(
     seed_sequence: &SeedSequence,
 ) -> Result<DeterministicRng, SeedSequenceError> {
     let words = seed_sequence.generate_state_u32(2)?;
     let seed = u64::from(words[0]) | (u64::from(words[1]) << 32);
     Ok(DeterministicRng::new(seed))
+}
+
+pub fn default_rng(seed: SeedMaterial) -> Result<Generator, RngConstructorError> {
+    match seed {
+        SeedMaterial::Generator(generator) => Ok(generator),
+        SeedMaterial::BitGenerator(bit_generator) => {
+            Ok(Generator::from_bit_generator(bit_generator))
+        }
+        SeedMaterial::RandomState(random_state) => {
+            Ok(Generator::from_bit_generator(random_state.bit_generator))
+        }
+        SeedMaterial::SeedSequence(seed_sequence) => {
+            Generator::from_seed_sequence(BitGeneratorKind::Pcg64, &seed_sequence)
+                .map_err(|_| RngConstructorError::SeedMetadataInvalid)
+        }
+        material => {
+            let bit_generator = BitGenerator::new(BitGeneratorKind::Pcg64, material)
+                .map_err(|_| RngConstructorError::SeedMetadataInvalid)?;
+            Ok(Generator::from_bit_generator(bit_generator))
+        }
+    }
+}
+
+pub fn generator_from_seed_sequence(
+    seed_sequence: &SeedSequence,
+) -> Result<Generator, SeedSequenceError> {
+    Generator::from_seed_sequence(BitGeneratorKind::Pcg64, seed_sequence)
+        .map_err(|_| SeedSequenceError::GenerateStateContractViolation)
+}
+
+pub fn validate_rng_policy_metadata(mode: &str, class: &str) -> Result<(), RandomPolicyError> {
+    let known_mode = mode == "strict" || mode == "hardened";
+    let known_class = class == "known_compatible_low_risk"
+        || class == "known_compatible_high_risk"
+        || class == "known_incompatible_semantics"
+        || class == "unknown_semantics";
+
+    if !known_mode || !known_class {
+        return Err(RandomPolicyError::UnknownMetadata);
+    }
+
+    Ok(())
 }
 
 #[must_use]
@@ -840,11 +1232,12 @@ impl RandomLogRecord {
 mod tests {
     use super::{
         BIT_GENERATOR_STATE_SCHEMA_VERSION, BitGenerator, BitGeneratorError, BitGeneratorKind,
-        DEFAULT_RNG_SEED, DeterministicRng, GeneratorFacade, GeneratorPicklePayload,
-        MAX_RNG_JUMP_OPERATIONS, MAX_SEED_SEQUENCE_CHILDREN, RANDOM_PACKET_REASON_CODES,
-        RNG_CORE_REASON_CODES, RandomError, RandomLogRecord, RandomRuntimeMode, SeedMaterial,
-        SeedSequence, SeedSequenceError, SeedSequenceSnapshot, default_rng,
-        generator_from_seed_sequence,
+        DEFAULT_RNG_SEED, DeterministicRng, Generator, GeneratorPicklePayload,
+        MAX_RNG_JUMP_OPERATIONS, MAX_SEED_SEQUENCE_CHILDREN, MAX_SEED_SEQUENCE_WORDS, Mt19937,
+        Pcg64, Philox, RANDOM_PACKET_REASON_CODES, RNG_CORE_REASON_CODES, RandomError,
+        RandomLogRecord, RandomPolicyError, RandomRuntimeMode, RandomState, SeedMaterial,
+        SeedSequence, SeedSequenceError, SeedSequenceSnapshot, Sfc64, default_rng,
+        generator_from_seed_sequence, validate_rng_policy_metadata,
     };
 
     fn packet007_artifacts() -> Vec<String> {
@@ -913,6 +1306,126 @@ mod tests {
         let err = default_rng(SeedMaterial::U32Words(Vec::new()))
             .expect_err("empty seed words must fail closed");
         assert_eq!(err.reason_code(), "rng_constructor_seed_invalid");
+
+        let sequence = SeedSequence::new(&[3, 1, 4, 1, 5]).expect("seed sequence");
+        let mut from_sequence_material =
+            default_rng(SeedMaterial::SeedSequence(sequence.clone())).expect("seed-sequence seed");
+        let mut from_sequence_expected =
+            generator_from_seed_sequence(&sequence).expect("seed-sequence expectation");
+        for _ in 0..64 {
+            assert_eq!(
+                from_sequence_material.next_u64(),
+                from_sequence_expected.next_u64()
+            );
+        }
+
+        let mut seeded_bit_generator =
+            BitGenerator::new(BitGeneratorKind::Pcg64, SeedMaterial::U64(77)).expect("pcg64");
+        for _ in 0..13 {
+            let _ = seeded_bit_generator.next_u64();
+        }
+        let mut from_bit_generator_material =
+            default_rng(SeedMaterial::BitGenerator(seeded_bit_generator.clone()))
+                .expect("bit-generator seed");
+        let mut from_bit_generator_expected =
+            Generator::from_bit_generator(seeded_bit_generator.clone());
+        for _ in 0..64 {
+            assert_eq!(
+                from_bit_generator_material.next_u64(),
+                from_bit_generator_expected.next_u64()
+            );
+        }
+
+        let mut generator = Generator::from_bit_generator(seeded_bit_generator.clone());
+        generator.jump_in_place(2).expect("jump");
+        for _ in 0..7 {
+            let _ = generator.next_u64();
+        }
+        let mut from_generator_material =
+            default_rng(SeedMaterial::Generator(generator.clone())).expect("generator seed");
+        let mut from_generator_expected = generator.clone();
+        for _ in 0..64 {
+            assert_eq!(
+                from_generator_material.next_u64(),
+                from_generator_expected.next_u64()
+            );
+        }
+
+        let mut random_state =
+            RandomState::new(SeedMaterial::U64(12345)).expect("random-state constructor");
+        for _ in 0..11 {
+            let _ = random_state.next_u64();
+        }
+        let mut from_random_state_material =
+            default_rng(SeedMaterial::RandomState(random_state.clone())).expect("random-state");
+        let mut from_random_state_expected =
+            Generator::from_bit_generator(random_state.bit_generator().clone());
+        for _ in 0..64 {
+            assert_eq!(
+                from_random_state_material.next_u64(),
+                from_random_state_expected.next_u64()
+            );
+        }
+    }
+
+    #[test]
+    fn generator_passthrough_methods_match_bit_generator_contracts() {
+        let mut bit_generator =
+            BitGenerator::new(BitGeneratorKind::Philox, SeedMaterial::U64(0xDEAD_BEEF_u64))
+                .expect("bit-generator");
+        let mut generator = Generator::from_bit_generator(bit_generator.clone());
+
+        for _ in 0..32 {
+            assert_eq!(generator.next_u64(), bit_generator.next_u64());
+        }
+
+        assert_eq!(generator.next_f64(), bit_generator.next_f64());
+        assert_eq!(
+            generator.bounded_u64(97).expect("bounded draw"),
+            bit_generator.bounded_u64(97).expect("bounded draw"),
+        );
+        assert_eq!(generator.fill_u64(16), bit_generator.fill_u64(16));
+
+        let err = generator
+            .bounded_u64(0)
+            .expect_err("zero upper-bound must fail");
+        assert_eq!(err.reason_code(), "random_upper_bound_rejected");
+    }
+
+    #[test]
+    fn random_state_passthrough_and_state_roundtrip_hold() {
+        let mut lhs = RandomState::new(SeedMaterial::U64(2024)).expect("lhs");
+        let mut rhs = RandomState::new(SeedMaterial::U64(2024)).expect("rhs");
+
+        for _ in 0..32 {
+            assert_eq!(lhs.next_u64(), rhs.next_u64());
+        }
+        assert_eq!(lhs.next_f64(), rhs.next_f64());
+        assert_eq!(
+            lhs.bounded_u64(53).expect("bounded draw"),
+            rhs.bounded_u64(53).expect("bounded draw"),
+        );
+        assert_eq!(lhs.fill_u64(9), rhs.fill_u64(9));
+
+        let jumped = lhs.jumped(7).expect("jumped");
+        let mut stepped = lhs.clone();
+        stepped.jump_in_place(7).expect("stepped");
+        let mut jumped = jumped;
+        for _ in 0..16 {
+            assert_eq!(jumped.next_u64(), stepped.next_u64());
+        }
+
+        let state = lhs.state();
+        let mut restored = RandomState::new(SeedMaterial::U64(1)).expect("restored");
+        restored.set_state(&state).expect("state set");
+        for _ in 0..32 {
+            assert_eq!(lhs.next_u64(), restored.next_u64());
+        }
+
+        let err = restored
+            .bounded_u64(0)
+            .expect_err("zero upper-bound must fail");
+        assert_eq!(err.reason_code(), "random_upper_bound_rejected");
     }
 
     #[test]
@@ -922,6 +1435,31 @@ mod tests {
         let second = sequence.generate_state_u32(32).expect("state words");
         assert_eq!(first, second);
         assert_eq!(sequence.pool_size(), super::DEFAULT_SEED_SEQUENCE_POOL_SIZE);
+    }
+
+    #[test]
+    fn seed_sequence_generate_state_u64_matches_u32_pairing_and_bounds() {
+        let sequence = SeedSequence::new(&[1, 2, 3, 4]).expect("seed sequence");
+
+        let first = sequence.generate_state_u64(16).expect("u64 words");
+        let second = sequence.generate_state_u64(16).expect("u64 words");
+        assert_eq!(first, second);
+
+        let via_u32 = sequence.generate_state_u32(32).expect("paired u32 words");
+        for (idx, value) in first.iter().copied().enumerate() {
+            let lower = u64::from(via_u32[idx * 2]);
+            let upper = u64::from(via_u32[idx * 2 + 1]) << 32;
+            assert_eq!(value, lower | upper);
+        }
+
+        let empty = sequence.generate_state_u64(0).expect("empty generation");
+        assert!(empty.is_empty());
+
+        let too_many_words = (MAX_SEED_SEQUENCE_WORDS / 2).saturating_add(1);
+        let err = sequence
+            .generate_state_u64(too_many_words)
+            .expect_err("oversized u64 generation must fail");
+        assert_eq!(err.reason_code(), "rng_seedsequence_generate_state_failed");
     }
 
     #[test]
@@ -974,9 +1512,12 @@ mod tests {
         for _ in 0..9 {
             let _ = source.next_u64();
         }
-        let (seed, counter) = source.state();
-        let mut restored =
-            default_rng(SeedMaterial::State { seed, counter }).expect("state constructor");
+        let state = source.state();
+        let mut restored = default_rng(SeedMaterial::State {
+            seed: state.seed,
+            counter: state.counter,
+        })
+        .expect("state constructor");
         for _ in 0..32 {
             assert_eq!(source.next_u64(), restored.next_u64());
         }
@@ -998,6 +1539,57 @@ mod tests {
                 assert_eq!(lhs.next_u64(), rhs.next_u64());
             }
         }
+    }
+
+    #[test]
+    fn typed_algorithm_adapters_expose_deterministic_streams() {
+        let mut mt_lhs = Mt19937::new(SeedMaterial::U64(9123)).expect("mt lhs");
+        let mut mt_rhs = Mt19937::new(SeedMaterial::U64(9123)).expect("mt rhs");
+        for _ in 0..64 {
+            assert_eq!(mt_lhs.next_u64(), mt_rhs.next_u64());
+        }
+
+        let mut pcg_lhs = Pcg64::new(SeedMaterial::U64(9123)).expect("pcg lhs");
+        let mut pcg_rhs = Pcg64::new(SeedMaterial::U64(9123)).expect("pcg rhs");
+        for _ in 0..64 {
+            assert_eq!(pcg_lhs.next_u64(), pcg_rhs.next_u64());
+        }
+
+        let mut philox = Philox::new(SeedMaterial::U64(9123)).expect("philox");
+        let mut sfc64 = Sfc64::new(SeedMaterial::U64(9123)).expect("sfc64");
+        let diverged = (0..64).any(|_| philox.next_u64() != sfc64.next_u64());
+        assert!(diverged);
+    }
+
+    #[test]
+    fn typed_algorithm_adapter_jump_and_state_roundtrip_hold() {
+        let source = Philox::new(SeedMaterial::U64(55)).expect("source");
+        let mut jumped = source.jumped(9).expect("jumped");
+        let mut stepped = source.clone();
+        stepped.jump_in_place(9).expect("stepped");
+        for _ in 0..32 {
+            assert_eq!(jumped.next_u64(), stepped.next_u64());
+        }
+
+        let mut restored = Sfc64::new(SeedMaterial::U64(88)).expect("restored");
+        for _ in 0..7 {
+            let _ = restored.next_u64();
+        }
+        let state = restored.state();
+        let mut replay = Sfc64::new(SeedMaterial::U64(1)).expect("replay");
+        replay.set_state(&state).expect("state set");
+        for _ in 0..32 {
+            assert_eq!(restored.next_u64(), replay.next_u64());
+        }
+    }
+
+    #[test]
+    fn typed_algorithm_seed_sequence_constructor_matches_kind_constructor() {
+        let sequence = SeedSequence::new(&[101, 202, 303]).expect("seed sequence");
+        let from_sequence = Mt19937::from_seed_sequence(&sequence).expect("from sequence");
+        let from_kind = BitGenerator::from_seed_sequence(BitGeneratorKind::Mt19937, &sequence)
+            .expect("from kind");
+        assert_eq!(from_sequence.as_bit_generator().state(), from_kind.state());
     }
 
     #[test]
@@ -1053,15 +1645,89 @@ mod tests {
     }
 
     #[test]
-    fn generator_facade_binding_and_pickle_roundtrip_contracts_hold() {
+    fn bit_generator_state_schema_rejects_algorithm_specific_mismatches() {
+        let mut generator = BitGenerator::new(BitGeneratorKind::Mt19937, SeedMaterial::U64(222))
+            .expect("generator");
+        let mut state = generator.state();
+        for (key, value) in &mut state.schema_entries {
+            if key == "mt19937_index" {
+                *value = value.wrapping_add(1);
+            }
+        }
+        let mismatch = generator
+            .set_state(&state)
+            .expect_err("algorithm-specific mismatch must fail");
+        assert_eq!(mismatch.reason_code(), "rng_state_schema_invalid");
+
+        let mut missing = generator.state();
+        missing
+            .schema_entries
+            .retain(|(key, _)| key != "mt19937_index");
+        let missing_err = generator
+            .set_state(&missing)
+            .expect_err("missing algorithm-specific key must fail");
+        assert_eq!(missing_err.reason_code(), "rng_state_schema_invalid");
+    }
+
+    #[test]
+    fn bit_generator_spawn_is_deterministic_and_bounded() {
+        let mut lhs =
+            BitGenerator::new(BitGeneratorKind::Pcg64, SeedMaterial::U64(909)).expect("lhs parent");
+        let mut rhs =
+            BitGenerator::new(BitGeneratorKind::Pcg64, SeedMaterial::U64(909)).expect("rhs parent");
+        let lhs_children = lhs.spawn(3).expect("lhs spawn");
+        let rhs_children = rhs.spawn(3).expect("rhs spawn");
+
+        assert_eq!(lhs_children.len(), 3);
+        assert_eq!(rhs_children.len(), 3);
+        for (lhs_child, rhs_child) in lhs_children.iter().zip(rhs_children.iter()) {
+            assert_eq!(lhs_child.state(), rhs_child.state());
+        }
+
+        let zero = lhs
+            .spawn(0)
+            .expect_err("zero-child spawn must fail contract");
+        assert_eq!(
+            zero.reason_code(),
+            "rng_seedsequence_spawn_contract_violation"
+        );
+        let too_many = lhs
+            .spawn(MAX_SEED_SEQUENCE_CHILDREN + 1)
+            .expect_err("over-budget spawn must fail contract");
+        assert_eq!(
+            too_many.reason_code(),
+            "rng_seedsequence_spawn_contract_violation"
+        );
+    }
+
+    #[test]
+    fn generator_spawn_preserves_seed_sequence_lineage() {
+        let root = SeedSequence::with_spawn_key(&[8, 13, 21], &[34], 8).expect("root");
+        let mut lhs =
+            Generator::from_seed_sequence(BitGeneratorKind::Mt19937, &root).expect("lhs parent");
+        let mut rhs =
+            Generator::from_seed_sequence(BitGeneratorKind::Mt19937, &root).expect("rhs parent");
+
+        let lhs_children = lhs.spawn(2).expect("lhs spawn");
+        let rhs_children = rhs.spawn(2).expect("rhs spawn");
+        for (lhs_child, rhs_child) in lhs_children.iter().zip(rhs_children.iter()) {
+            assert_eq!(lhs_child.state(), rhs_child.state());
+        }
+
+        let next_batch = lhs.spawn(1).expect("next batch");
+        assert_ne!(lhs_children[0].state(), next_batch[0].state());
+    }
+
+    #[test]
+    fn generator_binding_and_pickle_roundtrip_contracts_hold() {
         let sequence = SeedSequence::with_spawn_key(&[2, 4, 6], &[9], 8).expect("seed sequence");
         let bit_generator = BitGenerator::new(BitGeneratorKind::Mt19937, SeedMaterial::U64(5))
             .expect("mt generator");
-        let binding_err = GeneratorFacade::bind_seed_sequence(bit_generator, &sequence)
+        let binding_err = Generator::bind_seed_sequence(bit_generator, &sequence)
             .expect_err("non-derived generator binding must fail closed");
         assert_eq!(binding_err.reason_code(), "rng_generator_binding_invalid");
 
-        let mut facade = GeneratorFacade::from_seed_sequence(BitGeneratorKind::Philox, &sequence)
+        let mut facade = Generator::from_seed_sequence(BitGeneratorKind::Philox, &sequence)
             .expect("facade from seed-sequence");
         facade.jump_in_place(3).expect("in-place jump");
         for _ in 0..11 {
@@ -1070,7 +1736,7 @@ mod tests {
 
         let payload = facade.to_pickle_payload();
         let mut restored =
-            GeneratorFacade::from_pickle_payload(payload).expect("pickle payload roundtrip");
+            Generator::from_pickle_payload(payload).expect("pickle payload roundtrip");
         for _ in 0..32 {
             assert_eq!(facade.next_u64(), restored.next_u64());
         }
@@ -1085,7 +1751,7 @@ mod tests {
                 spawn_counter: 0,
             }),
         };
-        let pickle_err = GeneratorFacade::from_pickle_payload(invalid_payload)
+        let pickle_err = Generator::from_pickle_payload(invalid_payload)
             .expect_err("invalid seed-sequence snapshot must fail closed");
         assert_eq!(pickle_err.reason_code(), "rng_pickle_state_mismatch");
 
@@ -1115,6 +1781,12 @@ mod tests {
 
         let state_err = BitGeneratorError::StateSchemaInvalid("schema mismatch");
         assert_eq!(state_err.reason_code(), "rng_state_schema_invalid");
+
+        let spawn_err = BitGeneratorError::SpawnContractViolation("spawn mismatch");
+        assert_eq!(
+            spawn_err.reason_code(),
+            "rng_seedsequence_spawn_contract_violation"
+        );
     }
 
     #[test]
@@ -1184,6 +1856,24 @@ mod tests {
             .expect_err("upper bound zero must be rejected");
         assert_eq!(err, RandomError::InvalidUpperBound);
         assert_eq!(err.reason_code(), "random_upper_bound_rejected");
+    }
+
+    #[test]
+    fn rng_policy_metadata_validation_is_fail_closed() {
+        validate_rng_policy_metadata("strict", "known_compatible_low_risk")
+            .expect("known strict metadata");
+        validate_rng_policy_metadata("hardened", "unknown_semantics")
+            .expect("known hardened metadata");
+
+        let unknown_mode = validate_rng_policy_metadata("mystery", "known_compatible_low_risk")
+            .expect_err("unknown mode must fail closed");
+        assert_eq!(unknown_mode, RandomPolicyError::UnknownMetadata);
+        assert_eq!(unknown_mode.reason_code(), "rng_policy_unknown_metadata");
+
+        let unknown_class = validate_rng_policy_metadata("strict", "alien_class")
+            .expect_err("unknown class must fail closed");
+        assert_eq!(unknown_class, RandomPolicyError::UnknownMetadata);
+        assert_eq!(unknown_class.reason_code(), "rng_policy_unknown_metadata");
     }
 
     #[test]

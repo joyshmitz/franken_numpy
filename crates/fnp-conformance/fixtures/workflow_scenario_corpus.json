@@ -1104,6 +1104,12 @@
         "fixture_set": "differential"
       },
       {
+        "id": "step_rng_policy_metadata_known_contract",
+        "kind": "rng_fixture_case",
+        "case_id": "rng_policy_metadata_known_contract",
+        "fixture_set": "differential"
+      },
+      {
         "id": "step_policy_allow_known_good",
         "kind": "runtime_policy",
         "case_id": "strict_known_good",
@@ -1116,6 +1122,7 @@
         "rng_same_seed_stream_witness",
         "rng_jump_ahead_equivalence_witness",
         "rng_state_restore_replay_witness",
+        "rng_policy_metadata_known_contract",
         "rng_jump_partition_additivity"
       ],
       "e2e_script_paths": [
@@ -1176,6 +1183,12 @@
         "fixture_set": "adversarial"
       },
       {
+        "id": "step_rng_policy_metadata_unknown_guardrail",
+        "kind": "rng_fixture_case",
+        "case_id": "rng_policy_metadata_unknown_guardrail",
+        "fixture_set": "adversarial"
+      },
+      {
         "id": "step_wire_unknown_mode_fail_closed",
         "kind": "runtime_policy_wire",
         "case_id": "wire_unknown_mode_fail_closed",
@@ -1187,7 +1200,8 @@
       "differential_fixture_ids": [
         "rng_bounded_zero_rejected",
         "rng_jump_budget_exceeded_guardrail",
-        "rng_state_schema_budget_exceeded_guardrail"
+        "rng_state_schema_budget_exceeded_guardrail",
+        "rng_policy_metadata_unknown_guardrail"
       ],
       "e2e_script_paths": [
         "scripts/e2e/run_rng_contract_journey.sh",

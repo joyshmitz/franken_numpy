@@ -185,5 +185,20 @@
     "reason_code": "random_fill_length_contract",
     "expected_reason_code": "random_fill_length_contract",
     "fill_len": 0
+  },
+  {
+    "id": "rng_policy_metadata_known_contract",
+    "operation": "policy_metadata",
+    "seed": 7014,
+    "mode": "strict",
+    "mode_raw": "strict",
+    "class_raw": "known_compatible_low_risk",
+    "env_fingerprint": "fnp-random-packet-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-007/contract_table.md",
+      "crates/fnp-conformance/fixtures/rng_differential_cases.json"
+    ],
+    "reason_code": "rng_policy_unknown_metadata",
+    "expected_reason_code": "rng_policy_unknown_metadata"
   }
 ]

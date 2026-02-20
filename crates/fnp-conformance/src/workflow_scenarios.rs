@@ -3,7 +3,10 @@
 use crate::ufunc_differential::{UFuncInputCase, execute_input_case, load_input_cases};
 use crate::{HarnessConfig, SuiteReport};
 use fnp_dtype::promote;
-use fnp_random::{DeterministicRng, RandomError};
+use fnp_random::{
+    DeterministicRng, RandomError, RandomLogRecord, RandomPolicyError, RandomRuntimeMode,
+    validate_rng_policy_metadata,
+};
 use fnp_runtime::{
     CompatibilityClass, DecisionAction, RuntimeMode, decide_compatibility,
     decide_compatibility_from_wire,
@@ -128,6 +131,10 @@ struct RngDifferentialFixtureCase {
     id: String,
     operation: String,
     #[serde(default)]
+    mode_raw: String,
+    #[serde(default)]
+    class_raw: String,
+    #[serde(default)]
     seed: u64,
     #[serde(default)]
     reason_code: String,
@@ -158,6 +165,10 @@ struct RngMetamorphicFixtureCase {
 struct RngAdversarialFixtureCase {
     id: String,
     operation: String,
+    #[serde(default)]
+    mode_raw: String,
+    #[serde(default)]
+    class_raw: String,
     expected_error_contains: String,
     expected_reason_code: String,
     #[serde(default)]
@@ -1205,43 +1216,83 @@ fn execute_mode(
                 fixture_set,
             } => {
                 let fixture_id = format!("{}::{}", scenario.id, id);
-                let (expected, actual, passed, detail) = match fixture_set.as_str() {
-                    "differential" => {
-                        if let Some(case) = rng_differential_cases.get(case_id.as_str()) {
-                            let result = execute_rng_differential_step(case);
-                            (result.expected, result.actual, result.passed, result.detail)
-                        } else {
-                            (
-                                String::new(),
-                                "missing_case".to_string(),
-                                false,
-                                format!("rng differential case id '{}' not found", case_id),
-                            )
+                let (expected, actual, mut passed, mut detail, fallback_reason_code) =
+                    match fixture_set.as_str() {
+                        "differential" => {
+                            if let Some(case) = rng_differential_cases.get(case_id.as_str()) {
+                                let result = execute_rng_differential_step(case);
+                                (
+                                    result.expected,
+                                    result.actual,
+                                    result.passed,
+                                    result.detail,
+                                    crate::normalize_reason_code(&case.reason_code),
+                                )
+                            } else {
+                                (
+                                    String::new(),
+                                    "missing_case".to_string(),
+                                    false,
+                                    format!("rng differential case id '{}' not found", case_id),
+                                    crate::normalize_reason_code(&scenario.reason_code),
+                                )
+                            }
                         }
-                    }
-                    "adversarial" => {
-                        if let Some(case) = rng_adversarial_cases.get(case_id.as_str()) {
-                            let result = execute_rng_adversarial_step(case);
-                            (result.expected, result.actual, result.passed, result.detail)
-                        } else {
-                            (
-                                String::new(),
-                                "missing_case".to_string(),
-                                false,
-                                format!("rng adversarial case id '{}' not found", case_id),
-                            )
+                        "adversarial" => {
+                            if let Some(case) = rng_adversarial_cases.get(case_id.as_str()) {
+                                let result = execute_rng_adversarial_step(case);
+                                (
+                                    result.expected,
+                                    result.actual,
+                                    result.passed,
+                                    result.detail,
+                                    crate::normalize_reason_code(&case.reason_code),
+                                )
+                            } else {
+                                (
+                                    String::new(),
+                                    "missing_case".to_string(),
+                                    false,
+                                    format!("rng adversarial case id '{}' not found", case_id),
+                                    crate::normalize_reason_code(&scenario.reason_code),
+                                )
+                            }
                         }
-                    }
-                    other => (
-                        String::new(),
-                        "unsupported_fixture_set".to_string(),
-                        false,
-                        format!(
-                            "unsupported rng fixture_set '{}' (expected differential|adversarial)",
-                            other
+                        other => (
+                            String::new(),
+                            "unsupported_fixture_set".to_string(),
+                            false,
+                            format!(
+                                "unsupported rng fixture_set '{}' (expected differential|adversarial)",
+                                other
+                            ),
+                            crate::normalize_reason_code(&scenario.reason_code),
                         ),
+                    };
+
+                let mut rng_log_record = RandomLogRecord {
+                    fixture_id: fixture_id.clone(),
+                    seed: scenario.seed,
+                    mode: random_runtime_mode(mode),
+                    env_fingerprint: scenario.env_fingerprint.clone(),
+                    artifact_refs: scenario.artifact_refs.clone(),
+                    reason_code: extract_reason_code_from_rng_actual(
+                        &actual,
+                        &fallback_reason_code,
                     ),
+                    passed,
                 };
+                if !rng_log_record.is_replay_complete() {
+                    passed = false;
+                    rng_log_record.passed = false;
+                    let issue = "rng structured log record was not replay-complete";
+                    if detail.is_empty() {
+                        detail = issue.to_string();
+                    } else {
+                        detail = format!("{detail}; {issue}");
+                    }
+                }
+                maybe_append_rng_workflow_log(&rng_log_record)?;
 
                 let entry = WorkflowScenarioLogEntry {
                     suite: "workflow_scenarios",
@@ -1643,6 +1694,8 @@ fn execute_rng_differential_operation(
                 ))
             }
         }
+        "policy_metadata" => validate_rng_policy_metadata(&case.mode_raw, &case.class_raw)
+            .map_err(map_random_policy_error_to_rng_step),
         other => Err((
             "rng_policy_unknown_metadata".to_string(),
             format!("unsupported rng differential operation {other}"),
@@ -1699,6 +1752,8 @@ fn execute_rng_adversarial_operation(
                 Ok(())
             }
         }
+        "policy_metadata_unknown" => validate_rng_policy_metadata(&case.mode_raw, &case.class_raw)
+            .map_err(map_random_policy_error_to_rng_step),
         other => Err((
             "rng_policy_unknown_metadata".to_string(),
             format!("unsupported rng adversarial operation {other}"),
@@ -1707,6 +1762,10 @@ fn execute_rng_adversarial_operation(
 }
 
 fn map_random_error_to_rng_step(error: RandomError) -> (String, String) {
+    (error.reason_code().to_string(), error.to_string())
+}
+
+fn map_random_policy_error_to_rng_step(error: RandomPolicyError) -> (String, String) {
     (error.reason_code().to_string(), error.to_string())
 }
 
@@ -2300,7 +2359,24 @@ fn parse_action(raw: &str) -> Result<DecisionAction, String> {
     }
 }
 
-fn maybe_append_workflow_log(entry: &WorkflowScenarioLogEntry) -> Result<(), String> {
+fn random_runtime_mode(mode: RuntimeMode) -> RandomRuntimeMode {
+    match mode {
+        RuntimeMode::Strict => RandomRuntimeMode::Strict,
+        RuntimeMode::Hardened => RandomRuntimeMode::Hardened,
+    }
+}
+
+fn extract_reason_code_from_rng_actual(actual: &str, fallback: &str) -> String {
+    if let Some((_, suffix)) = actual.rsplit_once("reason_code=") {
+        let token = suffix.split_whitespace().next().unwrap_or_default().trim();
+        if !token.is_empty() {
+            return token.to_string();
+        }
+    }
+    crate::normalize_reason_code(fallback)
+}
+
+fn resolve_workflow_log_path() -> Result<Option<PathBuf>, String> {
     let configured = WORKFLOW_SCENARIO_LOG_PATH
         .get()
         .and_then(|cell| cell.lock().ok())
@@ -2312,6 +2388,22 @@ fn maybe_append_workflow_log(entry: &WorkflowScenarioLogEntry) -> Result<(), Str
                 "workflow scenario log path is required but unset; configure --log-path or FNP_WORKFLOW_SCENARIO_LOG_PATH".to_string(),
             );
         }
+        return Ok(None);
+    };
+    Ok(Some(path))
+}
+
+fn rng_workflow_log_path(workflow_log_path: &Path) -> PathBuf {
+    let stem = workflow_log_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("workflow_scenarios");
+    workflow_log_path.with_file_name(format!("{stem}_rng.jsonl"))
+}
+
+fn maybe_append_workflow_log(entry: &WorkflowScenarioLogEntry) -> Result<(), String> {
+    let Some(path) = resolve_workflow_log_path()? else {
         return Ok(());
     };
 
@@ -2337,6 +2429,42 @@ fn maybe_append_workflow_log(entry: &WorkflowScenarioLogEntry) -> Result<(), Str
     })
 }
 
+fn maybe_append_rng_workflow_log(entry: &RandomLogRecord) -> Result<(), String> {
+    let Some(workflow_path) = resolve_workflow_log_path()? else {
+        return Ok(());
+    };
+    let path = rng_workflow_log_path(&workflow_path);
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed creating {}: {err}", parent.display()))?;
+    }
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|err| format!("failed opening {}: {err}", path.display()))?;
+    let line = serde_json::to_string(&serde_json::json!({
+        "fixture_id": entry.fixture_id,
+        "seed": entry.seed,
+        "mode": entry.mode.as_str(),
+        "env_fingerprint": entry.env_fingerprint,
+        "artifact_refs": entry.artifact_refs,
+        "reason_code": entry.reason_code,
+        "passed": entry.passed,
+    }))
+    .map_err(|err| format!("failed serializing rng log entry: {err}"))?;
+    let mut payload = line.into_bytes();
+    payload.push(b'\n');
+    file.write_all(&payload).map_err(|err| {
+        format!(
+            "failed appending rng workflow log {}: {err}",
+            path.display()
+        )
+    })
+}
+
 fn record_check(report: &mut SuiteReport, passed: bool, failure: String) {
     report.case_count += 1;
     if passed {
@@ -2349,6 +2477,30 @@ fn record_check(report: &mut SuiteReport, passed: bool, failure: String) {
 #[cfg(test)]
 mod tests {
     use crate::HarnessConfig;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn rng_reason_code_extraction_prefers_explicit_suffix() {
+        assert_eq!(
+            super::extract_reason_code_from_rng_actual(
+                "ok reason_code=rng_policy_unknown_metadata",
+                "fallback"
+            ),
+            "rng_policy_unknown_metadata"
+        );
+        assert_eq!(
+            super::extract_reason_code_from_rng_actual("ok", "rng_reproducibility_witness_failed"),
+            "rng_reproducibility_witness_failed"
+        );
+    }
+
+    #[test]
+    fn rng_log_path_is_derived_from_workflow_log_path() {
+        assert_eq!(
+            super::rng_workflow_log_path(Path::new("/tmp/workflow_scenarios.jsonl")),
+            PathBuf::from("/tmp/workflow_scenarios_rng.jsonl")
+        );
+    }
 
     #[test]
     fn workflow_scenario_suite_is_green() {

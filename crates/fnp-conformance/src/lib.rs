@@ -28,7 +28,7 @@ use fnp_linalg::{
     validate_tolerance_policy,
 };
 use fnp_ndarray::{MemoryOrder, NdLayout, broadcast_shape, contiguous_strides};
-use fnp_random::{DeterministicRng, RandomError};
+use fnp_random::{DeterministicRng, RandomError, RandomPolicyError, validate_rng_policy_metadata};
 use fnp_runtime::{
     CompatibilityClass, DecisionAction, DecisionAuditContext, EvidenceLedger, RuntimeMode,
     decide_and_record_with_context, decide_compatibility_from_wire,
@@ -656,6 +656,10 @@ struct RngDifferentialCase {
     replay_draws: usize,
     #[serde(default)]
     fill_len: usize,
+    #[serde(default)]
+    mode_raw: String,
+    #[serde(default)]
+    class_raw: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -710,6 +714,10 @@ struct RngAdversarialCase {
     draws: usize,
     #[serde(default)]
     steps: u64,
+    #[serde(default)]
+    mode_raw: String,
+    #[serde(default)]
+    class_raw: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -6094,6 +6102,8 @@ fn execute_rng_differential_operation(case: &RngDifferentialCase) -> Result<(), 
                 ))
             }
         }
+        "policy_metadata" => validate_rng_policy_metadata(&case.mode_raw, &case.class_raw)
+            .map_err(map_random_policy_error_to_rng_suite),
         other => Err(RngSuiteError::new(
             "rng_policy_unknown_metadata",
             format!("unsupported rng differential operation {other}"),
@@ -6216,6 +6226,9 @@ fn execute_rng_adversarial_operation(case: &RngAdversarialCase) -> Result<(), Rn
                 Ok(())
             }
         }
+        "policy_metadata_unknown" => validate_rng_policy_metadata(&case.mode_raw, &case.class_raw)
+            .map(|_| ())
+            .map_err(map_random_policy_error_to_rng_suite),
         other => Err(RngSuiteError::new(
             "rng_policy_unknown_metadata",
             format!("unsupported rng adversarial operation {other}"),
@@ -6224,6 +6237,10 @@ fn execute_rng_adversarial_operation(case: &RngAdversarialCase) -> Result<(), Rn
 }
 
 fn map_random_error_to_rng_suite(error: RandomError) -> RngSuiteError {
+    RngSuiteError::new(error.reason_code(), error.to_string())
+}
+
+fn map_random_policy_error_to_rng_suite(error: RandomPolicyError) -> RngSuiteError {
     RngSuiteError::new(error.reason_code(), error.to_string())
 }
 

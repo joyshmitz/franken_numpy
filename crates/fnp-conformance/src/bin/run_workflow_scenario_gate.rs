@@ -519,6 +519,14 @@ fn derive_attempt_log_path(base: &Path, attempt: usize) -> PathBuf {
     }
 }
 
+fn derive_rng_companion_log_path(workflow_log_path: &Path) -> PathBuf {
+    let stem = workflow_log_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("workflow_scenario_e2e");
+    workflow_log_path.with_file_name(format!("{stem}_rng.jsonl"))
+}
+
 fn coverage_ratio(summary: &SuiteSummary) -> f64 {
     if summary.case_count == 0 {
         0.0
@@ -589,6 +597,14 @@ fn build_forensics_artifact_index(
         context.flake_budget,
         context.coverage_floor,
     );
+    let rng_workflow_log = {
+        let path = derive_rng_companion_log_path(Path::new(context.workflow_log));
+        if path.is_file() {
+            Some(path.display().to_string())
+        } else {
+            None
+        }
+    };
     let failure_envelopes = if context.status == "fail" {
         let mut envelopes = Vec::new();
         if context.diagnostics.is_empty() {
@@ -787,6 +803,16 @@ fn build_forensics_artifact_index(
             description: "Packet-003 workflow replay wrapper script".to_string(),
         },
     ];
+    if let Some(path) = rng_workflow_log {
+        artifacts.push(ArtifactIndexEntry {
+            id: "rng_workflow_log".to_string(),
+            kind: "jsonl_log".to_string(),
+            path,
+            description:
+                "RNG packet-007 structured replay records emitted from rng_fixture_case steps"
+                    .to_string(),
+        });
+    }
     if let Some(path) = context.report_path {
         artifacts.push(ArtifactIndexEntry {
             id: "reliability_report".to_string(),
@@ -982,7 +1008,7 @@ fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        derive_attempt_log_path, failure_class_from_reason_code,
+        derive_attempt_log_path, derive_rng_companion_log_path, failure_class_from_reason_code,
         load_first_failed_workflow_evidence,
     };
     use std::fs;
@@ -1002,6 +1028,15 @@ mod tests {
         assert_eq!(
             actual,
             PathBuf::from("/tmp/workflow_scenario_e2e.attempt2.jsonl")
+        );
+    }
+
+    #[test]
+    fn derive_rng_companion_log_path_adds_rng_suffix() {
+        let base = PathBuf::from("/tmp/workflow_scenario_e2e.attempt2.jsonl");
+        assert_eq!(
+            derive_rng_companion_log_path(&base),
+            PathBuf::from("/tmp/workflow_scenario_e2e.attempt2_rng.jsonl")
         );
     }
 

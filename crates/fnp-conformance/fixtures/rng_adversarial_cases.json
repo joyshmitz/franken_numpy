@@ -127,5 +127,22 @@
       "crates/fnp-conformance/fixtures/rng_adversarial_cases.json"
     ],
     "reason_code": "rng_reproducibility_witness_failed"
+  },
+  {
+    "id": "rng_policy_metadata_unknown_guardrail",
+    "operation": "policy_metadata_unknown",
+    "expected_error_contains": "unknown mode/class metadata rejected fail-closed",
+    "expected_reason_code": "rng_policy_unknown_metadata",
+    "severity": "high",
+    "seed": 7211,
+    "mode": "hardened",
+    "mode_raw": "hardened",
+    "class_raw": "unregistered_semantics",
+    "env_fingerprint": "fnp-random-packet-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-007/contract_table.md",
+      "crates/fnp-conformance/fixtures/rng_adversarial_cases.json"
+    ],
+    "reason_code": "rng_policy_unknown_metadata"
   }
 ]

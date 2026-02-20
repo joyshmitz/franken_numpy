@@ -332,7 +332,7 @@ fn build_parity_gate() -> ParityGate {
 }
 
 fn packet_bundle_source_files(repo_root: &Path, packet_dir: &Path) -> Vec<PathBuf> {
-    vec![
+    let mut paths = vec![
         packet_dir.join("legacy_anchor_map.md"),
         packet_dir.join("contract_table.md"),
         packet_dir.join("behavior_extraction_ledger.md"),
@@ -346,6 +346,15 @@ fn packet_bundle_source_files(repo_root: &Path, packet_dir: &Path) -> Vec<PathBu
         packet_dir.join("optimization_profile_report.json"),
         packet_dir.join("optimization_profile_isomorphism_evidence.json"),
         packet_dir.join("workflow_scenario_packet007_opt_e2e.jsonl"),
+    ];
+
+    // Include packet-007 RNG companion logs when workflow replay emitted them.
+    let rng_companion_log = packet_dir.join("workflow_scenario_packet007_opt_e2e_rng.jsonl");
+    if rng_companion_log.is_file() {
+        paths.push(rng_companion_log);
+    }
+
+    paths.extend([
         packet_dir.join("workflow_scenario_packet007_opt_reliability.json"),
         packet_dir.join("workflow_scenario_packet007_opt_artifact_index.json"),
         repo_root.join("crates/fnp-conformance/fixtures/rng_differential_cases.json"),
@@ -353,7 +362,8 @@ fn packet_bundle_source_files(repo_root: &Path, packet_dir: &Path) -> Vec<PathBu
         repo_root.join("crates/fnp-conformance/fixtures/rng_adversarial_cases.json"),
         repo_root
             .join("crates/fnp-conformance/fixtures/oracle_outputs/rng_differential_report.json"),
-    ]
+    ]);
+    paths
 }
 
 fn compatibility_drift_source_files(
