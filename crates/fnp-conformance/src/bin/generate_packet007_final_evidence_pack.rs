@@ -248,6 +248,12 @@ fn run() -> Result<(), String> {
             },
             QualityGate {
                 command:
+                    "rch exec -- cargo run -p fnp-conformance --bin run_workflow_scenario_gate -- --log-path artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_e2e.jsonl --artifact-index-path artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_artifact_index.json --report-path artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_reliability.json --retries 1 --flake-budget 0 --coverage-floor 1.0"
+                        .to_string(),
+                result: "pass".to_string(),
+            },
+            QualityGate {
+                command:
                     "rch exec -- cargo run -p fnp-conformance --bin run_workflow_scenario_gate -- --log-path artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_opt_e2e.jsonl --artifact-index-path artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_opt_artifact_index.json --report-path artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_opt_reliability.json --retries 1 --flake-budget 0 --coverage-floor 1.0"
                         .to_string(),
                 result: "pass".to_string(),
@@ -345,13 +351,21 @@ fn packet_bundle_source_files(repo_root: &Path, packet_dir: &Path) -> Vec<PathBu
         packet_dir.join("e2e_replay_forensics_evidence.json"),
         packet_dir.join("optimization_profile_report.json"),
         packet_dir.join("optimization_profile_isomorphism_evidence.json"),
+        packet_dir.join("workflow_scenario_packet007_e2e.jsonl"),
+        packet_dir.join("workflow_scenario_packet007_reliability.json"),
+        packet_dir.join("workflow_scenario_packet007_artifact_index.json"),
         packet_dir.join("workflow_scenario_packet007_opt_e2e.jsonl"),
     ];
 
     // Include packet-007 RNG companion logs when workflow replay emitted them.
-    let rng_companion_log = packet_dir.join("workflow_scenario_packet007_opt_e2e_rng.jsonl");
-    if rng_companion_log.is_file() {
-        paths.push(rng_companion_log);
+    for log_name in [
+        "workflow_scenario_packet007_e2e_rng.jsonl",
+        "workflow_scenario_packet007_opt_e2e_rng.jsonl",
+    ] {
+        let rng_companion_log = packet_dir.join(log_name);
+        if rng_companion_log.is_file() {
+            paths.push(rng_companion_log);
+        }
     }
 
     paths.extend([

@@ -2,13 +2,13 @@
   "schema_version": 1,
   "packet_id": "FNP-P2C-007",
   "subtask_id": "FNP-P2C-007-I",
-  "generated_at_unix_ms": 1771441930015,
+  "generated_at_unix_ms": 1771573117781,
   "status": "pass",
   "reproducibility_command": "cargo run -p fnp-conformance --bin generate_packet007_final_evidence_pack",
   "parity_signals": {
     "strict_parity": 1.0,
     "hardened_parity": 1.0,
-    "compatibility_drift_hash": "sha256:dabdf2f34a52e1bb1e31ac18d05eace39141661741028a71e4621cff3b17d1c2",
+    "compatibility_drift_hash": "sha256:8fc86e27b7aa9228f1a1cdba5041e72da7770f487d814434618bda7f9d5d2f10",
     "divergence_classes": [
       "no_observed_strict_drift_in_packet007_gates",
       "no_observed_hardened_drift_in_packet007_gates"
@@ -44,7 +44,12 @@
     "artifacts/phase2c/FNP-P2C-007/e2e_replay_forensics_evidence.json",
     "artifacts/phase2c/FNP-P2C-007/optimization_profile_report.json",
     "artifacts/phase2c/FNP-P2C-007/optimization_profile_isomorphism_evidence.json",
+    "artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_e2e.jsonl",
+    "artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_reliability.json",
+    "artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_artifact_index.json",
     "artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_opt_e2e.jsonl",
+    "artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_e2e_rng.jsonl",
+    "artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_opt_e2e_rng.jsonl",
     "artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_opt_reliability.json",
     "artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_opt_artifact_index.json",
     "crates/fnp-conformance/fixtures/rng_differential_cases.json",
@@ -62,16 +67,21 @@
     "artifacts/phase2c/FNP-P2C-007/optimization_profile_isomorphism_evidence.json": "821b8d01046f5db1bb9f6acb287c44d38dad7c371e4c6f65b4029ec3aaaae1a5",
     "artifacts/phase2c/FNP-P2C-007/optimization_profile_report.json": "8bb3c6c966a6fd771065b4d058ce9f5de8178f23cd513a8b8e20c29c7156e212",
     "artifacts/phase2c/FNP-P2C-007/parity_gate.yaml": "9bc755c6ceff786383ee8a3bf319a5b1e84dd8e8bcf81ae8375cff790b1ab0ae",
-    "artifacts/phase2c/FNP-P2C-007/parity_report.json": "68ecefebdfe2de06405e13a443e4371222c2441198cfa470cf17aa1f651a8770",
+    "artifacts/phase2c/FNP-P2C-007/parity_report.json": "3796e2a2204d23d2039c82940ad1531aabefa274c61da206484dcfc4c09f0f81",
     "artifacts/phase2c/FNP-P2C-007/risk_note.md": "a77f2ddd0bf4847baa2bcb472923d7e454b2bf418b253a4340381210dcda89d3",
     "artifacts/phase2c/FNP-P2C-007/unit_property_evidence.json": "2243ea8c8bb0c7666719a95c0430456b92f27bcb741b7dce2a00b5a30b2e69b2",
-    "artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_opt_artifact_index.json": "f3e4a950637688d8c7998e88b4a63e437337d6a92609058a2764505119c0c29d",
-    "artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_opt_e2e.jsonl": "a8d356412ce270bdb174f60640b18fd9382eff4add685cc97311317bc58b036a",
-    "artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_opt_reliability.json": "830b295456477eadaba146dbe2a003b30d0ac181dca5ff86bc5a249544b21f2d",
-    "crates/fnp-conformance/fixtures/oracle_outputs/rng_differential_report.json": "ef6a7feff7c3dd16418c97642771f2a3a05177d8ed567bcf09fd4671e0917fde",
-    "crates/fnp-conformance/fixtures/rng_adversarial_cases.json": "535c66cb1897fbc3b9b261f22f1dfbee2a5e11ab179e92281960ed4e3732a34a",
-    "crates/fnp-conformance/fixtures/rng_differential_cases.json": "3bc4de247923884d71002932ddb7ce4175ff0014dc42459d63c393e4b6a4cdd3",
-    "crates/fnp-conformance/fixtures/rng_metamorphic_cases.json": "9a2787f131d4b40280d690b536ce48144524125611931279171b712d0652e030"
+    "artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_artifact_index.json": "2f1c8659d633a8b121aa09e1d45b06b159f2e352de2be076a4e43c5ca4cd4e64",
+    "artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_e2e.jsonl": "249459a372beb5212f2a4f9afa6e8bff30f2b1f7e2ea5517c0791793b53db4cc",
+    "artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_e2e_rng.jsonl": "2b01ee4e3e96ecb32a352f4cd855c1983ae3603df772a6f17972bdd1da747165",
+    "artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_opt_artifact_index.json": "dfdf02b16467442c4e8555489bb2c2b3c2282a16ced600178b0e345a258cbce1",
+    "artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_opt_e2e.jsonl": "803523fa2a5964980e3763925cde45dbd66c5bab33de06e0586db7d4c4902069",
+    "artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_opt_e2e_rng.jsonl": "2b01ee4e3e96ecb32a352f4cd855c1983ae3603df772a6f17972bdd1da747165",
+    "artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_opt_reliability.json": "6dc04c678ca89fec106e95778864036c427993cf5b0c6ad7eae7ad4acf414749",
+    "artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_reliability.json": "c625ae65c514acd4a21b6c827c666009f1ecbe51e4675bc0c96d0251fd602b36",
+    "crates/fnp-conformance/fixtures/oracle_outputs/rng_differential_report.json": "ce3fb223d65af28f55f565f83c6fce6940a98c2a4d322023806716942afca668",
+    "crates/fnp-conformance/fixtures/rng_adversarial_cases.json": "774cc169dde648cb02e9f31a629b359154977f34b778d19ce293d569a68e8f93",
+    "crates/fnp-conformance/fixtures/rng_differential_cases.json": "4c2ee13196be1f8ccb1d1c2ae7ae6f8cf2bb15a4c1563553cbbcc754596ad9fd",
+    "crates/fnp-conformance/fixtures/rng_metamorphic_cases.json": "bbc5158d872988051d9aff612b80a2fad0f7785de21b0b919cbfbc9bb6d39ee8"
   },
   "raptorq": {
     "sidecar_path": "artifacts/phase2c/FNP-P2C-007/parity_report.raptorq.json",
@@ -105,6 +115,10 @@
     },
     {
       "command": "rch exec -- cargo run -p fnp-conformance --bin run_security_gate",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo run -p fnp-conformance --bin run_workflow_scenario_gate -- --log-path artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_e2e.jsonl --artifact-index-path artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_artifact_index.json --report-path artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_reliability.json --retries 1 --flake-budget 0 --coverage-floor 1.0",
       "result": "pass"
     },
     {

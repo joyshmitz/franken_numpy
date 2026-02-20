@@ -9,8 +9,8 @@
       "workflow_log": "artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_opt_e2e.jsonl",
       "suite": {
         "suite": "workflow_scenarios",
-        "case_count": 592,
-        "pass_count": 592,
+        "case_count": 601,
+        "pass_count": 601,
         "failures": []
       }
     }
@@ -18,8 +18,8 @@
   "suites": [
     {
       "suite": "workflow_scenarios",
-      "case_count": 592,
-      "pass_count": 592,
+      "case_count": 601,
+      "pass_count": 601,
       "failures": []
     }
   ],
@@ -37,7 +37,7 @@
   "forensics_artifact_index": {
     "schema_version": 1,
     "gate": "run_workflow_scenario_gate",
-    "generated_at_unix_ms": 1771461323545,
+    "generated_at_unix_ms": 1771572248421,
     "status": "pass",
     "execution_context": "local",
     "triage": null,
@@ -186,6 +186,12 @@
         "kind": "replay_script",
         "path": "scripts/e2e/run_transfer_contract_journey.sh",
         "description": "Packet-003 workflow replay wrapper script"
+      },
+      {
+        "id": "rng_workflow_log",
+        "kind": "jsonl_log",
+        "path": "artifacts/phase2c/FNP-P2C-007/workflow_scenario_packet007_opt_e2e_rng.jsonl",
+        "description": "RNG packet-007 structured replay records emitted from rng_fixture_case steps"
       },
       {
         "id": "reliability_report",
