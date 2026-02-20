@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
 use fnp_dtype::DType;
-use fnp_ufunc::{BinaryOp, UFuncArray};
+use fnp_ufunc::{BinaryOp, UFuncArray, UnaryOp};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
@@ -129,6 +129,19 @@ def py_binary(lhs_vals, lhs_shape, rhs_vals, rhs_shape, op):
                     out_vals.append(float('-inf'))
             else:
                 out_vals.append(l / r)
+        elif op == 'power':
+            out_vals.append(l ** r)
+        elif op == 'remainder':
+            if r == 0.0:
+                out_vals.append(float('nan'))
+            else:
+                out_vals.append(l - math.floor(l / r) * r)
+        elif op == 'minimum':
+            out_vals.append(min(l, r) if not (math.isnan(l) or math.isnan(r)) else float('nan'))
+        elif op == 'maximum':
+            out_vals.append(max(l, r) if not (math.isnan(l) or math.isnan(r)) else float('nan'))
+        elif op == 'arctan2':
+            out_vals.append(math.atan2(l, r))
         else:
             raise ValueError(f'unsupported op {op}')
     return out_shape, out_vals
@@ -166,6 +179,74 @@ def py_sum(vals, shape, axis, keepdims):
                 out_multi.append(idx)
         out_flat = py_ravel(out_multi, out_strides) if out_multi else 0
         out[out_flat] += vals[flat]
+    return out_shape, out
+
+def py_reduce(vals, shape, axis, keepdims, op):
+    if axis is None:
+        if op == 'prod':
+            result = 1.0
+            for v in vals:
+                result *= v
+        elif op == 'min':
+            result = float('inf')
+            for v in vals:
+                result = min(result, v)
+        elif op == 'max':
+            result = float('-inf')
+            for v in vals:
+                result = max(result, v)
+        elif op == 'mean':
+            result = float(sum(vals)) / len(vals)
+        else:
+            raise ValueError(f'unsupported reduce op: {op}')
+        out_shape = [1] * len(shape) if keepdims else []
+        return out_shape, [result]
+
+    raw_axis = axis
+    if axis < 0:
+        axis += len(shape)
+    if axis < 0 or axis >= len(shape):
+        raise ValueError(f'axis {raw_axis} out of bounds for shape {shape}')
+
+    in_strides = py_strides(shape)
+    out_shape = py_reduced_shape(shape, axis, keepdims)
+    out_strides = py_strides(out_shape)
+    out_count = math.prod(out_shape) if out_shape else 1
+
+    if op == 'prod':
+        out = [1.0] * out_count
+    elif op == 'min':
+        out = [float('inf')] * out_count
+    elif op == 'max':
+        out = [float('-inf')] * out_count
+    elif op == 'mean':
+        out = [0.0] * out_count
+    else:
+        raise ValueError(f'unsupported reduce op: {op}')
+
+    for flat in range(len(vals)):
+        multi = py_unravel(flat, shape, in_strides)
+        out_multi = []
+        for i, idx in enumerate(multi):
+            if i == axis:
+                if keepdims:
+                    out_multi.append(0)
+            else:
+                out_multi.append(idx)
+        out_flat = py_ravel(out_multi, out_strides) if out_multi else 0
+        if op == 'prod':
+            out[out_flat] *= vals[flat]
+        elif op == 'min':
+            out[out_flat] = min(out[out_flat], vals[flat])
+        elif op == 'max':
+            out[out_flat] = max(out[out_flat], vals[flat])
+        elif op == 'mean':
+            out[out_flat] += vals[flat]
+
+    if op == 'mean':
+        axis_len = shape[axis]
+        out = [v / axis_len for v in out]
+
     return out_shape, out
 
 def normalize_dtype_name(name):
@@ -233,7 +314,7 @@ for case in cases:
             lhs_dtype = normalize_dtype_name(case.get('lhs_dtype', 'float64'))
             lhs = np.array(case['lhs_values'], dtype=lhs_dtype).reshape(tuple(case['lhs_shape']))
 
-            if op in ('add', 'sub', 'mul', 'div'):
+            if op in ('add', 'sub', 'mul', 'div', 'power', 'remainder', 'minimum', 'maximum', 'arctan2'):
                 rhs_dtype = normalize_dtype_name(case.get('rhs_dtype', 'float64'))
                 rhs = np.array(case['rhs_values'], dtype=rhs_dtype).reshape(tuple(case['rhs_shape']))
                 if op == 'add':
@@ -242,12 +323,82 @@ for case in cases:
                     out = lhs - rhs
                 elif op == 'mul':
                     out = lhs * rhs
-                else:
+                elif op == 'div':
                     out = lhs / rhs
+                elif op == 'power':
+                    out = np.power(lhs, rhs)
+                elif op == 'remainder':
+                    out = np.remainder(lhs, rhs)
+                elif op == 'minimum':
+                    out = np.minimum(lhs, rhs)
+                elif op == 'maximum':
+                    out = np.maximum(lhs, rhs)
+                elif op == 'arctan2':
+                    out = np.arctan2(lhs, rhs)
             elif op == 'sum':
                 axis = case.get('axis')
                 keepdims = bool(case.get('keepdims', False))
                 out = lhs.sum(axis=axis, keepdims=keepdims)
+            elif op == 'prod':
+                axis = case.get('axis')
+                keepdims = bool(case.get('keepdims', False))
+                out = lhs.prod(axis=axis, keepdims=keepdims)
+            elif op == 'min':
+                axis = case.get('axis')
+                keepdims = bool(case.get('keepdims', False))
+                out = lhs.min(axis=axis, keepdims=keepdims)
+            elif op == 'max':
+                axis = case.get('axis')
+                keepdims = bool(case.get('keepdims', False))
+                out = lhs.max(axis=axis, keepdims=keepdims)
+            elif op == 'mean':
+                axis = case.get('axis')
+                keepdims = bool(case.get('keepdims', False))
+                out = lhs.mean(axis=axis, keepdims=keepdims)
+            elif op == 'abs':
+                out = np.abs(lhs)
+            elif op == 'negative':
+                out = np.negative(lhs)
+            elif op == 'sign':
+                out = np.sign(lhs)
+            elif op == 'sqrt':
+                out = np.sqrt(lhs)
+            elif op == 'square':
+                out = np.square(lhs)
+            elif op == 'exp':
+                out = np.exp(lhs)
+            elif op == 'log':
+                out = np.log(lhs)
+            elif op == 'log2':
+                out = np.log2(lhs)
+            elif op == 'log10':
+                out = np.log10(lhs)
+            elif op == 'sin':
+                out = np.sin(lhs)
+            elif op == 'cos':
+                out = np.cos(lhs)
+            elif op == 'tan':
+                out = np.tan(lhs)
+            elif op == 'floor':
+                out = np.floor(lhs)
+            elif op == 'ceil':
+                out = np.ceil(lhs)
+            elif op == 'round':
+                out = np.round(lhs)
+            elif op == 'reciprocal':
+                out = np.reciprocal(lhs)
+            elif op == 'sinh':
+                out = np.sinh(lhs)
+            elif op == 'cosh':
+                out = np.cosh(lhs)
+            elif op == 'tanh':
+                out = np.tanh(lhs)
+            elif op == 'arcsin':
+                out = np.arcsin(lhs)
+            elif op == 'arccos':
+                out = np.arccos(lhs)
+            elif op == 'arctan':
+                out = np.arctan(lhs)
             else:
                 raise ValueError(f'unsupported op: {op}')
 
@@ -259,7 +410,7 @@ for case in cases:
             lhs_shape = case['lhs_shape']
             lhs_vals = [float(v) for v in case['lhs_values']]
             lhs_dtype = normalize_fallback_dtype(case.get('lhs_dtype', 'f64'))
-            if op in ('add', 'sub', 'mul', 'div'):
+            if op in ('add', 'sub', 'mul', 'div', 'power', 'remainder', 'minimum', 'maximum', 'arctan2'):
                 rhs_shape = case['rhs_shape']
                 rhs_vals = [float(v) for v in case['rhs_values']]
                 rhs_dtype = normalize_fallback_dtype(case.get('rhs_dtype', 'f64'))
@@ -269,6 +420,104 @@ for case in cases:
                 axis = case.get('axis')
                 keepdims = bool(case.get('keepdims', False))
                 shape, values = py_sum(lhs_vals, lhs_shape, axis, keepdims)
+                dtype = lhs_dtype
+            elif op in ('prod', 'min', 'max', 'mean'):
+                axis = case.get('axis')
+                keepdims = bool(case.get('keepdims', False))
+                shape, values = py_reduce(lhs_vals, lhs_shape, axis, keepdims, op)
+                dtype = lhs_dtype
+            elif op == 'abs':
+                shape = lhs_shape
+                values = [abs(v) for v in lhs_vals]
+                dtype = lhs_dtype
+            elif op == 'negative':
+                shape = lhs_shape
+                values = [-v for v in lhs_vals]
+                dtype = lhs_dtype
+            elif op == 'sign':
+                shape = lhs_shape
+                def _sign(v):
+                    if v != v:
+                        return float('nan')
+                    return 1.0 if v > 0 else (-1.0 if v < 0 else 0.0)
+                values = [_sign(v) for v in lhs_vals]
+                dtype = lhs_dtype
+            elif op == 'sqrt':
+                import cmath
+                shape = lhs_shape
+                values = [cmath.sqrt(v).real if v >= 0 else float('nan') for v in lhs_vals]
+                dtype = lhs_dtype
+            elif op == 'square':
+                shape = lhs_shape
+                values = [v * v for v in lhs_vals]
+                dtype = lhs_dtype
+            elif op == 'exp':
+                shape = lhs_shape
+                values = [math.exp(v) for v in lhs_vals]
+                dtype = lhs_dtype
+            elif op == 'log':
+                shape = lhs_shape
+                values = [math.log(v) if v > 0 else (float('-inf') if v == 0 else float('nan')) for v in lhs_vals]
+                dtype = lhs_dtype
+            elif op == 'log2':
+                shape = lhs_shape
+                values = [math.log2(v) if v > 0 else (float('-inf') if v == 0 else float('nan')) for v in lhs_vals]
+                dtype = lhs_dtype
+            elif op == 'log10':
+                shape = lhs_shape
+                values = [math.log10(v) if v > 0 else (float('-inf') if v == 0 else float('nan')) for v in lhs_vals]
+                dtype = lhs_dtype
+            elif op == 'sin':
+                shape = lhs_shape
+                values = [math.sin(v) for v in lhs_vals]
+                dtype = lhs_dtype
+            elif op == 'cos':
+                shape = lhs_shape
+                values = [math.cos(v) for v in lhs_vals]
+                dtype = lhs_dtype
+            elif op == 'tan':
+                shape = lhs_shape
+                values = [math.tan(v) for v in lhs_vals]
+                dtype = lhs_dtype
+            elif op == 'floor':
+                shape = lhs_shape
+                values = [math.floor(v) for v in lhs_vals]
+                dtype = lhs_dtype
+            elif op == 'ceil':
+                shape = lhs_shape
+                values = [math.ceil(v) for v in lhs_vals]
+                dtype = lhs_dtype
+            elif op == 'round':
+                shape = lhs_shape
+                values = [round(v) for v in lhs_vals]
+                dtype = lhs_dtype
+            elif op == 'reciprocal':
+                shape = lhs_shape
+                values = [1.0 / v if v != 0 else float('inf') for v in lhs_vals]
+                dtype = lhs_dtype
+            elif op == 'sinh':
+                shape = lhs_shape
+                values = [math.sinh(v) for v in lhs_vals]
+                dtype = lhs_dtype
+            elif op == 'cosh':
+                shape = lhs_shape
+                values = [math.cosh(v) for v in lhs_vals]
+                dtype = lhs_dtype
+            elif op == 'tanh':
+                shape = lhs_shape
+                values = [math.tanh(v) for v in lhs_vals]
+                dtype = lhs_dtype
+            elif op == 'arcsin':
+                shape = lhs_shape
+                values = [math.asin(v) for v in lhs_vals]
+                dtype = lhs_dtype
+            elif op == 'arccos':
+                shape = lhs_shape
+                values = [math.acos(v) for v in lhs_vals]
+                dtype = lhs_dtype
+            elif op == 'arctan':
+                shape = lhs_shape
+                values = [math.atan(v) for v in lhs_vals]
                 dtype = lhs_dtype
             else:
                 raise ValueError(f'unsupported op: {op}')
@@ -309,7 +558,38 @@ pub enum UFuncOperation {
     Sub,
     Mul,
     Div,
+    Power,
+    Remainder,
+    Minimum,
+    Maximum,
     Sum,
+    Prod,
+    Min,
+    Max,
+    Mean,
+    Abs,
+    Negative,
+    Sign,
+    Sqrt,
+    Square,
+    Exp,
+    Log,
+    Log2,
+    Log10,
+    Sin,
+    Cos,
+    Tan,
+    Floor,
+    Ceil,
+    Round,
+    Reciprocal,
+    Sinh,
+    Cosh,
+    Tanh,
+    Arcsin,
+    Arccos,
+    Arctan,
+    Arctan2,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -816,7 +1096,15 @@ pub fn execute_input_case(case: &UFuncInputCase) -> Result<(Vec<usize>, Vec<f64>
         .map_err(|err| format!("lhs array error: {err}"))?;
 
     let out = match case.op {
-        UFuncOperation::Add | UFuncOperation::Sub | UFuncOperation::Mul | UFuncOperation::Div => {
+        UFuncOperation::Add
+        | UFuncOperation::Sub
+        | UFuncOperation::Mul
+        | UFuncOperation::Div
+        | UFuncOperation::Power
+        | UFuncOperation::Remainder
+        | UFuncOperation::Minimum
+        | UFuncOperation::Maximum
+        | UFuncOperation::Arctan2 => {
             let rhs_shape = case
                 .rhs_shape
                 .clone()
@@ -835,7 +1123,12 @@ pub fn execute_input_case(case: &UFuncInputCase) -> Result<(Vec<usize>, Vec<f64>
                 UFuncOperation::Sub => BinaryOp::Sub,
                 UFuncOperation::Mul => BinaryOp::Mul,
                 UFuncOperation::Div => BinaryOp::Div,
-                UFuncOperation::Sum => unreachable!("handled above"),
+                UFuncOperation::Power => BinaryOp::Power,
+                UFuncOperation::Remainder => BinaryOp::Remainder,
+                UFuncOperation::Minimum => BinaryOp::Minimum,
+                UFuncOperation::Maximum => BinaryOp::Maximum,
+                UFuncOperation::Arctan2 => BinaryOp::Arctan2,
+                _ => unreachable!("handled above"),
             };
 
             lhs.elementwise_binary(&rhs, op)
@@ -846,6 +1139,48 @@ pub fn execute_input_case(case: &UFuncInputCase) -> Result<(Vec<usize>, Vec<f64>
             lhs.reduce_sum(case.axis, keepdims)
                 .map_err(|err| format!("reduce sum error: {err}"))?
         }
+        UFuncOperation::Prod => {
+            let keepdims = case.keepdims.unwrap_or(false);
+            lhs.reduce_prod(case.axis, keepdims)
+                .map_err(|err| format!("reduce prod error: {err}"))?
+        }
+        UFuncOperation::Min => {
+            let keepdims = case.keepdims.unwrap_or(false);
+            lhs.reduce_min(case.axis, keepdims)
+                .map_err(|err| format!("reduce min error: {err}"))?
+        }
+        UFuncOperation::Max => {
+            let keepdims = case.keepdims.unwrap_or(false);
+            lhs.reduce_max(case.axis, keepdims)
+                .map_err(|err| format!("reduce max error: {err}"))?
+        }
+        UFuncOperation::Mean => {
+            let keepdims = case.keepdims.unwrap_or(false);
+            lhs.reduce_mean(case.axis, keepdims)
+                .map_err(|err| format!("reduce mean error: {err}"))?
+        }
+        UFuncOperation::Abs => lhs.elementwise_unary(UnaryOp::Abs),
+        UFuncOperation::Negative => lhs.elementwise_unary(UnaryOp::Negative),
+        UFuncOperation::Sign => lhs.elementwise_unary(UnaryOp::Sign),
+        UFuncOperation::Sqrt => lhs.elementwise_unary(UnaryOp::Sqrt),
+        UFuncOperation::Square => lhs.elementwise_unary(UnaryOp::Square),
+        UFuncOperation::Exp => lhs.elementwise_unary(UnaryOp::Exp),
+        UFuncOperation::Log => lhs.elementwise_unary(UnaryOp::Log),
+        UFuncOperation::Log2 => lhs.elementwise_unary(UnaryOp::Log2),
+        UFuncOperation::Log10 => lhs.elementwise_unary(UnaryOp::Log10),
+        UFuncOperation::Sin => lhs.elementwise_unary(UnaryOp::Sin),
+        UFuncOperation::Cos => lhs.elementwise_unary(UnaryOp::Cos),
+        UFuncOperation::Tan => lhs.elementwise_unary(UnaryOp::Tan),
+        UFuncOperation::Floor => lhs.elementwise_unary(UnaryOp::Floor),
+        UFuncOperation::Ceil => lhs.elementwise_unary(UnaryOp::Ceil),
+        UFuncOperation::Round => lhs.elementwise_unary(UnaryOp::Round),
+        UFuncOperation::Reciprocal => lhs.elementwise_unary(UnaryOp::Reciprocal),
+        UFuncOperation::Sinh => lhs.elementwise_unary(UnaryOp::Sinh),
+        UFuncOperation::Cosh => lhs.elementwise_unary(UnaryOp::Cosh),
+        UFuncOperation::Tanh => lhs.elementwise_unary(UnaryOp::Tanh),
+        UFuncOperation::Arcsin => lhs.elementwise_unary(UnaryOp::Arcsin),
+        UFuncOperation::Arccos => lhs.elementwise_unary(UnaryOp::Arccos),
+        UFuncOperation::Arctan => lhs.elementwise_unary(UnaryOp::Arctan),
     };
 
     Ok((

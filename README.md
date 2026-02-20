@@ -154,10 +154,10 @@ cargo bench
 
 ## Next Work
 
-1. Expand `FNP-P2C-005` corpus to adversarial and high-dimensional edge cases.
-2. Move oracle capture to true legacy/system NumPy path in CI images.
-3. Expand `FNP-P2C-007` (RNG), `FNP-P2C-008` (linalg), and `FNP-P2C-009` (npy/npz) from first-wave coverage to full legacy-matrix parity breadth.
-4. Promote benchmark + sidecar checks to mandatory CI gates.
+1. ~~Expand `FNP-P2C-005` corpus to adversarial and high-dimensional edge cases.~~ Done: 54 adversarial, 25 metamorphic, 52 differential cases.
+2. ~~Move oracle capture to true legacy/system NumPy path.~~ Done: NumPy 2.4.2 oracle via `uv venv`; sum reduction dtype promotion (i32/bool to i64) parity gap closed.
+3. ~~Expand `FNP-P2C-007` (RNG), `FNP-P2C-008` (linalg), and `FNP-P2C-009` (npy/npz) from first-wave coverage to full legacy-matrix parity breadth.~~ Done: +46 adversarial and +18 metamorphic cases across the three packets.
+4. ~~Promote benchmark + sidecar checks to mandatory CI gates.~~ Done: `.github/workflows/ci.yml` with all 8 gates (G1-G8) as mandatory jobs.
 5. Publish and continuously burn down full legacy NumPy parity debt until zero.
 
 ## License

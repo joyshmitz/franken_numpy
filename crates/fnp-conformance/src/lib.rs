@@ -28,7 +28,11 @@ use fnp_linalg::{
     validate_tolerance_policy,
 };
 use fnp_ndarray::{MemoryOrder, NdLayout, broadcast_shape, contiguous_strides};
-use fnp_random::{DeterministicRng, RandomError, RandomPolicyError, validate_rng_policy_metadata};
+use fnp_random::{
+    BitGenerator, BitGeneratorError, BitGeneratorKind, DeterministicRng, RandomError,
+    RandomPolicyError, SeedMaterial, SeedSequence, SeedSequenceError,
+    validate_rng_policy_metadata,
+};
 use fnp_runtime::{
     CompatibilityClass, DecisionAction, DecisionAuditContext, EvidenceLedger, RuntimeMode,
     decide_and_record_with_context, decide_compatibility_from_wire,
@@ -718,6 +722,14 @@ struct RngAdversarialCase {
     mode_raw: String,
     #[serde(default)]
     class_raw: String,
+    #[serde(default)]
+    pool_size: usize,
+    #[serde(default)]
+    spawn_count: usize,
+    #[serde(default)]
+    words: usize,
+    #[serde(default)]
+    kind: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -5597,8 +5609,14 @@ fn classify_ufunc_reason_code(op: UFuncOperation, detail: &str) -> String {
         || lowered.contains("promotion")
     {
         "ufunc_type_resolution_invalid".to_string()
-    } else if matches!(op, UFuncOperation::Sum)
-        && (lowered.contains("axis") || lowered.contains("keepdims") || lowered.contains("reduce"))
+    } else if matches!(
+        op,
+        UFuncOperation::Sum
+            | UFuncOperation::Prod
+            | UFuncOperation::Min
+            | UFuncOperation::Max
+            | UFuncOperation::Mean
+    ) && (lowered.contains("axis") || lowered.contains("keepdims") || lowered.contains("reduce"))
     {
         "ufunc_reduction_contract_violation".to_string()
     } else if lowered.contains("override") {
@@ -6229,10 +6247,75 @@ fn execute_rng_adversarial_operation(case: &RngAdversarialCase) -> Result<(), Rn
         "policy_metadata_unknown" => validate_rng_policy_metadata(&case.mode_raw, &case.class_raw)
             .map(|_| ())
             .map_err(map_random_policy_error_to_rng_suite),
+        "seedsequence_empty_entropy" => SeedSequence::new(&[])
+            .map(|_| ())
+            .map_err(map_seedsequence_error_to_rng_suite),
+        "seedsequence_pool_size_invalid" => {
+            SeedSequence::with_spawn_key(&[1], &[], case.pool_size)
+                .map(|_| ())
+                .map_err(map_seedsequence_error_to_rng_suite)
+        }
+        "seedsequence_generate_state_exceeded" => {
+            let ss = SeedSequence::new(&[1]).map_err(map_seedsequence_error_to_rng_suite)?;
+            ss.generate_state_u32(case.words)
+                .map(|_| ())
+                .map_err(map_seedsequence_error_to_rng_suite)
+        }
+        "seedsequence_spawn_invalid" => {
+            let mut ss = SeedSequence::new(&[1]).map_err(map_seedsequence_error_to_rng_suite)?;
+            ss.spawn(case.spawn_count)
+                .map(|_| ())
+                .map_err(map_seedsequence_error_to_rng_suite)
+        }
+        "bitgenerator_jump_invalid" => {
+            let kind = parse_bitgenerator_kind(&case.kind);
+            let mut bg = BitGenerator::new(kind, SeedMaterial::U64(case.seed))
+                .map_err(map_bitgenerator_error_to_rng_suite)?;
+            bg.jump_in_place(case.steps)
+                .map_err(map_bitgenerator_error_to_rng_suite)
+        }
+        "bitgenerator_spawn_invalid" => {
+            let kind = parse_bitgenerator_kind(&case.kind);
+            let mut bg = BitGenerator::new(kind, SeedMaterial::U64(case.seed))
+                .map_err(map_bitgenerator_error_to_rng_suite)?;
+            bg.spawn(case.spawn_count)
+                .map(|_| ())
+                .map_err(map_bitgenerator_error_to_rng_suite)
+        }
+        "bitgenerator_state_kind_mismatch" => {
+            let kind = parse_bitgenerator_kind(&case.kind);
+            let wrong_kind = parse_bitgenerator_kind(&case.mode_raw);
+            let mut bg = BitGenerator::new(kind, SeedMaterial::U64(case.seed))
+                .map_err(map_bitgenerator_error_to_rng_suite)?;
+            let wrong_bg = BitGenerator::new(wrong_kind, SeedMaterial::U64(case.seed))
+                .map_err(map_bitgenerator_error_to_rng_suite)?;
+            let wrong_state = wrong_bg.state();
+            bg.set_state(&wrong_state)
+                .map_err(map_bitgenerator_error_to_rng_suite)
+        }
+        "bitgenerator_state_schema_version_invalid" => {
+            let kind = parse_bitgenerator_kind(&case.kind);
+            let mut bg = BitGenerator::new(kind, SeedMaterial::U64(case.seed))
+                .map_err(map_bitgenerator_error_to_rng_suite)?;
+            let mut state = bg.state();
+            state.schema_version = case.steps as u32;
+            bg.set_state(&state)
+                .map_err(map_bitgenerator_error_to_rng_suite)
+        }
         other => Err(RngSuiteError::new(
             "rng_policy_unknown_metadata",
             format!("unsupported rng adversarial operation {other}"),
         )),
+    }
+}
+
+fn parse_bitgenerator_kind(s: &str) -> BitGeneratorKind {
+    match s {
+        "mt19937" => BitGeneratorKind::Mt19937,
+        "pcg64" => BitGeneratorKind::Pcg64,
+        "philox" => BitGeneratorKind::Philox,
+        "sfc64" => BitGeneratorKind::Sfc64,
+        _ => BitGeneratorKind::Pcg64,
     }
 }
 
@@ -6241,6 +6324,14 @@ fn map_random_error_to_rng_suite(error: RandomError) -> RngSuiteError {
 }
 
 fn map_random_policy_error_to_rng_suite(error: RandomPolicyError) -> RngSuiteError {
+    RngSuiteError::new(error.reason_code(), error.to_string())
+}
+
+fn map_seedsequence_error_to_rng_suite(error: SeedSequenceError) -> RngSuiteError {
+    RngSuiteError::new(error.reason_code(), error.to_string())
+}
+
+fn map_bitgenerator_error_to_rng_suite(error: BitGeneratorError) -> RngSuiteError {
     RngSuiteError::new(error.reason_code(), error.to_string())
 }
 

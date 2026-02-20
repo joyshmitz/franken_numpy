@@ -61,6 +61,38 @@ pub const fn promote(lhs: DType, rhs: DType) -> DType {
     }
 }
 
+/// NumPy-compatible dtype promotion for sum (and similar accumulating)
+/// reductions.  Small integer and boolean inputs are widened to prevent
+/// overflow, matching `numpy.add.reduce` behaviour:
+///   Bool  → I64
+///   I32   → I64
+///   I64   → I64   (unchanged)
+///   F32   → F32   (unchanged)
+///   F64   → F64   (unchanged)
+#[must_use]
+pub const fn promote_for_sum_reduction(dt: DType) -> DType {
+    match dt {
+        DType::Bool | DType::I32 => DType::I64,
+        other => other,
+    }
+}
+
+/// NumPy-compatible dtype promotion for mean reductions.
+/// Integer and boolean inputs are widened to float64, matching
+/// `numpy.mean` behaviour:
+///   Bool  → F64
+///   I32   → F64
+///   I64   → F64
+///   F32   → F32   (unchanged)
+///   F64   → F64   (unchanged)
+#[must_use]
+pub const fn promote_for_mean_reduction(dt: DType) -> DType {
+    match dt {
+        DType::Bool | DType::I32 | DType::I64 => DType::F64,
+        other => other,
+    }
+}
+
 #[must_use]
 pub const fn can_cast_lossless(src: DType, dst: DType) -> bool {
     use DType::{Bool, F32, F64, I32, I64};
@@ -78,7 +110,10 @@ pub const fn can_cast_lossless(src: DType, dst: DType) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{DType, can_cast_lossless, promote};
+    use super::{
+        DType, can_cast_lossless, promote, promote_for_mean_reduction,
+        promote_for_sum_reduction,
+    };
 
     fn all_dtypes() -> [DType; 5] {
         [DType::Bool, DType::I32, DType::I64, DType::F32, DType::F64]
@@ -177,5 +212,23 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn sum_reduction_promotion_matches_numpy() {
+        assert_eq!(promote_for_sum_reduction(DType::Bool), DType::I64);
+        assert_eq!(promote_for_sum_reduction(DType::I32), DType::I64);
+        assert_eq!(promote_for_sum_reduction(DType::I64), DType::I64);
+        assert_eq!(promote_for_sum_reduction(DType::F32), DType::F32);
+        assert_eq!(promote_for_sum_reduction(DType::F64), DType::F64);
+    }
+
+    #[test]
+    fn mean_reduction_promotion_matches_numpy() {
+        assert_eq!(promote_for_mean_reduction(DType::Bool), DType::F64);
+        assert_eq!(promote_for_mean_reduction(DType::I32), DType::F64);
+        assert_eq!(promote_for_mean_reduction(DType::I64), DType::F64);
+        assert_eq!(promote_for_mean_reduction(DType::F32), DType::F32);
+        assert_eq!(promote_for_mean_reduction(DType::F64), DType::F64);
     }
 }

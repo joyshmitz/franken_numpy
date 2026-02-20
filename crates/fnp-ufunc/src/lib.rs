@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use fnp_dtype::{DType, promote};
+use fnp_dtype::{DType, promote, promote_for_mean_reduction, promote_for_sum_reduction};
 use fnp_ndarray::{ShapeError, broadcast_shape, element_count};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +44,15 @@ pub enum BinaryOp {
     Sub,
     Mul,
     Div,
+    Power,
+    Remainder,
+    Minimum,
+    Maximum,
+    Arctan2,
+    Fmod,
+    Copysign,
+    Fmax,
+    Fmin,
 }
 
 impl BinaryOp {
@@ -54,6 +63,161 @@ impl BinaryOp {
             Self::Sub => lhs - rhs,
             Self::Mul => lhs * rhs,
             Self::Div => lhs / rhs,
+            Self::Power => lhs.powf(rhs),
+            Self::Remainder => {
+                // NumPy remainder follows Python semantics: sign of result matches divisor
+                if rhs == 0.0 {
+                    f64::NAN
+                } else {
+                    lhs - (lhs / rhs).floor() * rhs
+                }
+            }
+            Self::Minimum => {
+                if lhs.is_nan() || rhs.is_nan() {
+                    f64::NAN
+                } else {
+                    lhs.min(rhs)
+                }
+            }
+            Self::Maximum => {
+                if lhs.is_nan() || rhs.is_nan() {
+                    f64::NAN
+                } else {
+                    lhs.max(rhs)
+                }
+            }
+            Self::Arctan2 => lhs.atan2(rhs),
+            Self::Fmod => {
+                // C-style fmod: sign of result matches dividend
+                if rhs == 0.0 {
+                    f64::NAN
+                } else {
+                    lhs % rhs
+                }
+            }
+            Self::Copysign => lhs.copysign(rhs),
+            // fmax/fmin ignore NaN (return the non-NaN value)
+            Self::Fmax => lhs.max(rhs),
+            Self::Fmin => lhs.min(rhs),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnaryOp {
+    Abs,
+    Negative,
+    Sign,
+    Sqrt,
+    Square,
+    Exp,
+    Log,
+    Log2,
+    Log10,
+    Sin,
+    Cos,
+    Tan,
+    Floor,
+    Ceil,
+    Round,
+    Reciprocal,
+    Sinh,
+    Cosh,
+    Tanh,
+    Arcsin,
+    Arccos,
+    Arctan,
+    Cbrt,
+    Expm1,
+    Log1p,
+    Degrees,
+    Radians,
+    Rint,
+    Trunc,
+}
+
+impl UnaryOp {
+    #[must_use]
+    pub fn apply(self, x: f64) -> f64 {
+        match self {
+            Self::Abs => x.abs(),
+            Self::Negative => -x,
+            Self::Sign => {
+                if x.is_nan() {
+                    f64::NAN
+                } else if x > 0.0 {
+                    1.0
+                } else if x < 0.0 {
+                    -1.0
+                } else {
+                    0.0
+                }
+            }
+            Self::Sqrt => x.sqrt(),
+            Self::Square => x * x,
+            Self::Exp => x.exp(),
+            Self::Log => x.ln(),
+            Self::Log2 => x.log2(),
+            Self::Log10 => x.log10(),
+            Self::Sin => x.sin(),
+            Self::Cos => x.cos(),
+            Self::Tan => x.tan(),
+            Self::Floor => x.floor(),
+            Self::Ceil => x.ceil(),
+            Self::Round => {
+                // NumPy uses banker's rounding (round half to even)
+                let rounded = x.round();
+                if (x - rounded).abs() == 0.0 {
+                    rounded
+                } else {
+                    let frac = (x - x.floor()).abs();
+                    if (frac - 0.5).abs() < f64::EPSILON {
+                        // Exactly 0.5 — round to even
+                        let floor = x.floor();
+                        let ceil = x.ceil();
+                        if floor % 2.0 == 0.0 {
+                            floor
+                        } else {
+                            ceil
+                        }
+                    } else {
+                        rounded
+                    }
+                }
+            }
+            Self::Reciprocal => 1.0 / x,
+            Self::Sinh => x.sinh(),
+            Self::Cosh => x.cosh(),
+            Self::Tanh => x.tanh(),
+            Self::Arcsin => x.asin(),
+            Self::Arccos => x.acos(),
+            Self::Arctan => x.atan(),
+            Self::Cbrt => x.cbrt(),
+            Self::Expm1 => x.exp_m1(),
+            Self::Log1p => x.ln_1p(),
+            Self::Degrees => x.to_degrees(),
+            Self::Radians => x.to_radians(),
+            Self::Rint => {
+                // Same as Round: banker's rounding (round half to even)
+                let rounded = x.round();
+                if (x - rounded).abs() == 0.0 {
+                    rounded
+                } else {
+                    let frac = (x - x.floor()).abs();
+                    if (frac - 0.5).abs() < f64::EPSILON {
+                        let floor = x.floor();
+                        let ceil = x.ceil();
+                        if floor % 2.0 == 0.0 {
+                            floor
+                        } else {
+                            ceil
+                        }
+                    } else {
+                        rounded
+                    }
+                }
+            }
+            Self::Trunc => x.trunc(),
         }
     }
 }
@@ -313,7 +477,18 @@ impl UFuncArray {
         })
     }
 
+    #[must_use]
+    pub fn elementwise_unary(&self, op: UnaryOp) -> Self {
+        let values = self.values.iter().map(|&v| op.apply(v)).collect();
+        Self {
+            shape: self.shape.clone(),
+            values,
+            dtype: self.dtype,
+        }
+    }
+
     pub fn reduce_sum(&self, axis: Option<isize>, keepdims: bool) -> Result<Self, UFuncError> {
+        let out_dtype = promote_for_sum_reduction(self.dtype);
         match axis {
             None => {
                 let sum: f64 = self.values.iter().copied().sum();
@@ -325,7 +500,7 @@ impl UFuncArray {
                 Ok(Self {
                     shape,
                     values: vec![sum],
-                    dtype: self.dtype,
+                    dtype: out_dtype,
                 })
             }
             Some(axis) => {
@@ -338,7 +513,164 @@ impl UFuncArray {
                 Ok(Self {
                     shape: out_shape,
                     values: out_values,
+                    dtype: out_dtype,
+                })
+            }
+        }
+    }
+
+    pub fn reduce_prod(&self, axis: Option<isize>, keepdims: bool) -> Result<Self, UFuncError> {
+        let out_dtype = promote_for_sum_reduction(self.dtype);
+        match axis {
+            None => {
+                let prod: f64 = self.values.iter().copied().product();
+                let shape = if keepdims {
+                    vec![1; self.shape.len()]
+                } else {
+                    Vec::new()
+                };
+                Ok(Self {
+                    shape,
+                    values: vec![prod],
+                    dtype: out_dtype,
+                })
+            }
+            Some(axis) => {
+                let axis = normalize_axis(axis, self.shape.len())?;
+                let out_shape = reduced_shape(&self.shape, axis, keepdims);
+                let out_count = element_count(&out_shape).map_err(UFuncError::Shape)?;
+                let mut out_values = vec![1.0f64; out_count];
+                reduce_fold_axis_contiguous(
+                    &self.values,
+                    &self.shape,
+                    axis,
+                    &mut out_values,
+                    |acc, v| acc * v,
+                );
+
+                Ok(Self {
+                    shape: out_shape,
+                    values: out_values,
+                    dtype: out_dtype,
+                })
+            }
+        }
+    }
+
+    pub fn reduce_min(&self, axis: Option<isize>, keepdims: bool) -> Result<Self, UFuncError> {
+        match axis {
+            None => {
+                let min = self
+                    .values
+                    .iter()
+                    .copied()
+                    .fold(f64::INFINITY, f64::min);
+                let shape = if keepdims {
+                    vec![1; self.shape.len()]
+                } else {
+                    Vec::new()
+                };
+                Ok(Self {
+                    shape,
+                    values: vec![min],
                     dtype: self.dtype,
+                })
+            }
+            Some(axis) => {
+                let axis = normalize_axis(axis, self.shape.len())?;
+                let out_shape = reduced_shape(&self.shape, axis, keepdims);
+                let out_count = element_count(&out_shape).map_err(UFuncError::Shape)?;
+                let mut out_values = vec![f64::INFINITY; out_count];
+                reduce_fold_axis_contiguous(
+                    &self.values,
+                    &self.shape,
+                    axis,
+                    &mut out_values,
+                    f64::min,
+                );
+
+                Ok(Self {
+                    shape: out_shape,
+                    values: out_values,
+                    dtype: self.dtype,
+                })
+            }
+        }
+    }
+
+    pub fn reduce_max(&self, axis: Option<isize>, keepdims: bool) -> Result<Self, UFuncError> {
+        match axis {
+            None => {
+                let max = self
+                    .values
+                    .iter()
+                    .copied()
+                    .fold(f64::NEG_INFINITY, f64::max);
+                let shape = if keepdims {
+                    vec![1; self.shape.len()]
+                } else {
+                    Vec::new()
+                };
+                Ok(Self {
+                    shape,
+                    values: vec![max],
+                    dtype: self.dtype,
+                })
+            }
+            Some(axis) => {
+                let axis = normalize_axis(axis, self.shape.len())?;
+                let out_shape = reduced_shape(&self.shape, axis, keepdims);
+                let out_count = element_count(&out_shape).map_err(UFuncError::Shape)?;
+                let mut out_values = vec![f64::NEG_INFINITY; out_count];
+                reduce_fold_axis_contiguous(
+                    &self.values,
+                    &self.shape,
+                    axis,
+                    &mut out_values,
+                    f64::max,
+                );
+
+                Ok(Self {
+                    shape: out_shape,
+                    values: out_values,
+                    dtype: self.dtype,
+                })
+            }
+        }
+    }
+
+    pub fn reduce_mean(&self, axis: Option<isize>, keepdims: bool) -> Result<Self, UFuncError> {
+        let out_dtype = promote_for_mean_reduction(self.dtype);
+        match axis {
+            None => {
+                let n = self.values.len() as f64;
+                let sum: f64 = self.values.iter().copied().sum();
+                let shape = if keepdims {
+                    vec![1; self.shape.len()]
+                } else {
+                    Vec::new()
+                };
+                Ok(Self {
+                    shape,
+                    values: vec![sum / n],
+                    dtype: out_dtype,
+                })
+            }
+            Some(axis) => {
+                let axis = normalize_axis(axis, self.shape.len())?;
+                let axis_len = self.shape[axis] as f64;
+                let out_shape = reduced_shape(&self.shape, axis, keepdims);
+                let out_count = element_count(&out_shape).map_err(UFuncError::Shape)?;
+                let mut out_values = vec![0.0f64; out_count];
+                reduce_sum_axis_contiguous(&self.values, &self.shape, axis, &mut out_values);
+                for v in &mut out_values {
+                    *v /= axis_len;
+                }
+
+                Ok(Self {
+                    shape: out_shape,
+                    values: out_values,
+                    dtype: out_dtype,
                 })
             }
         }
@@ -628,6 +960,43 @@ fn reduce_sum_axis_contiguous(
     }
 }
 
+fn reduce_fold_axis_contiguous(
+    values: &[f64],
+    shape: &[usize],
+    axis: usize,
+    out_values: &mut [f64],
+    fold: impl Fn(f64, f64) -> f64,
+) {
+    debug_assert!(axis < shape.len());
+    if out_values.is_empty() {
+        return;
+    }
+
+    let axis_len = shape[axis];
+    if axis_len == 0 {
+        return;
+    }
+
+    let inner = shape[axis + 1..].iter().copied().product::<usize>();
+    let outer = shape[..axis].iter().copied().product::<usize>();
+
+    let mut out_flat = 0usize;
+    for outer_idx in 0..outer {
+        let base = outer_idx * axis_len * inner;
+        for inner_idx in 0..inner {
+            let mut offset = base + inner_idx;
+            let mut acc = values[offset];
+            offset += inner;
+            for _ in 1..axis_len {
+                acc = fold(acc, values[offset]);
+                offset += inner;
+            }
+            out_values[out_flat] = acc;
+            out_flat += 1;
+        }
+    }
+}
+
 #[must_use]
 fn reduced_shape(shape: &[usize], axis: usize, keepdims: bool) -> Vec<usize> {
     if keepdims {
@@ -663,7 +1032,7 @@ fn normalize_axis(axis: isize, ndim: usize) -> Result<usize, UFuncError> {
 mod tests {
     use super::{
         BinaryOp, UFUNC_PACKET_REASON_CODES, UFuncArray, UFuncError, UFuncLogRecord,
-        UFuncRuntimeMode, normalize_signature_keywords, parse_gufunc_signature,
+        UFuncRuntimeMode, UnaryOp, normalize_signature_keywords, parse_gufunc_signature,
         plan_binary_dispatch, register_custom_loop, validate_override_payload_class,
     };
     use fnp_dtype::{DType, promote};
@@ -818,7 +1187,7 @@ mod tests {
     }
 
     #[test]
-    fn reduce_sum_axis_one_keepdims_preserves_integer_dtype() {
+    fn reduce_sum_axis_one_keepdims_promotes_i32_to_i64() {
         let arr = UFuncArray::new(
             vec![2, 2, 2],
             vec![-3.0, 1.0, 5.0, -7.0, 9.0, 11.0, -13.0, 15.0],
@@ -829,7 +1198,39 @@ mod tests {
         let out = arr.reduce_sum(Some(1), true).expect("sum axis=1 keepdims");
         assert_eq!(out.shape(), &[2, 1, 2]);
         assert_eq!(out.values(), &[2.0, -6.0, -4.0, 26.0]);
-        assert_eq!(out.dtype(), DType::I32);
+        assert_eq!(out.dtype(), DType::I64);
+    }
+
+    #[test]
+    fn reduce_sum_promotes_bool_to_i64() {
+        let arr = UFuncArray::new(vec![2, 3], vec![1.0, 0.0, 1.0, 0.0, 1.0, 1.0], DType::Bool)
+            .expect("arr");
+
+        let out = arr.reduce_sum(None, false).expect("sum all");
+        assert_eq!(out.values(), &[4.0]);
+        assert_eq!(out.dtype(), DType::I64);
+
+        let axis0 = arr.reduce_sum(Some(0), false).expect("sum axis=0");
+        assert_eq!(axis0.values(), &[1.0, 1.0, 2.0]);
+        assert_eq!(axis0.dtype(), DType::I64);
+    }
+
+    #[test]
+    fn reduce_sum_preserves_f32_dtype() {
+        let arr =
+            UFuncArray::new(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0], DType::F32).expect("arr");
+
+        let out = arr.reduce_sum(None, false).expect("sum all");
+        assert_eq!(out.dtype(), DType::F32);
+    }
+
+    #[test]
+    fn reduce_sum_preserves_i64_dtype() {
+        let arr =
+            UFuncArray::new(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0], DType::I64).expect("arr");
+
+        let out = arr.reduce_sum(None, false).expect("sum all");
+        assert_eq!(out.dtype(), DType::I64);
     }
 
     #[test]
@@ -1095,6 +1496,471 @@ mod tests {
             assert_eq!(drop.shape().len(), arr.shape().len() - 1);
             assert_eq!(keep.values(), drop.values());
         }
+    }
+
+    #[test]
+    fn reduce_prod_axis_none() {
+        let arr = UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64)
+            .expect("arr");
+
+        let out = arr.reduce_prod(None, false).expect("prod all");
+        assert_eq!(out.shape(), &[]);
+        assert!((out.values()[0] - 720.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn reduce_prod_axis_one_keepdims() {
+        let arr = UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64)
+            .expect("arr");
+
+        let out = arr.reduce_prod(Some(1), true).expect("prod axis=1");
+        assert_eq!(out.shape(), &[2, 1]);
+        assert!((out.values()[0] - 6.0).abs() < 1e-10);
+        assert!((out.values()[1] - 120.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn reduce_prod_promotes_i32_to_i64() {
+        let arr =
+            UFuncArray::new(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0], DType::I32).expect("arr");
+        let out = arr.reduce_prod(None, false).expect("prod");
+        assert_eq!(out.dtype(), DType::I64);
+    }
+
+    #[test]
+    fn reduce_min_axis_none() {
+        let arr = UFuncArray::new(vec![2, 3], vec![3.0, 1.0, 4.0, 1.5, 5.0, 2.0], DType::F64)
+            .expect("arr");
+
+        let out = arr.reduce_min(None, false).expect("min all");
+        assert_eq!(out.shape(), &[]);
+        assert!((out.values()[0] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn reduce_min_axis_zero() {
+        let arr = UFuncArray::new(vec![2, 3], vec![3.0, 1.0, 4.0, 1.5, 5.0, 2.0], DType::F64)
+            .expect("arr");
+
+        let out = arr.reduce_min(Some(0), false).expect("min axis=0");
+        assert_eq!(out.shape(), &[3]);
+        assert!((out.values()[0] - 1.5).abs() < 1e-10);
+        assert!((out.values()[1] - 1.0).abs() < 1e-10);
+        assert!((out.values()[2] - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn reduce_min_preserves_dtype() {
+        let arr =
+            UFuncArray::new(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0], DType::I32).expect("arr");
+        let out = arr.reduce_min(None, false).expect("min");
+        assert_eq!(out.dtype(), DType::I32);
+    }
+
+    #[test]
+    fn reduce_max_axis_none() {
+        let arr = UFuncArray::new(vec![2, 3], vec![3.0, 1.0, 4.0, 1.5, 5.0, 2.0], DType::F64)
+            .expect("arr");
+
+        let out = arr.reduce_max(None, false).expect("max all");
+        assert_eq!(out.shape(), &[]);
+        assert!((out.values()[0] - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn reduce_max_axis_one_keepdims() {
+        let arr = UFuncArray::new(vec![2, 3], vec![3.0, 1.0, 4.0, 1.5, 5.0, 2.0], DType::F64)
+            .expect("arr");
+
+        let out = arr.reduce_max(Some(1), true).expect("max axis=1");
+        assert_eq!(out.shape(), &[2, 1]);
+        assert!((out.values()[0] - 4.0).abs() < 1e-10);
+        assert!((out.values()[1] - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn reduce_max_preserves_dtype() {
+        let arr =
+            UFuncArray::new(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0], DType::Bool).expect("arr");
+        let out = arr.reduce_max(None, false).expect("max");
+        assert_eq!(out.dtype(), DType::Bool);
+    }
+
+    #[test]
+    fn reduce_mean_axis_none() {
+        let arr = UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64)
+            .expect("arr");
+
+        let out = arr.reduce_mean(None, false).expect("mean all");
+        assert_eq!(out.shape(), &[]);
+        assert!((out.values()[0] - 3.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn reduce_mean_axis_one() {
+        let arr = UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64)
+            .expect("arr");
+
+        let out = arr.reduce_mean(Some(1), false).expect("mean axis=1");
+        assert_eq!(out.shape(), &[2]);
+        assert!((out.values()[0] - 2.0).abs() < 1e-10);
+        assert!((out.values()[1] - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn reduce_mean_promotes_i32_to_f64() {
+        let arr =
+            UFuncArray::new(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0], DType::I32).expect("arr");
+        let out = arr.reduce_mean(None, false).expect("mean");
+        assert_eq!(out.dtype(), DType::F64);
+    }
+
+    #[test]
+    fn reduce_mean_preserves_f32_dtype() {
+        let arr =
+            UFuncArray::new(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0], DType::F32).expect("arr");
+        let out = arr.reduce_mean(None, false).expect("mean");
+        assert_eq!(out.dtype(), DType::F32);
+    }
+
+    #[test]
+    fn reduce_mean_keepdims_shape_contract() {
+        let arr = UFuncArray::new(vec![2, 3, 4], (1..=24).map(f64::from).collect(), DType::F64)
+            .expect("arr");
+
+        for axis in 0_isize..3_isize {
+            let keep = arr
+                .reduce_mean(Some(axis), true)
+                .expect("keepdims reduction");
+            let drop = arr
+                .reduce_mean(Some(axis), false)
+                .expect("dropdims reduction");
+            assert_eq!(keep.shape().len(), arr.shape().len());
+            assert_eq!(drop.shape().len(), arr.shape().len() - 1);
+            assert_eq!(keep.values(), drop.values());
+        }
+    }
+
+    #[test]
+    fn unary_abs_mixed_signs() {
+        let arr = UFuncArray::new(
+            vec![2, 3],
+            vec![-3.0, 1.0, -4.0, 1.5, -5.0, 0.0],
+            DType::F64,
+        )
+        .expect("arr");
+
+        let out = arr.elementwise_unary(UnaryOp::Abs);
+        assert_eq!(out.shape(), &[2, 3]);
+        assert_eq!(out.values(), &[3.0, 1.0, 4.0, 1.5, 5.0, 0.0]);
+        assert_eq!(out.dtype(), DType::F64);
+    }
+
+    #[test]
+    fn unary_negative() {
+        let arr =
+            UFuncArray::new(vec![4], vec![1.0, -2.0, 0.0, 3.5], DType::F64).expect("arr");
+
+        let out = arr.elementwise_unary(UnaryOp::Negative);
+        assert_eq!(out.values(), &[-1.0, 2.0, 0.0, -3.5]);
+    }
+
+    #[test]
+    fn unary_sign() {
+        let arr = UFuncArray::new(
+            vec![5],
+            vec![-3.0, 0.0, 4.0, f64::NAN, -0.0],
+            DType::F64,
+        )
+        .expect("arr");
+
+        let out = arr.elementwise_unary(UnaryOp::Sign);
+        assert_eq!(out.values()[0], -1.0);
+        assert_eq!(out.values()[1], 0.0);
+        assert_eq!(out.values()[2], 1.0);
+        assert!(out.values()[3].is_nan());
+        assert_eq!(out.values()[4], 0.0);
+    }
+
+    #[test]
+    fn unary_sqrt() {
+        let arr =
+            UFuncArray::new(vec![4], vec![0.0, 1.0, 4.0, 9.0], DType::F64).expect("arr");
+
+        let out = arr.elementwise_unary(UnaryOp::Sqrt);
+        assert!((out.values()[0] - 0.0).abs() < 1e-10);
+        assert!((out.values()[1] - 1.0).abs() < 1e-10);
+        assert!((out.values()[2] - 2.0).abs() < 1e-10);
+        assert!((out.values()[3] - 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn unary_square() {
+        let arr =
+            UFuncArray::new(vec![4], vec![-2.0, 0.0, 3.0, -1.5], DType::F64).expect("arr");
+
+        let out = arr.elementwise_unary(UnaryOp::Square);
+        assert!((out.values()[0] - 4.0).abs() < 1e-10);
+        assert!((out.values()[1] - 0.0).abs() < 1e-10);
+        assert!((out.values()[2] - 9.0).abs() < 1e-10);
+        assert!((out.values()[3] - 2.25).abs() < 1e-10);
+    }
+
+    #[test]
+    fn unary_exp() {
+        let arr =
+            UFuncArray::new(vec![3], vec![0.0, 1.0, -1.0], DType::F64).expect("arr");
+        let out = arr.elementwise_unary(UnaryOp::Exp);
+        assert!((out.values()[0] - 1.0).abs() < 1e-10);
+        assert!((out.values()[1] - std::f64::consts::E).abs() < 1e-10);
+        assert!((out.values()[2] - 1.0 / std::f64::consts::E).abs() < 1e-10);
+    }
+
+    #[test]
+    fn unary_log() {
+        let arr =
+            UFuncArray::new(vec![3], vec![1.0, std::f64::consts::E, 10.0], DType::F64)
+                .expect("arr");
+        let out = arr.elementwise_unary(UnaryOp::Log);
+        assert!((out.values()[0] - 0.0).abs() < 1e-10);
+        assert!((out.values()[1] - 1.0).abs() < 1e-10);
+        assert!((out.values()[2] - 10.0_f64.ln()).abs() < 1e-10);
+    }
+
+    #[test]
+    fn unary_log2() {
+        let arr =
+            UFuncArray::new(vec![4], vec![1.0, 2.0, 4.0, 8.0], DType::F64).expect("arr");
+        let out = arr.elementwise_unary(UnaryOp::Log2);
+        assert!((out.values()[0] - 0.0).abs() < 1e-10);
+        assert!((out.values()[1] - 1.0).abs() < 1e-10);
+        assert!((out.values()[2] - 2.0).abs() < 1e-10);
+        assert!((out.values()[3] - 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn unary_log10() {
+        let arr = UFuncArray::new(vec![3], vec![1.0, 10.0, 100.0], DType::F64).expect("arr");
+        let out = arr.elementwise_unary(UnaryOp::Log10);
+        assert!((out.values()[0] - 0.0).abs() < 1e-10);
+        assert!((out.values()[1] - 1.0).abs() < 1e-10);
+        assert!((out.values()[2] - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn unary_sin_cos_identity() {
+        let arr = UFuncArray::new(
+            vec![4],
+            vec![0.0, 0.5, 1.0, 1.5],
+            DType::F64,
+        )
+        .expect("arr");
+
+        let s = arr.elementwise_unary(UnaryOp::Sin);
+        let c = arr.elementwise_unary(UnaryOp::Cos);
+        for i in 0..4 {
+            let identity = s.values()[i] * s.values()[i] + c.values()[i] * c.values()[i];
+            assert!(
+                (identity - 1.0).abs() < 1e-10,
+                "sin^2 + cos^2 != 1 at index {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn unary_tan() {
+        let arr =
+            UFuncArray::new(vec![3], vec![0.0, 0.25, 0.5], DType::F64).expect("arr");
+        let out = arr.elementwise_unary(UnaryOp::Tan);
+        assert!((out.values()[0] - 0.0).abs() < 1e-10);
+        assert!((out.values()[1] - 0.25_f64.tan()).abs() < 1e-10);
+        assert!((out.values()[2] - 0.5_f64.tan()).abs() < 1e-10);
+    }
+
+    #[test]
+    fn unary_preserves_dtype() {
+        let arr =
+            UFuncArray::new(vec![2], vec![1.0, 4.0], DType::F32).expect("arr");
+        let out = arr.elementwise_unary(UnaryOp::Sqrt);
+        assert_eq!(out.dtype(), DType::F32);
+    }
+
+    #[test]
+    fn binary_power() {
+        let lhs = UFuncArray::new(vec![3], vec![2.0, 3.0, 4.0], DType::F64).expect("lhs");
+        let rhs = UFuncArray::new(vec![3], vec![3.0, 2.0, 0.5], DType::F64).expect("rhs");
+        let out = lhs
+            .elementwise_binary(&rhs, BinaryOp::Power)
+            .expect("power");
+        assert!((out.values()[0] - 8.0).abs() < 1e-10);
+        assert!((out.values()[1] - 9.0).abs() < 1e-10);
+        assert!((out.values()[2] - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn binary_remainder_sign_follows_divisor() {
+        let lhs = UFuncArray::new(vec![4], vec![7.0, -7.0, 7.0, -7.0], DType::F64).expect("lhs");
+        let rhs = UFuncArray::new(vec![4], vec![3.0, 3.0, -3.0, -3.0], DType::F64).expect("rhs");
+        let out = lhs
+            .elementwise_binary(&rhs, BinaryOp::Remainder)
+            .expect("remainder");
+        assert!((out.values()[0] - 1.0).abs() < 1e-10);
+        assert!((out.values()[1] - 2.0).abs() < 1e-10);
+        assert!((out.values()[2] - (-2.0)).abs() < 1e-10);
+        assert!((out.values()[3] - (-1.0)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn binary_minimum() {
+        let lhs = UFuncArray::new(vec![3], vec![1.0, 5.0, 3.0], DType::F64).expect("lhs");
+        let rhs = UFuncArray::new(vec![3], vec![4.0, 2.0, 6.0], DType::F64).expect("rhs");
+        let out = lhs
+            .elementwise_binary(&rhs, BinaryOp::Minimum)
+            .expect("minimum");
+        assert_eq!(out.values(), &[1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn binary_maximum() {
+        let lhs = UFuncArray::new(vec![3], vec![1.0, 5.0, 3.0], DType::F64).expect("lhs");
+        let rhs = UFuncArray::new(vec![3], vec![4.0, 2.0, 6.0], DType::F64).expect("rhs");
+        let out = lhs
+            .elementwise_binary(&rhs, BinaryOp::Maximum)
+            .expect("maximum");
+        assert_eq!(out.values(), &[4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn binary_minimum_nan_propagation() {
+        let lhs =
+            UFuncArray::new(vec![3], vec![1.0, f64::NAN, 3.0], DType::F64).expect("lhs");
+        let rhs =
+            UFuncArray::new(vec![3], vec![f64::NAN, 2.0, f64::NAN], DType::F64).expect("rhs");
+        let out = lhs
+            .elementwise_binary(&rhs, BinaryOp::Minimum)
+            .expect("minimum");
+        assert!(out.values()[0].is_nan());
+        assert!(out.values()[1].is_nan());
+        assert!(out.values()[2].is_nan());
+    }
+
+    #[test]
+    fn unary_floor() {
+        let arr = UFuncArray::new(
+            vec![5],
+            vec![1.7, -1.7, 2.5, -2.5, 0.0],
+            DType::F64,
+        )
+        .expect("arr");
+        let out = arr.elementwise_unary(UnaryOp::Floor);
+        assert_eq!(out.values(), &[1.0, -2.0, 2.0, -3.0, 0.0]);
+    }
+
+    #[test]
+    fn unary_ceil() {
+        let arr = UFuncArray::new(
+            vec![5],
+            vec![1.7, -1.7, 2.5, -2.5, 0.0],
+            DType::F64,
+        )
+        .expect("arr");
+        let out = arr.elementwise_unary(UnaryOp::Ceil);
+        assert_eq!(out.values(), &[2.0, -1.0, 3.0, -2.0, 0.0]);
+    }
+
+    #[test]
+    fn unary_round_bankers() {
+        let arr = UFuncArray::new(
+            vec![6],
+            vec![0.5, 1.5, 2.5, 3.5, 4.5, -0.5],
+            DType::F64,
+        )
+        .expect("arr");
+        let out = arr.elementwise_unary(UnaryOp::Round);
+        // Banker's rounding: 0.5->0, 1.5->2, 2.5->2, 3.5->4, 4.5->4, -0.5->0
+        assert_eq!(out.values(), &[0.0, 2.0, 2.0, 4.0, 4.0, 0.0]);
+    }
+
+    #[test]
+    fn unary_reciprocal() {
+        let arr =
+            UFuncArray::new(vec![4], vec![1.0, 2.0, 4.0, 0.5], DType::F64).expect("arr");
+        let out = arr.elementwise_unary(UnaryOp::Reciprocal);
+        assert!((out.values()[0] - 1.0).abs() < 1e-10);
+        assert!((out.values()[1] - 0.5).abs() < 1e-10);
+        assert!((out.values()[2] - 0.25).abs() < 1e-10);
+        assert!((out.values()[3] - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn unary_sinh() {
+        let arr =
+            UFuncArray::new(vec![3], vec![0.0, 1.0, -1.0], DType::F64).expect("arr");
+        let out = arr.elementwise_unary(UnaryOp::Sinh);
+        assert!((out.values()[0] - 0.0).abs() < 1e-10);
+        assert!((out.values()[1] - 1.0_f64.sinh()).abs() < 1e-10);
+        assert!((out.values()[2] - (-1.0_f64).sinh()).abs() < 1e-10);
+    }
+
+    #[test]
+    fn unary_cosh() {
+        let arr =
+            UFuncArray::new(vec![3], vec![0.0, 1.0, -1.0], DType::F64).expect("arr");
+        let out = arr.elementwise_unary(UnaryOp::Cosh);
+        assert!((out.values()[0] - 1.0).abs() < 1e-10);
+        assert!((out.values()[1] - 1.0_f64.cosh()).abs() < 1e-10);
+        assert!((out.values()[2] - 1.0_f64.cosh()).abs() < 1e-10); // cosh is even
+    }
+
+    #[test]
+    fn unary_tanh() {
+        let arr =
+            UFuncArray::new(vec![3], vec![0.0, 1.0, -1.0], DType::F64).expect("arr");
+        let out = arr.elementwise_unary(UnaryOp::Tanh);
+        assert!((out.values()[0] - 0.0).abs() < 1e-10);
+        assert!((out.values()[1] - 1.0_f64.tanh()).abs() < 1e-10);
+        assert!((out.values()[2] - (-1.0_f64).tanh()).abs() < 1e-10);
+    }
+
+    #[test]
+    fn unary_arcsin() {
+        let arr =
+            UFuncArray::new(vec![3], vec![0.0, 0.5, 1.0], DType::F64).expect("arr");
+        let out = arr.elementwise_unary(UnaryOp::Arcsin);
+        assert!((out.values()[0] - 0.0).abs() < 1e-10);
+        assert!((out.values()[1] - 0.5_f64.asin()).abs() < 1e-10);
+        assert!((out.values()[2] - std::f64::consts::FRAC_PI_2).abs() < 1e-10);
+    }
+
+    #[test]
+    fn unary_arccos() {
+        let arr =
+            UFuncArray::new(vec![3], vec![1.0, 0.5, 0.0], DType::F64).expect("arr");
+        let out = arr.elementwise_unary(UnaryOp::Arccos);
+        assert!((out.values()[0] - 0.0).abs() < 1e-10);
+        assert!((out.values()[1] - 0.5_f64.acos()).abs() < 1e-10);
+        assert!((out.values()[2] - std::f64::consts::FRAC_PI_2).abs() < 1e-10);
+    }
+
+    #[test]
+    fn unary_arctan() {
+        let arr =
+            UFuncArray::new(vec![3], vec![0.0, 1.0, -1.0], DType::F64).expect("arr");
+        let out = arr.elementwise_unary(UnaryOp::Arctan);
+        assert!((out.values()[0] - 0.0).abs() < 1e-10);
+        assert!((out.values()[1] - std::f64::consts::FRAC_PI_4).abs() < 1e-10);
+        assert!((out.values()[2] - (-std::f64::consts::FRAC_PI_4)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn binary_arctan2() {
+        let lhs = UFuncArray::new(vec![4], vec![1.0, -1.0, -1.0, 1.0], DType::F64).expect("lhs");
+        let rhs = UFuncArray::new(vec![4], vec![1.0, 1.0, -1.0, -1.0], DType::F64).expect("rhs");
+        let out = lhs
+            .elementwise_binary(&rhs, BinaryOp::Arctan2)
+            .expect("arctan2");
+        assert!((out.values()[0] - std::f64::consts::FRAC_PI_4).abs() < 1e-10);
+        assert!((out.values()[1] - (-std::f64::consts::FRAC_PI_4)).abs() < 1e-10);
     }
 
     #[test]
