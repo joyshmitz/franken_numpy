@@ -2367,11 +2367,11 @@ fn random_runtime_mode(mode: RuntimeMode) -> RandomRuntimeMode {
 }
 
 fn extract_reason_code_from_rng_actual(actual: &str, fallback: &str) -> String {
-    if let Some((_, suffix)) = actual.rsplit_once("reason_code=") {
-        let token = suffix.split_whitespace().next().unwrap_or_default().trim();
-        if !token.is_empty() {
-            return token.to_string();
-        }
+    if let Some((_, suffix)) = actual.rsplit_once("reason_code=")
+        && let Some(reason_code_fragment) = suffix.split_whitespace().next().map(str::trim)
+        && !reason_code_fragment.is_empty()
+    {
+        return reason_code_fragment.to_string();
     }
     crate::normalize_reason_code(fallback)
 }

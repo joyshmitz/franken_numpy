@@ -111,8 +111,7 @@ pub const fn can_cast_lossless(src: DType, dst: DType) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        DType, can_cast_lossless, promote, promote_for_mean_reduction,
-        promote_for_sum_reduction,
+        DType, can_cast_lossless, promote, promote_for_mean_reduction, promote_for_sum_reduction,
     };
 
     fn all_dtypes() -> [DType; 5] {

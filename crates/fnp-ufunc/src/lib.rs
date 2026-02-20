@@ -997,6 +997,182 @@ impl UFuncArray {
             dtype: self.dtype,
         }
     }
+
+    /// Compute population variance along `axis` (ddof=0 by default, matching `numpy.var`).
+    /// Output dtype follows `promote_for_mean_reduction` (integer types promote to F64).
+    pub fn reduce_var(
+        &self,
+        axis: Option<isize>,
+        keepdims: bool,
+        ddof: usize,
+    ) -> Result<Self, UFuncError> {
+        let out_dtype = promote_for_mean_reduction(self.dtype);
+        match axis {
+            None => {
+                let n = self.values.len();
+                let mean = self.values.iter().copied().sum::<f64>() / n as f64;
+                let var = self
+                    .values
+                    .iter()
+                    .map(|&v| (v - mean) * (v - mean))
+                    .sum::<f64>()
+                    / (n - ddof) as f64;
+                let shape = if keepdims {
+                    vec![1; self.shape.len()]
+                } else {
+                    Vec::new()
+                };
+                Ok(Self {
+                    shape,
+                    values: vec![var],
+                    dtype: out_dtype,
+                })
+            }
+            Some(axis) => {
+                let axis = normalize_axis(axis, self.shape.len())?;
+                let axis_len = self.shape[axis];
+                let out_shape = reduced_shape(&self.shape, axis, keepdims);
+                let out_count = element_count(&out_shape).map_err(UFuncError::Shape)?;
+
+                // First compute means along axis
+                let mut means = vec![0.0f64; out_count];
+                reduce_sum_axis_contiguous(&self.values, &self.shape, axis, &mut means);
+                for m in &mut means {
+                    *m /= axis_len as f64;
+                }
+
+                // Then compute sum of squared deviations
+                let mut var_values = vec![0.0f64; out_count];
+                reduce_var_axis_contiguous(
+                    &self.values,
+                    &self.shape,
+                    axis,
+                    &means,
+                    &mut var_values,
+                );
+                let divisor = (axis_len - ddof) as f64;
+                for v in &mut var_values {
+                    *v /= divisor;
+                }
+
+                Ok(Self {
+                    shape: out_shape,
+                    values: var_values,
+                    dtype: out_dtype,
+                })
+            }
+        }
+    }
+
+    /// Compute standard deviation along `axis` (ddof=0 by default, matching `numpy.std`).
+    pub fn reduce_std(
+        &self,
+        axis: Option<isize>,
+        keepdims: bool,
+        ddof: usize,
+    ) -> Result<Self, UFuncError> {
+        let mut var_result = self.reduce_var(axis, keepdims, ddof)?;
+        for v in &mut var_result.values {
+            *v = v.sqrt();
+        }
+        Ok(var_result)
+    }
+
+    /// Return the index of the minimum value along `axis` (matching `numpy.argmin`).
+    /// When `axis` is `None`, operates on the flattened array and returns a scalar.
+    /// Output dtype is always `I64`.
+    pub fn reduce_argmin(&self, axis: Option<isize>) -> Result<Self, UFuncError> {
+        match axis {
+            None => {
+                let idx = self
+                    .values
+                    .iter()
+                    .enumerate()
+                    .fold(
+                        (0usize, f64::INFINITY),
+                        |(min_idx, min_val), (idx, &val)| {
+                            if val < min_val {
+                                (idx, val)
+                            } else {
+                                (min_idx, min_val)
+                            }
+                        },
+                    )
+                    .0;
+                Ok(Self {
+                    shape: Vec::new(),
+                    values: vec![idx as f64],
+                    dtype: DType::I64,
+                })
+            }
+            Some(axis) => {
+                let axis = normalize_axis(axis, self.shape.len())?;
+                let out_shape = reduced_shape(&self.shape, axis, false);
+                let out_count = element_count(&out_shape).map_err(UFuncError::Shape)?;
+                let mut out_values = vec![0.0f64; out_count];
+                reduce_argfold_axis_contiguous(
+                    &self.values,
+                    &self.shape,
+                    axis,
+                    &mut out_values,
+                    |cur, best| cur < best,
+                );
+                Ok(Self {
+                    shape: out_shape,
+                    values: out_values,
+                    dtype: DType::I64,
+                })
+            }
+        }
+    }
+
+    /// Return the index of the maximum value along `axis` (matching `numpy.argmax`).
+    /// When `axis` is `None`, operates on the flattened array and returns a scalar.
+    /// Output dtype is always `I64`.
+    pub fn reduce_argmax(&self, axis: Option<isize>) -> Result<Self, UFuncError> {
+        match axis {
+            None => {
+                let idx = self
+                    .values
+                    .iter()
+                    .enumerate()
+                    .fold(
+                        (0usize, f64::NEG_INFINITY),
+                        |(max_idx, max_val), (idx, &val)| {
+                            if val > max_val {
+                                (idx, val)
+                            } else {
+                                (max_idx, max_val)
+                            }
+                        },
+                    )
+                    .0;
+                Ok(Self {
+                    shape: Vec::new(),
+                    values: vec![idx as f64],
+                    dtype: DType::I64,
+                })
+            }
+            Some(axis) => {
+                let axis = normalize_axis(axis, self.shape.len())?;
+                let out_shape = reduced_shape(&self.shape, axis, false);
+                let out_count = element_count(&out_shape).map_err(UFuncError::Shape)?;
+                let mut out_values = vec![0.0f64; out_count];
+                reduce_argfold_axis_contiguous(
+                    &self.values,
+                    &self.shape,
+                    axis,
+                    &mut out_values,
+                    |cur, best| cur > best,
+                );
+                Ok(Self {
+                    shape: out_shape,
+                    values: out_values,
+                    dtype: DType::I64,
+                })
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1352,6 +1528,85 @@ fn cumulate_axis(
     }
 
     Ok(out)
+}
+
+fn reduce_var_axis_contiguous(
+    values: &[f64],
+    shape: &[usize],
+    axis: usize,
+    means: &[f64],
+    out_values: &mut [f64],
+) {
+    debug_assert!(axis < shape.len());
+    if out_values.is_empty() {
+        return;
+    }
+
+    let axis_len = shape[axis];
+    if axis_len == 0 {
+        return;
+    }
+
+    let inner = shape[axis + 1..].iter().copied().product::<usize>();
+    let outer = shape[..axis].iter().copied().product::<usize>();
+
+    let mut out_flat = 0usize;
+    for outer_idx in 0..outer {
+        let base = outer_idx * axis_len * inner;
+        for inner_idx in 0..inner {
+            let mean = means[out_flat];
+            let mut sum_sq = 0.0f64;
+            let mut offset = base + inner_idx;
+            for _ in 0..axis_len {
+                let diff = values[offset] - mean;
+                sum_sq += diff * diff;
+                offset += inner;
+            }
+            out_values[out_flat] = sum_sq;
+            out_flat += 1;
+        }
+    }
+}
+
+fn reduce_argfold_axis_contiguous(
+    values: &[f64],
+    shape: &[usize],
+    axis: usize,
+    out_values: &mut [f64],
+    is_better: impl Fn(f64, f64) -> bool,
+) {
+    debug_assert!(axis < shape.len());
+    if out_values.is_empty() {
+        return;
+    }
+
+    let axis_len = shape[axis];
+    if axis_len == 0 {
+        return;
+    }
+
+    let inner = shape[axis + 1..].iter().copied().product::<usize>();
+    let outer = shape[..axis].iter().copied().product::<usize>();
+
+    let mut out_flat = 0usize;
+    for outer_idx in 0..outer {
+        let base = outer_idx * axis_len * inner;
+        for inner_idx in 0..inner {
+            let mut offset = base + inner_idx;
+            let mut best_val = values[offset];
+            let mut best_idx = 0usize;
+            offset += inner;
+            for k in 1..axis_len {
+                if is_better(values[offset], best_val) {
+                    best_val = values[offset];
+                    best_idx = k;
+                }
+                offset += inner;
+            }
+            out_values[out_flat] = best_idx as f64;
+            out_flat += 1;
+        }
+    }
 }
 
 #[must_use]
@@ -2869,6 +3124,166 @@ mod tests {
                 1.0, 3.0, 6.0, 4.0, 9.0, 15.0, 7.0, 15.0, 24.0, 10.0, 21.0, 33.0
             ]
         );
+    }
+
+    // ── var / std reduction tests ──────────────────────────────────────
+
+    #[test]
+    fn reduce_var_axis_none() {
+        // np.var([1,2,3,4]) = 1.25
+        let arr = UFuncArray::new(vec![4], vec![1.0, 2.0, 3.0, 4.0], DType::F64).expect("arr");
+        let out = arr.reduce_var(None, false, 0).expect("var");
+        assert_eq!(out.shape(), &[] as &[usize]);
+        assert!((out.values()[0] - 1.25).abs() < 1e-12);
+    }
+
+    #[test]
+    fn reduce_var_ddof_1() {
+        // np.var([1,2,3,4], ddof=1) = 1.6666...
+        let arr = UFuncArray::new(vec![4], vec![1.0, 2.0, 3.0, 4.0], DType::F64).expect("arr");
+        let out = arr.reduce_var(None, false, 1).expect("var ddof=1");
+        assert!((out.values()[0] - 5.0 / 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn reduce_var_axis_one() {
+        // np.var([[1,2,3],[4,5,6]], axis=1) = [0.6666..., 0.6666...]
+        let arr = UFuncArray::new(
+            vec![2, 3],
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            DType::F64,
+        )
+        .expect("arr");
+        let out = arr.reduce_var(Some(1), false, 0).expect("var axis=1");
+        assert_eq!(out.shape(), &[2]);
+        let expected = 2.0 / 3.0;
+        assert!((out.values()[0] - expected).abs() < 1e-12);
+        assert!((out.values()[1] - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn reduce_var_keepdims() {
+        let arr = UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64)
+            .expect("arr");
+        let out = arr.reduce_var(Some(1), true, 0).expect("var keepdims");
+        assert_eq!(out.shape(), &[2, 1]);
+    }
+
+    #[test]
+    fn reduce_var_promotes_i32_to_f64() {
+        let arr = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::I32).expect("arr");
+        let out = arr.reduce_var(None, false, 0).expect("var");
+        assert_eq!(out.dtype(), DType::F64);
+    }
+
+    #[test]
+    fn reduce_std_axis_none() {
+        // np.std([1,2,3,4]) = sqrt(1.25) ≈ 1.118033988749895
+        let arr = UFuncArray::new(vec![4], vec![1.0, 2.0, 3.0, 4.0], DType::F64).expect("arr");
+        let out = arr.reduce_std(None, false, 0).expect("std");
+        assert!((out.values()[0] - 1.25_f64.sqrt()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn reduce_std_axis_zero() {
+        // np.std([[1,5],[2,6]], axis=0) = [0.5, 0.5]
+        let arr =
+            UFuncArray::new(vec![2, 2], vec![1.0, 5.0, 2.0, 6.0], DType::F64).expect("arr");
+        let out = arr.reduce_std(Some(0), false, 0).expect("std axis=0");
+        assert_eq!(out.shape(), &[2]);
+        assert!((out.values()[0] - 0.5).abs() < 1e-12);
+        assert!((out.values()[1] - 0.5).abs() < 1e-12);
+    }
+
+    // ── argmin / argmax reduction tests ─────────────────────────────────
+
+    #[test]
+    fn reduce_argmin_axis_none() {
+        let arr =
+            UFuncArray::new(vec![2, 3], vec![5.0, 1.0, 3.0, 2.0, 4.0, 0.0], DType::F64)
+                .expect("arr");
+        let out = arr.reduce_argmin(None).expect("argmin");
+        assert_eq!(out.shape(), &[] as &[usize]);
+        assert_eq!(out.values()[0], 5.0); // flat index of 0.0
+        assert_eq!(out.dtype(), DType::I64);
+    }
+
+    #[test]
+    fn reduce_argmin_axis_zero() {
+        // np.argmin([[5,1],[3,2]], axis=0) = [1, 0]
+        let arr =
+            UFuncArray::new(vec![2, 2], vec![5.0, 1.0, 3.0, 2.0], DType::F64).expect("arr");
+        let out = arr.reduce_argmin(Some(0)).expect("argmin axis=0");
+        assert_eq!(out.shape(), &[2]);
+        assert_eq!(out.values(), &[1.0, 0.0]);
+    }
+
+    #[test]
+    fn reduce_argmin_axis_one() {
+        // np.argmin([[5,1,3],[2,4,0]], axis=1) = [1, 2]
+        let arr = UFuncArray::new(
+            vec![2, 3],
+            vec![5.0, 1.0, 3.0, 2.0, 4.0, 0.0],
+            DType::F64,
+        )
+        .expect("arr");
+        let out = arr.reduce_argmin(Some(1)).expect("argmin axis=1");
+        assert_eq!(out.shape(), &[2]);
+        assert_eq!(out.values(), &[1.0, 2.0]);
+    }
+
+    #[test]
+    fn reduce_argmax_axis_none() {
+        let arr =
+            UFuncArray::new(vec![2, 3], vec![5.0, 1.0, 3.0, 2.0, 4.0, 9.0], DType::F64)
+                .expect("arr");
+        let out = arr.reduce_argmax(None).expect("argmax");
+        assert_eq!(out.shape(), &[] as &[usize]);
+        assert_eq!(out.values()[0], 5.0); // flat index of 9.0
+        assert_eq!(out.dtype(), DType::I64);
+    }
+
+    #[test]
+    fn reduce_argmax_axis_zero() {
+        // np.argmax([[5,1],[3,2]], axis=0) = [0, 1]
+        let arr =
+            UFuncArray::new(vec![2, 2], vec![5.0, 1.0, 3.0, 2.0], DType::F64).expect("arr");
+        let out = arr.reduce_argmax(Some(0)).expect("argmax axis=0");
+        assert_eq!(out.shape(), &[2]);
+        assert_eq!(out.values(), &[0.0, 1.0]);
+    }
+
+    #[test]
+    fn reduce_argmax_axis_one() {
+        // np.argmax([[5,1,3],[2,4,9]], axis=1) = [0, 2]
+        let arr = UFuncArray::new(
+            vec![2, 3],
+            vec![5.0, 1.0, 3.0, 2.0, 4.0, 9.0],
+            DType::F64,
+        )
+        .expect("arr");
+        let out = arr.reduce_argmax(Some(1)).expect("argmax axis=1");
+        assert_eq!(out.shape(), &[2]);
+        assert_eq!(out.values(), &[0.0, 2.0]);
+    }
+
+    #[test]
+    fn reduce_argmax_3d_axis_1() {
+        // 2x3x2 array, argmax along axis=1
+        let arr = UFuncArray::new(
+            vec![2, 3, 2],
+            vec![
+                1.0, 2.0, 5.0, 4.0, 3.0, 6.0, // first outer slice
+                9.0, 8.0, 7.0, 10.0, 11.0, 12.0, // second outer slice
+            ],
+            DType::F64,
+        )
+        .expect("arr");
+        let out = arr.reduce_argmax(Some(1)).expect("argmax axis=1");
+        assert_eq!(out.shape(), &[2, 2]);
+        // first outer: col 0 max is 5.0 at row 1, col 1 max is 6.0 at row 2
+        // second outer: col 0 max is 11.0 at row 2, col 1 max is 12.0 at row 2
+        assert_eq!(out.values(), &[1.0, 2.0, 2.0, 2.0]);
     }
 
     #[test]
