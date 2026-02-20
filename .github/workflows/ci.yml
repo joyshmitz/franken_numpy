@@ -1,0 +1,116 @@
+name: CI Gate Topology
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  g1-fmt-lint:
+    name: "G1: fmt + lint"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  g2-unit-property:
+    name: "G2: unit + property"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --lib
+
+  g3-differential:
+    name: "G3: differential"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo run -p fnp-conformance --bin run_ufunc_differential
+
+  g4-adversarial-security:
+    name: "G4: adversarial + security"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo run -p fnp-conformance --bin run_security_gate
+
+  g5-test-contract:
+    name: "G5: test contract"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo run -p fnp-conformance --bin run_test_contract_gate
+
+  g6-workflow-forensics:
+    name: "G6: workflow + forensics"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: >
+          cargo run -p fnp-conformance --bin run_workflow_scenario_gate --
+          --retries 0 --flake-budget 0 --coverage-floor 1.0
+
+  g7-performance-budget:
+    name: "G7: performance budget"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Generate candidate baseline
+        run: |
+          cargo run -p fnp-conformance --bin generate_benchmark_baseline -- \
+            --output-path /tmp/perf_candidate.json
+      - name: Run performance budget gate
+        run: |
+          cargo run -p fnp-conformance --bin run_performance_budget_gate -- \
+            --reference-path artifacts/baselines/ufunc_benchmark_baseline.json \
+            --candidate-path /tmp/perf_candidate.json \
+            --max-p99-regression-ratio 0.07 \
+            --coverage-floor 1.0
+
+  g8-durability-decode:
+    name: "G8: durability + decode proof"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: >
+          cargo run -p fnp-conformance --bin run_raptorq_gate --
+          --retries 1 --flake-budget 0 --coverage-floor 1.0

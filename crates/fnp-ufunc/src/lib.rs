@@ -1964,6 +1964,167 @@ mod tests {
     }
 
     #[test]
+    fn unary_cbrt() {
+        let arr =
+            UFuncArray::new(vec![4], vec![8.0, -27.0, 0.0, 1.0], DType::F64).expect("arr");
+        let out = arr.elementwise_unary(UnaryOp::Cbrt);
+        assert!((out.values()[0] - 2.0).abs() < 1e-10);
+        assert!((out.values()[1] - (-3.0)).abs() < 1e-10);
+        assert!((out.values()[2] - 0.0).abs() < 1e-10);
+        assert!((out.values()[3] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn unary_expm1() {
+        let arr =
+            UFuncArray::new(vec![3], vec![0.0, 1.0, -1.0], DType::F64).expect("arr");
+        let out = arr.elementwise_unary(UnaryOp::Expm1);
+        assert!((out.values()[0] - 0.0).abs() < 1e-10);
+        assert!((out.values()[1] - (std::f64::consts::E - 1.0)).abs() < 1e-10);
+        assert!((out.values()[2] - ((-1.0_f64).exp() - 1.0)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn unary_log1p() {
+        let arr =
+            UFuncArray::new(vec![3], vec![0.0, 1.0, -0.5], DType::F64).expect("arr");
+        let out = arr.elementwise_unary(UnaryOp::Log1p);
+        assert!((out.values()[0] - 0.0).abs() < 1e-10);
+        assert!((out.values()[1] - 2.0_f64.ln()).abs() < 1e-10);
+        assert!((out.values()[2] - 0.5_f64.ln()).abs() < 1e-10);
+    }
+
+    #[test]
+    fn unary_degrees() {
+        let arr = UFuncArray::new(
+            vec![4],
+            vec![0.0, std::f64::consts::PI, std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_4],
+            DType::F64,
+        )
+        .expect("arr");
+        let out = arr.elementwise_unary(UnaryOp::Degrees);
+        assert!((out.values()[0] - 0.0).abs() < 1e-10);
+        assert!((out.values()[1] - 180.0).abs() < 1e-10);
+        assert!((out.values()[2] - 90.0).abs() < 1e-10);
+        assert!((out.values()[3] - 45.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn unary_radians() {
+        let arr =
+            UFuncArray::new(vec![4], vec![0.0, 180.0, 90.0, 45.0], DType::F64).expect("arr");
+        let out = arr.elementwise_unary(UnaryOp::Radians);
+        assert!((out.values()[0] - 0.0).abs() < 1e-10);
+        assert!((out.values()[1] - std::f64::consts::PI).abs() < 1e-10);
+        assert!((out.values()[2] - std::f64::consts::FRAC_PI_2).abs() < 1e-10);
+        assert!((out.values()[3] - std::f64::consts::FRAC_PI_4).abs() < 1e-10);
+    }
+
+    #[test]
+    fn unary_rint_bankers() {
+        let arr = UFuncArray::new(
+            vec![8],
+            vec![0.5, 1.5, 2.5, 3.5, 4.5, -0.5, 1.7, -1.7],
+            DType::F64,
+        )
+        .expect("arr");
+        let out = arr.elementwise_unary(UnaryOp::Rint);
+        // Banker's rounding: 0.5->0, 1.5->2, 2.5->2, 3.5->4, 4.5->4, -0.5->0
+        assert_eq!(out.values()[0], 0.0);
+        assert_eq!(out.values()[1], 2.0);
+        assert_eq!(out.values()[2], 2.0);
+        assert_eq!(out.values()[3], 4.0);
+        assert_eq!(out.values()[4], 4.0);
+        assert_eq!(out.values()[5], 0.0);
+        assert!((out.values()[6] - 2.0).abs() < 1e-10);
+        assert!((out.values()[7] - (-2.0)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn unary_trunc() {
+        let arr = UFuncArray::new(
+            vec![5],
+            vec![1.7, -1.7, 2.5, -2.5, 0.0],
+            DType::F64,
+        )
+        .expect("arr");
+        let out = arr.elementwise_unary(UnaryOp::Trunc);
+        assert_eq!(out.values(), &[1.0, -1.0, 2.0, -2.0, 0.0]);
+    }
+
+    #[test]
+    fn binary_fmod_sign_follows_dividend() {
+        let lhs = UFuncArray::new(vec![4], vec![7.0, -7.0, 7.0, -7.0], DType::F64).expect("lhs");
+        let rhs = UFuncArray::new(vec![4], vec![3.0, 3.0, -3.0, -3.0], DType::F64).expect("rhs");
+        let out = lhs
+            .elementwise_binary(&rhs, BinaryOp::Fmod)
+            .expect("fmod");
+        // fmod: sign follows dividend (unlike remainder where sign follows divisor)
+        assert!((out.values()[0] - 1.0).abs() < 1e-10);
+        assert!((out.values()[1] - (-1.0)).abs() < 1e-10);
+        assert!((out.values()[2] - 1.0).abs() < 1e-10);
+        assert!((out.values()[3] - (-1.0)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn binary_copysign() {
+        let lhs = UFuncArray::new(vec![4], vec![1.0, -1.0, 3.0, -3.0], DType::F64).expect("lhs");
+        let rhs = UFuncArray::new(vec![4], vec![-1.0, 1.0, -1.0, 1.0], DType::F64).expect("rhs");
+        let out = lhs
+            .elementwise_binary(&rhs, BinaryOp::Copysign)
+            .expect("copysign");
+        assert_eq!(out.values(), &[-1.0, 1.0, -3.0, 3.0]);
+    }
+
+    #[test]
+    fn binary_fmax() {
+        let lhs = UFuncArray::new(vec![3], vec![1.0, 5.0, 3.0], DType::F64).expect("lhs");
+        let rhs = UFuncArray::new(vec![3], vec![4.0, 2.0, 6.0], DType::F64).expect("rhs");
+        let out = lhs
+            .elementwise_binary(&rhs, BinaryOp::Fmax)
+            .expect("fmax");
+        assert_eq!(out.values(), &[4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn binary_fmin() {
+        let lhs = UFuncArray::new(vec![3], vec![1.0, 5.0, 3.0], DType::F64).expect("lhs");
+        let rhs = UFuncArray::new(vec![3], vec![4.0, 2.0, 6.0], DType::F64).expect("rhs");
+        let out = lhs
+            .elementwise_binary(&rhs, BinaryOp::Fmin)
+            .expect("fmin");
+        assert_eq!(out.values(), &[1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn binary_fmax_nan_ignoring() {
+        let lhs =
+            UFuncArray::new(vec![3], vec![1.0, f64::NAN, 3.0], DType::F64).expect("lhs");
+        let rhs =
+            UFuncArray::new(vec![3], vec![f64::NAN, 2.0, f64::NAN], DType::F64).expect("rhs");
+        let out = lhs
+            .elementwise_binary(&rhs, BinaryOp::Fmax)
+            .expect("fmax");
+        assert_eq!(out.values()[0], 1.0);
+        assert_eq!(out.values()[1], 2.0);
+        assert_eq!(out.values()[2], 3.0);
+    }
+
+    #[test]
+    fn binary_fmin_nan_ignoring() {
+        let lhs =
+            UFuncArray::new(vec![3], vec![1.0, f64::NAN, 3.0], DType::F64).expect("lhs");
+        let rhs =
+            UFuncArray::new(vec![3], vec![f64::NAN, 2.0, f64::NAN], DType::F64).expect("rhs");
+        let out = lhs
+            .elementwise_binary(&rhs, BinaryOp::Fmin)
+            .expect("fmin");
+        assert_eq!(out.values()[0], 1.0);
+        assert_eq!(out.values()[1], 2.0);
+        assert_eq!(out.values()[2], 3.0);
+    }
+
+    #[test]
     fn packet005_log_record_is_replay_complete() {
         let record = UFuncLogRecord {
             fixture_id: "UP-005-elementwise-deterministic".to_string(),

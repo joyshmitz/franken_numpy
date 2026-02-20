@@ -142,6 +142,27 @@ def py_binary(lhs_vals, lhs_shape, rhs_vals, rhs_shape, op):
             out_vals.append(max(l, r) if not (math.isnan(l) or math.isnan(r)) else float('nan'))
         elif op == 'arctan2':
             out_vals.append(math.atan2(l, r))
+        elif op == 'fmod':
+            if r == 0.0:
+                out_vals.append(float('nan'))
+            else:
+                out_vals.append(math.fmod(l, r))
+        elif op == 'copysign':
+            out_vals.append(math.copysign(l, r))
+        elif op == 'fmax':
+            if math.isnan(l):
+                out_vals.append(r)
+            elif math.isnan(r):
+                out_vals.append(l)
+            else:
+                out_vals.append(max(l, r))
+        elif op == 'fmin':
+            if math.isnan(l):
+                out_vals.append(r)
+            elif math.isnan(r):
+                out_vals.append(l)
+            else:
+                out_vals.append(min(l, r))
         else:
             raise ValueError(f'unsupported op {op}')
     return out_shape, out_vals
@@ -314,7 +335,7 @@ for case in cases:
             lhs_dtype = normalize_dtype_name(case.get('lhs_dtype', 'float64'))
             lhs = np.array(case['lhs_values'], dtype=lhs_dtype).reshape(tuple(case['lhs_shape']))
 
-            if op in ('add', 'sub', 'mul', 'div', 'power', 'remainder', 'minimum', 'maximum', 'arctan2'):
+            if op in ('add', 'sub', 'mul', 'div', 'power', 'remainder', 'minimum', 'maximum', 'arctan2', 'fmod', 'copysign', 'fmax', 'fmin'):
                 rhs_dtype = normalize_dtype_name(case.get('rhs_dtype', 'float64'))
                 rhs = np.array(case['rhs_values'], dtype=rhs_dtype).reshape(tuple(case['rhs_shape']))
                 if op == 'add':
@@ -335,6 +356,14 @@ for case in cases:
                     out = np.maximum(lhs, rhs)
                 elif op == 'arctan2':
                     out = np.arctan2(lhs, rhs)
+                elif op == 'fmod':
+                    out = np.fmod(lhs, rhs)
+                elif op == 'copysign':
+                    out = np.copysign(lhs, rhs)
+                elif op == 'fmax':
+                    out = np.fmax(lhs, rhs)
+                elif op == 'fmin':
+                    out = np.fmin(lhs, rhs)
             elif op == 'sum':
                 axis = case.get('axis')
                 keepdims = bool(case.get('keepdims', False))
@@ -399,6 +428,20 @@ for case in cases:
                 out = np.arccos(lhs)
             elif op == 'arctan':
                 out = np.arctan(lhs)
+            elif op == 'cbrt':
+                out = np.cbrt(lhs)
+            elif op == 'expm1':
+                out = np.expm1(lhs)
+            elif op == 'log1p':
+                out = np.log1p(lhs)
+            elif op == 'degrees':
+                out = np.degrees(lhs)
+            elif op == 'radians':
+                out = np.radians(lhs)
+            elif op == 'rint':
+                out = np.rint(lhs)
+            elif op == 'trunc':
+                out = np.trunc(lhs)
             else:
                 raise ValueError(f'unsupported op: {op}')
 
@@ -410,7 +453,7 @@ for case in cases:
             lhs_shape = case['lhs_shape']
             lhs_vals = [float(v) for v in case['lhs_values']]
             lhs_dtype = normalize_fallback_dtype(case.get('lhs_dtype', 'f64'))
-            if op in ('add', 'sub', 'mul', 'div', 'power', 'remainder', 'minimum', 'maximum', 'arctan2'):
+            if op in ('add', 'sub', 'mul', 'div', 'power', 'remainder', 'minimum', 'maximum', 'arctan2', 'fmod', 'copysign', 'fmax', 'fmin'):
                 rhs_shape = case['rhs_shape']
                 rhs_vals = [float(v) for v in case['rhs_values']]
                 rhs_dtype = normalize_fallback_dtype(case.get('rhs_dtype', 'f64'))
@@ -519,6 +562,34 @@ for case in cases:
                 shape = lhs_shape
                 values = [math.atan(v) for v in lhs_vals]
                 dtype = lhs_dtype
+            elif op == 'cbrt':
+                shape = lhs_shape
+                values = [math.copysign(abs(v) ** (1.0/3.0), v) for v in lhs_vals]
+                dtype = lhs_dtype
+            elif op == 'expm1':
+                shape = lhs_shape
+                values = [math.expm1(v) for v in lhs_vals]
+                dtype = lhs_dtype
+            elif op == 'log1p':
+                shape = lhs_shape
+                values = [math.log1p(v) for v in lhs_vals]
+                dtype = lhs_dtype
+            elif op == 'degrees':
+                shape = lhs_shape
+                values = [math.degrees(v) for v in lhs_vals]
+                dtype = lhs_dtype
+            elif op == 'radians':
+                shape = lhs_shape
+                values = [math.radians(v) for v in lhs_vals]
+                dtype = lhs_dtype
+            elif op == 'rint':
+                shape = lhs_shape
+                values = [round(v) for v in lhs_vals]
+                dtype = lhs_dtype
+            elif op == 'trunc':
+                shape = lhs_shape
+                values = [math.trunc(v) for v in lhs_vals]
+                dtype = lhs_dtype
             else:
                 raise ValueError(f'unsupported op: {op}')
 
@@ -590,6 +661,17 @@ pub enum UFuncOperation {
     Arccos,
     Arctan,
     Arctan2,
+    Cbrt,
+    Expm1,
+    Log1p,
+    Degrees,
+    Radians,
+    Rint,
+    Trunc,
+    Fmod,
+    Copysign,
+    Fmax,
+    Fmin,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1104,7 +1186,11 @@ pub fn execute_input_case(case: &UFuncInputCase) -> Result<(Vec<usize>, Vec<f64>
         | UFuncOperation::Remainder
         | UFuncOperation::Minimum
         | UFuncOperation::Maximum
-        | UFuncOperation::Arctan2 => {
+        | UFuncOperation::Arctan2
+        | UFuncOperation::Fmod
+        | UFuncOperation::Copysign
+        | UFuncOperation::Fmax
+        | UFuncOperation::Fmin => {
             let rhs_shape = case
                 .rhs_shape
                 .clone()
@@ -1128,6 +1214,10 @@ pub fn execute_input_case(case: &UFuncInputCase) -> Result<(Vec<usize>, Vec<f64>
                 UFuncOperation::Minimum => BinaryOp::Minimum,
                 UFuncOperation::Maximum => BinaryOp::Maximum,
                 UFuncOperation::Arctan2 => BinaryOp::Arctan2,
+                UFuncOperation::Fmod => BinaryOp::Fmod,
+                UFuncOperation::Copysign => BinaryOp::Copysign,
+                UFuncOperation::Fmax => BinaryOp::Fmax,
+                UFuncOperation::Fmin => BinaryOp::Fmin,
                 _ => unreachable!("handled above"),
             };
 
@@ -1181,6 +1271,13 @@ pub fn execute_input_case(case: &UFuncInputCase) -> Result<(Vec<usize>, Vec<f64>
         UFuncOperation::Arcsin => lhs.elementwise_unary(UnaryOp::Arcsin),
         UFuncOperation::Arccos => lhs.elementwise_unary(UnaryOp::Arccos),
         UFuncOperation::Arctan => lhs.elementwise_unary(UnaryOp::Arctan),
+        UFuncOperation::Cbrt => lhs.elementwise_unary(UnaryOp::Cbrt),
+        UFuncOperation::Expm1 => lhs.elementwise_unary(UnaryOp::Expm1),
+        UFuncOperation::Log1p => lhs.elementwise_unary(UnaryOp::Log1p),
+        UFuncOperation::Degrees => lhs.elementwise_unary(UnaryOp::Degrees),
+        UFuncOperation::Radians => lhs.elementwise_unary(UnaryOp::Radians),
+        UFuncOperation::Rint => lhs.elementwise_unary(UnaryOp::Rint),
+        UFuncOperation::Trunc => lhs.elementwise_unary(UnaryOp::Trunc),
     };
 
     Ok((

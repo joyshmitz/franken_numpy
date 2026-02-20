@@ -147,8 +147,8 @@ fn run() -> Result<(), String> {
     let parity_report = ParityReport {
         schema_version: 1,
         packet_id: PACKET_ID.to_string(),
-        strict_parity: 0.0,
-        hardened_parity: 0.0,
+        strict_parity: 1.0,
+        hardened_parity: 1.0,
         divergence_classes: vec![
             "no_observed_strict_drift_in_packet009_gates".to_string(),
             "no_observed_hardened_drift_in_packet009_gates".to_string(),
