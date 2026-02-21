@@ -170,13 +170,23 @@ pub fn fix_unknown_dimension(
 
     match unknown_index {
         Some(idx) => {
-            if known_product == 0 || !old_element_count.is_multiple_of(known_product) {
+            if known_product == 0 {
+                if old_element_count == 0 {
+                    out[idx] = 0;
+                } else {
+                    return Err(ShapeError::IncompatibleElementCount {
+                        old: old_element_count,
+                        new: known_product,
+                    });
+                }
+            } else if old_element_count % known_product != 0 {
                 return Err(ShapeError::IncompatibleElementCount {
                     old: old_element_count,
                     new: known_product,
                 });
+            } else {
+                out[idx] = old_element_count / known_product;
             }
-            out[idx] = old_element_count / known_product;
         }
         None => {
             if known_product != old_element_count {
@@ -337,7 +347,7 @@ impl NdLayout {
 
     pub fn as_strided(&self, shape: Vec<usize>, strides: Vec<isize>) -> Result<Self, ShapeError> {
         let required_nbytes = required_view_nbytes(&shape, &strides, self.item_size)?;
-        let available_nbytes = self.nbytes()?;
+        let available_nbytes = required_view_nbytes(&self.shape, &self.strides, self.item_size)?;
         if required_nbytes > available_nbytes {
             return Err(ShapeError::OutOfBoundsView {
                 required_nbytes,

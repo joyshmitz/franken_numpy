@@ -265,18 +265,7 @@ impl BinaryOp {
                 // ldexp(lhs, rhs) = lhs * 2^rhs
                 lhs * (2.0_f64).powf(rhs)
             }
-            Self::FloorDivide => {
-                // Python-style floor division
-                if rhs == 0.0 {
-                    if lhs == 0.0 {
-                        f64::NAN
-                    } else {
-                        lhs.signum() * f64::INFINITY
-                    }
-                } else {
-                    (lhs / rhs).floor()
-                }
-            }
+            Self::FloorDivide => (lhs / rhs).floor(),
             Self::FloatPower => lhs.powf(rhs),
             Self::BitwiseAnd => {
                 let a = lhs as i64;
@@ -376,7 +365,7 @@ impl UnaryOp {
                 } else if x < 0.0 {
                     -1.0
                 } else {
-                    0.0
+                    x
                 }
             }
             Self::Sqrt => x.sqrt(),
@@ -390,23 +379,7 @@ impl UnaryOp {
             Self::Tan => x.tan(),
             Self::Floor => x.floor(),
             Self::Ceil => x.ceil(),
-            Self::Round => {
-                // NumPy uses banker's rounding (round half to even)
-                let rounded = x.round();
-                if (x - rounded).abs() == 0.0 {
-                    rounded
-                } else {
-                    let frac = (x - x.floor()).abs();
-                    if (frac - 0.5).abs() < f64::EPSILON {
-                        // Exactly 0.5 — round to even
-                        let floor = x.floor();
-                        let ceil = x.ceil();
-                        if floor % 2.0 == 0.0 { floor } else { ceil }
-                    } else {
-                        rounded
-                    }
-                }
-            }
+            Self::Round => x.round_ties_even(),
             Self::Reciprocal => 1.0 / x,
             Self::Sinh => x.sinh(),
             Self::Cosh => x.cosh(),
@@ -419,22 +392,7 @@ impl UnaryOp {
             Self::Log1p => x.ln_1p(),
             Self::Degrees => x.to_degrees(),
             Self::Radians => x.to_radians(),
-            Self::Rint => {
-                // Same as Round: banker's rounding (round half to even)
-                let rounded = x.round();
-                if (x - rounded).abs() == 0.0 {
-                    rounded
-                } else {
-                    let frac = (x - x.floor()).abs();
-                    if (frac - 0.5).abs() < f64::EPSILON {
-                        let floor = x.floor();
-                        let ceil = x.ceil();
-                        if floor % 2.0 == 0.0 { floor } else { ceil }
-                    } else {
-                        rounded
-                    }
-                }
-            }
+            Self::Rint => x.round_ties_even(),
             Self::Trunc => x.trunc(),
             Self::Positive => x,
             Self::Spacing => {
@@ -442,9 +400,13 @@ impl UnaryOp {
                     f64::NAN
                 } else {
                     let abs_x = x.abs();
-                    // ULP: distance to the next representable float
-                    let next = f64::from_bits(abs_x.to_bits() + 1);
-                    next - abs_x
+                    if abs_x == f64::MAX {
+                        f64::MAX - f64::from_bits(f64::MAX.to_bits() - 1)
+                    } else {
+                        // ULP: distance to the next representable float
+                        let next = f64::from_bits(abs_x.to_bits() + 1);
+                        next - abs_x
+                    }
                 }
             }
             // Truthiness: 0.0 is false, everything else (including NaN) is true
@@ -868,7 +830,7 @@ impl UFuncArray {
         let mut values = vec![0.0; n * cols];
         for r in 0..n {
             for c in 0..cols {
-                if (c as i64) <= (r as i64) + k {
+                if (c as i64) <= (r as i64).saturating_add(k) {
                     values[r * cols + c] = 1.0;
                 }
             }
@@ -899,7 +861,7 @@ impl UFuncArray {
         let count = n * cols;
         let mut values = vec![0.0; count];
         for row in 0..n {
-            let col = row as i64 + k;
+            let col = (row as i64).saturating_add(k);
             if col >= 0 && (col as usize) < cols {
                 values[row * cols + col as usize] = 1.0;
             }
@@ -926,7 +888,7 @@ impl UFuncArray {
             let (rows, cols) = (self.shape[0], self.shape[1]);
             let start_row = if k < 0 { (-k) as usize } else { 0 };
             let start_col = if k >= 0 { k as usize } else { 0 };
-            let diag_len = (rows - start_row).min(cols - start_col);
+            let diag_len = rows.saturating_sub(start_row).min(cols.saturating_sub(start_col));
             let values: Vec<f64> = (0..diag_len)
                 .map(|i| self.values[(start_row + i) * cols + start_col + i])
                 .collect();
@@ -945,7 +907,7 @@ impl UFuncArray {
         let mut values = vec![0.0; rows * cols];
         for r in 0..rows {
             for c in 0..cols {
-                if c as i64 >= r as i64 + k {
+                if c as i64 >= (r as i64).saturating_add(k) {
                     values[r * cols + c] = self.values[r * cols + c];
                 }
             }
@@ -962,7 +924,7 @@ impl UFuncArray {
         let mut values = vec![0.0; rows * cols];
         for r in 0..rows {
             for c in 0..cols {
-                if c as i64 <= r as i64 + k {
+                if c as i64 <= (r as i64).saturating_add(k) {
                     values[r * cols + c] = self.values[r * cols + c];
                 }
             }
@@ -1349,7 +1311,7 @@ impl UFuncArray {
                     .iter()
                     .map(|&v| (v - mean) * (v - mean))
                     .sum::<f64>()
-                    / (n - ddof) as f64;
+                    / (n.saturating_sub(ddof)) as f64;
                 let shape = if keepdims {
                     vec![1; self.shape.len()]
                 } else {
@@ -1383,7 +1345,7 @@ impl UFuncArray {
                     &means,
                     &mut var_values,
                 );
-                let divisor = (axis_len - ddof) as f64;
+                let divisor = axis_len.saturating_sub(ddof) as f64;
                 for v in &mut var_values {
                     *v /= divisor;
                 }
@@ -1746,6 +1708,12 @@ impl UFuncArray {
         match axis {
             None => {
                 // Flatten, then delete
+                let n = self.values.len();
+                for &idx in indices {
+                    if idx >= n {
+                        return Err(UFuncError::Msg(format!("delete: index {idx} out of bounds for size {n}")));
+                    }
+                }
                 let mask: std::collections::HashSet<usize> = indices.iter().copied().collect();
                 let values: Vec<f64> = self.values.iter().enumerate()
                     .filter(|(i, _)| !mask.contains(i))
@@ -1757,6 +1725,11 @@ impl UFuncArray {
             Some(ax) => {
                 let ax = normalize_axis(ax, self.shape.len())?;
                 let axis_len = self.shape[ax];
+                for &idx in indices {
+                    if idx >= axis_len {
+                        return Err(UFuncError::Msg(format!("delete: index {idx} out of bounds for axis {ax} with size {axis_len}")));
+                    }
+                }
                 let mask: std::collections::HashSet<usize> = indices.iter().copied().collect();
                 let new_axis_len = axis_len - mask.len();
                 let strides = c_strides_elems(&self.shape);
@@ -1783,10 +1756,16 @@ impl UFuncArray {
     /// Mimics `np.insert(arr, index, values, axis)`.
     /// `index` is the position before which to insert. `insert_values` are the values to insert.
     pub fn insert(&self, index: usize, insert_values: &Self, axis: Option<isize>) -> Result<Self, UFuncError> {
+        if insert_values.values.is_empty() {
+            return Err(UFuncError::Msg("insert: insert_values must not be empty".to_string()));
+        }
         match axis {
             None => {
                 let mut values = self.values.clone();
-                let idx = index.min(values.len());
+                if index > values.len() {
+                    return Err(UFuncError::Msg(format!("insert: index {index} out of bounds for size {}", values.len())));
+                }
+                let idx = index;
                 for (i, &v) in insert_values.values.iter().enumerate() {
                     values.insert(idx + i, v);
                 }
@@ -1796,6 +1775,9 @@ impl UFuncArray {
             Some(ax) => {
                 let ax = normalize_axis(ax, self.shape.len())?;
                 let axis_len = self.shape[ax];
+                if index > axis_len {
+                    return Err(UFuncError::Msg(format!("insert: index {index} out of bounds for axis {ax} with size {axis_len}")));
+                }
                 // inner = product of dims after axis
                 let inner: usize = self.shape[ax + 1..].iter().copied().product();
                 let outer: usize = self.shape[..ax].iter().copied().product();
@@ -1852,16 +1834,16 @@ impl UFuncArray {
         match k {
             0 => Ok(self.clone()),
             1 => {
-                // rot90(m, 1) = flip(transpose(m), axis=0)
-                self.transpose(None).and_then(|t| t.flip(Some(0)))
+                // rot90(m, 1) = flip(swapaxes(m, 0, 1), axis=0)
+                self.swapaxes(0, 1).and_then(|t| t.flip(Some(0)))
             }
             2 => {
                 // rot90(m, 2) = flip(flip(m, 0), 1)
                 self.flip(Some(0)).and_then(|f| f.flip(Some(1)))
             }
             3 => {
-                // rot90(m, 3) = transpose(flip(m, axis=0))
-                self.flip(Some(0)).and_then(|f| f.transpose(None))
+                // rot90(m, 3) = swapaxes(flip(m, 0), 0, 1)
+                self.flip(Some(0)).and_then(|f| f.swapaxes(0, 1))
             }
             _ => unreachable!(),
         }
@@ -3027,6 +3009,9 @@ impl UFuncArray {
     /// Replaces specified flat elements of an array with given values (np.put).
     /// Indices are taken into the flattened array.
     pub fn put(&mut self, indices: &[i64], vals: &[f64]) -> Result<(), UFuncError> {
+        if vals.is_empty() && !indices.is_empty() {
+            return Err(UFuncError::Msg("put: vals must not be empty".to_string()));
+        }
         let n = self.values.len() as i64;
         for (i, &idx) in indices.iter().enumerate() {
             let resolved = if idx < 0 { idx + n } else { idx };
@@ -3067,7 +3052,7 @@ impl UFuncArray {
         let mut cols = Vec::new();
         for i in 0..n {
             for j in 0..m {
-                if (j as i64) <= (i as i64) + k {
+                if (j as i64) <= (i as i64).saturating_add(k) {
                     rows.push(i as f64);
                     cols.push(j as f64);
                 }
@@ -3086,7 +3071,7 @@ impl UFuncArray {
         let mut cols = Vec::new();
         for i in 0..n {
             for j in 0..m {
-                if (j as i64) >= (i as i64) + k {
+                if (j as i64) >= (i as i64).saturating_add(k) {
                     rows.push(i as f64);
                     cols.push(j as f64);
                 }
@@ -3482,6 +3467,9 @@ impl UFuncArray {
             Some(ax) => {
                 let ax = normalize_axis(ax, self.shape.len())?;
                 let axis_len = self.shape[ax];
+                if axis_len == 0 {
+                    return Ok(self.clone());
+                }
                 let outer: usize = self.shape[..ax].iter().product();
                 let inner: usize = self.shape[ax + 1..].iter().product();
                 let mut values = vec![0.0f64; self.values.len()];
@@ -3560,7 +3548,7 @@ impl UFuncArray {
                 let src_idx = if out_idx < pad_width[d].0 {
                     0
                 } else if out_idx >= pad_width[d].0 + self.shape[d] {
-                    self.shape[d] - 1
+                    self.shape[d].saturating_sub(1)
                 } else {
                     out_idx - pad_width[d].0
                 };
@@ -3578,6 +3566,13 @@ impl UFuncArray {
             return Err(UFuncError::Msg(format!(
                 "pad_wrap: pad_width length {} != ndim {}", pad_width.len(), ndim
             )));
+        }
+        for (d, (&s, &(b, a))) in self.shape.iter().zip(pad_width).enumerate() {
+            if s == 0 && (b > 0 || a > 0) {
+                return Err(UFuncError::Msg(format!(
+                    "pad_wrap: axis {d} has size 0, cannot wrap"
+                )));
+            }
         }
         let out_shape: Vec<usize> = self.shape.iter()
             .zip(pad_width)
@@ -3809,24 +3804,42 @@ impl UFuncArray {
         let ax = normalize_axis(axis, self.shape.len())?;
         let axis_len = self.shape[ax];
         let strides = c_strides_elems(&self.shape);
-        let outer_count: usize = self.values.len() / axis_len;
-        // Extract the first slice to determine output length
-        let first_slice_vals: Vec<f64> = (0..axis_len)
-            .map(|k| self.values[k * strides[ax]])
-            .collect();
+        let outer_count: usize = self.shape.iter().enumerate().filter(|&(i, _)| i != ax).map(|(_, &d)| d).product();
+
+        // Extract the first slice to determine output length. Use dummy if empty.
+        let first_slice_vals: Vec<f64> = if self.values.is_empty() {
+            vec![0.0f64; axis_len]
+        } else {
+            (0..axis_len).map(|k| self.values[k * strides[ax]]).collect()
+        };
+        
         let first_slice = Self { shape: vec![axis_len], values: first_slice_vals, dtype: self.dtype };
         let first_result = func(&first_slice)?;
         let result_len = first_result.values.len();
+
+        let mut out_shape = self.shape.clone();
+        out_shape[ax] = result_len;
+
+        if self.values.is_empty() {
+            return Ok(Self { shape: out_shape, values: Vec::new(), dtype: self.dtype });
+        }
+
+        let mut outer_shape = self.shape.clone();
+        outer_shape.remove(ax);
+        let outer_strides = c_strides_elems(&outer_shape);
+
         let mut all_values = Vec::with_capacity(outer_count * result_len);
         for outer in 0..outer_count {
             let mut remainder = outer;
             let mut base_flat = 0usize;
-            for (d, &stride) in strides.iter().enumerate() {
-                if d == ax { continue; }
-                let outer_stride = if d < ax { strides[d] / axis_len } else { stride };
-                let coord = remainder / outer_stride;
-                remainder %= outer_stride;
-                base_flat += coord * stride;
+            for (outer_dim, &outer_stride) in outer_strides.iter().enumerate() {
+                // To avoid div by zero if outer_stride is 0 (can happen if array has a 0 dim)
+                if outer_stride > 0 {
+                    let coord = remainder / outer_stride;
+                    remainder %= outer_stride;
+                    let d = if outer_dim >= ax { outer_dim + 1 } else { outer_dim };
+                    base_flat += coord * strides[d];
+                }
             }
             let slice_vals: Vec<f64> = (0..axis_len)
                 .map(|k| self.values[base_flat + k * strides[ax]])
@@ -3835,9 +3848,6 @@ impl UFuncArray {
             let result = func(&slice_arr)?;
             all_values.extend_from_slice(&result.values);
         }
-        // Build output shape: replace axis dimension with result_len
-        let mut out_shape = self.shape.clone();
-        out_shape[ax] = result_len;
         Ok(Self { shape: out_shape, values: all_values, dtype: self.dtype })
     }
 
@@ -3941,17 +3951,27 @@ impl UFuncArray {
         if self.shape.len() != 1 {
             return Err(UFuncError::Msg("bincount: only 1-D arrays supported".to_string()));
         }
+        if self.values.is_empty() {
+            return Ok(Self { shape: vec![0], values: Vec::new(), dtype: DType::I64 });
+        }
         let mut max_val = 0usize;
         for &v in &self.values {
             if v < 0.0 {
                 return Err(UFuncError::Msg("bincount: input must be non-negative".to_string()));
+            }
+            if v > (isize::MAX as usize / 8) as f64 {
+                return Err(UFuncError::Msg("bincount: input value is too large for memory allocation".to_string()));
             }
             let iv = v as usize;
             if iv > max_val {
                 max_val = iv;
             }
         }
-        let mut counts = vec![0.0f64; max_val + 1];
+        let len = max_val.checked_add(1).ok_or_else(|| UFuncError::Msg("bincount: max value too large".to_string()))?;
+        if len > isize::MAX as usize / 8 {
+            return Err(UFuncError::Msg("bincount: resulting array size would exceed maximum allowed allocation".to_string()));
+        }
+        let mut counts = vec![0.0f64; len];
         for &v in &self.values {
             counts[v as usize] += 1.0;
         }
@@ -4735,7 +4755,7 @@ impl UFuncArray {
         let output_shape: Vec<usize> = output_labels.iter()
             .map(|c| label_sizes.get(c).copied().unwrap_or(0))
             .collect();
-        let output_size: usize = output_shape.iter().product::<usize>().max(1);
+        let output_size: usize = output_shape.iter().product::<usize>();
 
         // Determine contracted labels (in inputs but not in output)
         let mut all_input_labels: Vec<char> = Vec::new();
@@ -4756,7 +4776,7 @@ impl UFuncArray {
         let all_dims: Vec<usize> = all_labels.iter()
             .map(|c| label_sizes.get(c).copied().unwrap_or(1))
             .collect();
-        let total_iters: usize = all_dims.iter().product::<usize>().max(1);
+        let total_iters: usize = all_dims.iter().product::<usize>();
 
         let input_chars: Vec<Vec<char>> = input_subs.iter().map(|s| s.chars().collect()).collect();
 
@@ -5371,16 +5391,25 @@ impl UFuncArray {
     pub fn nanargmin(&self, axis: Option<isize>) -> Result<Self, UFuncError> {
         match axis {
             None => {
-                let (idx, _) = self.values.iter().enumerate()
-                    .filter(|(_, v)| !v.is_nan())
-                    .fold((0usize, f64::INFINITY), |(bi, bv), (i, &v)| {
-                        if v < bv { (i, v) } else { (bi, bv) }
-                    });
-                Ok(Self::scalar(idx as f64, DType::I64))
+                let mut min_idx = None;
+                let mut min_val = f64::INFINITY;
+                for (i, &v) in self.values.iter().enumerate() {
+                    if !v.is_nan() && v < min_val {
+                        min_val = v;
+                        min_idx = Some(i);
+                    }
+                }
+                match min_idx {
+                    Some(idx) => Ok(Self::scalar(idx as f64, DType::I64)),
+                    None => Err(UFuncError::Msg("nanargmin: All-NaN slice encountered".to_string())),
+                }
             }
             Some(ax) => {
                 let ax = normalize_axis(ax, self.shape.len())?;
                 let axis_len = self.shape[ax];
+                if axis_len == 0 {
+                    return Err(UFuncError::Msg("nanargmin: zero-size array to reduction operation".to_string()));
+                }
                 let strides = c_strides_elems(&self.shape);
                 let out_shape = reduced_shape(&self.shape, ax, false);
                 let outer_count = self.values.len() / axis_len;
@@ -5396,16 +5425,19 @@ impl UFuncArray {
                         remainder %= outer_stride;
                         base_flat += coord * stride;
                     }
-                    let mut best_k = 0usize;
+                    let mut best_k = None;
                     let mut best_v = f64::INFINITY;
                     for k in 0..axis_len {
                         let v = self.values[base_flat + k * strides[ax]];
                         if !v.is_nan() && v < best_v {
                             best_v = v;
-                            best_k = k;
+                            best_k = Some(k);
                         }
                     }
-                    out_values.push(best_k as f64);
+                    match best_k {
+                        Some(k) => out_values.push(k as f64),
+                        None => return Err(UFuncError::Msg("nanargmin: All-NaN slice encountered".to_string())),
+                    }
                 }
                 Ok(Self { shape: out_shape, values: out_values, dtype: DType::I64 })
             }
@@ -5416,16 +5448,25 @@ impl UFuncArray {
     pub fn nanargmax(&self, axis: Option<isize>) -> Result<Self, UFuncError> {
         match axis {
             None => {
-                let (idx, _) = self.values.iter().enumerate()
-                    .filter(|(_, v)| !v.is_nan())
-                    .fold((0usize, f64::NEG_INFINITY), |(bi, bv), (i, &v)| {
-                        if v > bv { (i, v) } else { (bi, bv) }
-                    });
-                Ok(Self::scalar(idx as f64, DType::I64))
+                let mut max_idx = None;
+                let mut max_val = f64::NEG_INFINITY;
+                for (i, &v) in self.values.iter().enumerate() {
+                    if !v.is_nan() && v > max_val {
+                        max_val = v;
+                        max_idx = Some(i);
+                    }
+                }
+                match max_idx {
+                    Some(idx) => Ok(Self::scalar(idx as f64, DType::I64)),
+                    None => Err(UFuncError::Msg("nanargmax: All-NaN slice encountered".to_string())),
+                }
             }
             Some(ax) => {
                 let ax = normalize_axis(ax, self.shape.len())?;
                 let axis_len = self.shape[ax];
+                if axis_len == 0 {
+                    return Err(UFuncError::Msg("nanargmax: zero-size array to reduction operation".to_string()));
+                }
                 let strides = c_strides_elems(&self.shape);
                 let out_shape = reduced_shape(&self.shape, ax, false);
                 let outer_count = self.values.len() / axis_len;
@@ -5441,16 +5482,19 @@ impl UFuncArray {
                         remainder %= outer_stride;
                         base_flat += coord * stride;
                     }
-                    let mut best_k = 0usize;
+                    let mut best_k = None;
                     let mut best_v = f64::NEG_INFINITY;
                     for k in 0..axis_len {
                         let v = self.values[base_flat + k * strides[ax]];
                         if !v.is_nan() && v > best_v {
                             best_v = v;
-                            best_k = k;
+                            best_k = Some(k);
                         }
                     }
-                    out_values.push(best_k as f64);
+                    match best_k {
+                        Some(k) => out_values.push(k as f64),
+                        None => return Err(UFuncError::Msg("nanargmax: All-NaN slice encountered".to_string())),
+                    }
                 }
                 Ok(Self { shape: out_shape, values: out_values, dtype: DType::I64 })
             }

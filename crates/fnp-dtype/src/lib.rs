@@ -282,7 +282,11 @@ pub fn min_scalar_type(value: f64) -> DType {
         if value <= f64::from(u32::MAX) {
             return DType::U32;
         }
-        return DType::U64;
+        // u64::MAX cannot be exactly represented in f64, but 2^64 is 18446744073709551616.0
+        if value < 18446744073709551616.0 {
+            return DType::U64;
+        }
+        return DType::F64;
     }
     if value >= f64::from(i8::MIN) {
         return DType::I8;
@@ -293,7 +297,11 @@ pub fn min_scalar_type(value: f64) -> DType {
     if value >= f64::from(i32::MIN) {
         return DType::I32;
     }
-    DType::I64
+    // i64::MIN is exactly representable in f64 (-9223372036854775808.0)
+    if value >= -9223372036854775808.0 {
+        return DType::I64;
+    }
+    DType::F64
 }
 
 /// Find common float type among dtypes (np.common_type).

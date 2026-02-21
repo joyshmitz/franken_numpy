@@ -1128,10 +1128,10 @@ impl Generator {
         if high <= low {
             return Err(RandomError::InvalidUpperBound);
         }
-        let range = (high - low) as u64;
+        let range = (high as u64).wrapping_sub(low as u64);
         let mut result = Vec::with_capacity(size);
         for _ in 0..size {
-            let val = self.bounded_u64(range)? as i64 + low;
+            let val = (self.bounded_u64(range)? as i64).wrapping_add(low);
             result.push(val);
         }
         Ok(result)

@@ -945,18 +945,11 @@ pub fn loadtxt(
             .split(delimiter)
             .map(|s| s.trim().parse::<f64>())
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| IOError::ReadPayloadIncomplete(
-                Box::leak(format!("loadtxt: parse error at row {nrows}: {e}").into_boxed_str())
-            ))?;
+            .map_err(|_| IOError::ReadPayloadIncomplete("loadtxt: parse error in row"))?;
         match ncols {
             None => ncols = Some(row_vals.len()),
             Some(expected) if row_vals.len() != expected => {
-                return Err(IOError::ReadPayloadIncomplete(
-                    Box::leak(format!(
-                        "loadtxt: row {nrows} has {} columns, expected {expected}",
-                        row_vals.len()
-                    ).into_boxed_str())
-                ));
+                return Err(IOError::ReadPayloadIncomplete("loadtxt: inconsistent number of columns"));
             }
             _ => {}
         }
