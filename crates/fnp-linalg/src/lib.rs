@@ -356,6 +356,732 @@ pub fn inv_2x2(matrix: [[f64; 2]; 2]) -> Result<[[f64; 2]; 2], LinAlgError> {
     ])
 }
 
+/// LU decomposition with partial pivoting.  PA = LU where P is a row
+/// permutation, L is unit-lower-triangular, and U is upper-triangular.
+/// Returns (lu, perm, sign) with L and U packed into one flat row-major
+/// buffer.  `perm[i]` records the original row index that ended up at
+/// position i after pivoting; `sign` is +1 or -1.
+fn lu_decompose(a: &[f64], n: usize) -> Result<(Vec<f64>, Vec<usize>, f64), LinAlgError> {
+    if a.len() != n * n || n == 0 {
+        return Err(LinAlgError::ShapeContractViolation(
+            "LU input must be n*n with n > 0",
+        ));
+    }
+    if a.iter().any(|v| !v.is_finite()) {
+        return Err(LinAlgError::NormDetRankPolicyViolation(
+            "matrix entries must be finite for LU decomposition",
+        ));
+    }
+
+    let mut lu = a.to_vec();
+    let mut perm: Vec<usize> = (0..n).collect();
+    let mut sign = 1.0_f64;
+
+    for k in 0..n {
+        // partial-pivot search
+        let mut max_val = lu[k * n + k].abs();
+        let mut max_row = k;
+        for i in (k + 1)..n {
+            let val = lu[i * n + k].abs();
+            if val > max_val {
+                max_val = val;
+                max_row = i;
+            }
+        }
+
+        if max_val <= f64::EPSILON {
+            return Err(LinAlgError::SolverSingularity);
+        }
+
+        if max_row != k {
+            for j in 0..n {
+                lu.swap(k * n + j, max_row * n + j);
+            }
+            perm.swap(k, max_row);
+            sign = -sign;
+        }
+
+        let pivot = lu[k * n + k];
+        for i in (k + 1)..n {
+            let factor = lu[i * n + k] / pivot;
+            lu[i * n + k] = factor;
+            for j in (k + 1)..n {
+                let u_val = lu[k * n + j];
+                lu[i * n + j] -= factor * u_val;
+            }
+        }
+    }
+
+    Ok((lu, perm, sign))
+}
+
+/// Forward-substitution (Ly = Pb) then back-substitution (Ux = y).
+fn lu_forward_back(lu: &[f64], perm: &[usize], b: &[f64], n: usize) -> Vec<f64> {
+    let mut x: Vec<f64> = perm.iter().map(|&p| b[p]).collect();
+
+    // forward (L has unit diagonal)
+    for i in 1..n {
+        for j in 0..i {
+            let l_ij = lu[i * n + j];
+            x[i] -= l_ij * x[j];
+        }
+    }
+
+    // back
+    for i in (0..n).rev() {
+        for j in (i + 1)..n {
+            let u_ij = lu[i * n + j];
+            x[i] -= u_ij * x[j];
+        }
+        x[i] /= lu[i * n + i];
+    }
+
+    x
+}
+
+/// Solve Ax = b for an NxN system via LU decomposition with partial pivoting.
+/// `a` is n*n row-major, `b` has length n.
+pub fn solve_nxn(a: &[f64], b: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
+    if b.len() != n {
+        return Err(LinAlgError::ShapeContractViolation(
+            "solve_nxn: rhs length must equal n",
+        ));
+    }
+    if b.iter().any(|v| !v.is_finite()) {
+        return Err(LinAlgError::NormDetRankPolicyViolation(
+            "rhs entries must be finite for solve",
+        ));
+    }
+
+    let (lu, perm, _) = lu_decompose(a, n)?;
+    Ok(lu_forward_back(&lu, &perm, b, n))
+}
+
+/// Determinant of an NxN matrix (flat row-major).  Returns 0.0 for singular
+/// matrices instead of erroring.
+pub fn det_nxn(a: &[f64], n: usize) -> Result<f64, LinAlgError> {
+    if a.len() != n * n || n == 0 {
+        return Err(LinAlgError::ShapeContractViolation(
+            "det_nxn: input must be n*n with n > 0",
+        ));
+    }
+    if a.iter().any(|v| !v.is_finite()) {
+        return Err(LinAlgError::NormDetRankPolicyViolation(
+            "matrix entries must be finite for det",
+        ));
+    }
+
+    match lu_decompose(a, n) {
+        Ok((lu, _, sign)) => {
+            let mut det = sign;
+            for i in 0..n {
+                det *= lu[i * n + i];
+            }
+            Ok(det)
+        }
+        Err(LinAlgError::SolverSingularity) => Ok(0.0),
+        Err(e) => Err(e),
+    }
+}
+
+/// Sign and log-absolute-determinant for an NxN matrix.
+pub fn slogdet_nxn(a: &[f64], n: usize) -> Result<(f64, f64), LinAlgError> {
+    if a.len() != n * n || n == 0 {
+        return Err(LinAlgError::ShapeContractViolation(
+            "slogdet_nxn: input must be n*n with n > 0",
+        ));
+    }
+    if a.iter().any(|v| !v.is_finite()) {
+        return Err(LinAlgError::NormDetRankPolicyViolation(
+            "matrix entries must be finite for slogdet",
+        ));
+    }
+
+    match lu_decompose(a, n) {
+        Ok((lu, _, sign)) => {
+            let mut det_sign = sign;
+            let mut log_abs_det = 0.0;
+            for i in 0..n {
+                let diag = lu[i * n + i];
+                if diag < 0.0 {
+                    det_sign = -det_sign;
+                    log_abs_det += (-diag).ln();
+                } else if diag > 0.0 {
+                    log_abs_det += diag.ln();
+                } else {
+                    return Ok((0.0, f64::NEG_INFINITY));
+                }
+            }
+            Ok((det_sign, log_abs_det))
+        }
+        Err(LinAlgError::SolverSingularity) => Ok((0.0, f64::NEG_INFINITY)),
+        Err(e) => Err(e),
+    }
+}
+
+/// Inverse of an NxN matrix via LU decomposition.  Returns n*n flat
+/// row-major.
+pub fn inv_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
+    let (lu, perm, _) = lu_decompose(a, n)?;
+    let mut inv = vec![0.0; n * n];
+
+    for col in 0..n {
+        let e_col: Vec<f64> = (0..n).map(|i| if i == col { 1.0 } else { 0.0 }).collect();
+        let x = lu_forward_back(&lu, &perm, &e_col, n);
+        for (row, &val) in x.iter().enumerate() {
+            inv[row * n + col] = val;
+        }
+    }
+
+    Ok(inv)
+}
+
+/// Cholesky decomposition for NxN positive-definite matrix.
+/// Returns the lower-triangular factor L such that A = L L^T.
+/// `a` is n*n row-major.
+pub fn cholesky_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
+    if a.len() != n * n || n == 0 {
+        return Err(LinAlgError::CholeskyContractViolation(
+            "cholesky_nxn: input must be n*n with n > 0",
+        ));
+    }
+    if a.iter().any(|v| !v.is_finite()) {
+        return Err(LinAlgError::CholeskyContractViolation(
+            "cholesky requires finite entries",
+        ));
+    }
+
+    let mut l = vec![0.0; n * n];
+    for i in 0..n {
+        for j in 0..=i {
+            let mut sum = 0.0;
+            for k in 0..j {
+                sum += l[i * n + k] * l[j * n + k];
+            }
+            if i == j {
+                let diag = a[i * n + i] - sum;
+                if diag <= 0.0 {
+                    return Err(LinAlgError::CholeskyContractViolation(
+                        "matrix is not positive definite",
+                    ));
+                }
+                l[i * n + j] = diag.sqrt();
+            } else {
+                l[i * n + j] = (a[i * n + j] - sum) / l[j * n + j];
+            }
+        }
+    }
+    Ok(l)
+}
+
+/// QR decomposition via Householder reflections for NxN matrix.
+/// Returns (q, r) as flat row-major n*n buffers.
+pub fn qr_nxn(a: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), LinAlgError> {
+    if a.len() != n * n || n == 0 {
+        return Err(LinAlgError::ShapeContractViolation(
+            "qr_nxn: input must be n*n with n > 0",
+        ));
+    }
+    if a.iter().any(|v| !v.is_finite()) {
+        return Err(LinAlgError::NormDetRankPolicyViolation(
+            "matrix entries must be finite for QR",
+        ));
+    }
+
+    // Start with Q = I, R = A
+    let mut q = vec![0.0; n * n];
+    for i in 0..n {
+        q[i * n + i] = 1.0;
+    }
+    let mut r = a.to_vec();
+
+    for k in 0..n {
+        // Extract column k below diagonal
+        let mut col_norm_sq = 0.0;
+        for i in k..n {
+            col_norm_sq += r[i * n + k] * r[i * n + k];
+        }
+        let col_norm = col_norm_sq.sqrt();
+        if col_norm <= f64::EPSILON {
+            continue;
+        }
+
+        // Householder vector v = x + sign(x_k)*||x||*e_k
+        let mut v = vec![0.0; n];
+        let sign = if r[k * n + k] >= 0.0 { 1.0 } else { -1.0 };
+        for i in k..n {
+            v[i] = r[i * n + k];
+        }
+        v[k] += sign * col_norm;
+        let v_norm_sq: f64 = v[k..].iter().map(|x| x * x).sum();
+        if v_norm_sq <= f64::EPSILON {
+            continue;
+        }
+
+        // Apply H = I - 2*v*v^T/||v||^2 to R
+        let scale = 2.0 / v_norm_sq;
+        for j in k..n {
+            let mut dot = 0.0;
+            for i in k..n {
+                dot += v[i] * r[i * n + j];
+            }
+            let factor = scale * dot;
+            for i in k..n {
+                r[i * n + j] -= factor * v[i];
+            }
+        }
+
+        // Accumulate Q = Q * H
+        for i in 0..n {
+            let mut dot = 0.0;
+            for j in k..n {
+                dot += q[i * n + j] * v[j];
+            }
+            let factor = scale * dot;
+            for j in k..n {
+                q[i * n + j] -= factor * v[j];
+            }
+        }
+    }
+
+    Ok((q, r))
+}
+
+/// Frobenius norm of an NxN matrix (flat row-major).
+pub fn matrix_norm_frobenius(a: &[f64], n: usize) -> Result<f64, LinAlgError> {
+    if a.len() != n * n || n == 0 {
+        return Err(LinAlgError::ShapeContractViolation(
+            "matrix_norm: input must be n*n with n > 0",
+        ));
+    }
+    if a.iter().any(|v| !v.is_finite()) {
+        return Err(LinAlgError::NormDetRankPolicyViolation(
+            "matrix entries must be finite for norm",
+        ));
+    }
+    Ok(a.iter().map(|v| v * v).sum::<f64>().sqrt())
+}
+
+/// General NxN matrix norm (np.linalg.norm for matrices).
+/// Supports: "fro" (Frobenius), "1" (max column sum), "inf" (max row sum),
+/// "2" (spectral, i.e. largest singular value), "nuc" (nuclear/trace norm).
+pub fn matrix_norm_nxn(a: &[f64], m: usize, n: usize, ord: &str) -> Result<f64, LinAlgError> {
+    if a.len() != m * n || m == 0 || n == 0 {
+        return Err(LinAlgError::ShapeContractViolation(
+            "matrix_norm_nxn: input must be m*n with m,n > 0",
+        ));
+    }
+    if a.iter().any(|v| !v.is_finite()) {
+        return Err(LinAlgError::NormDetRankPolicyViolation(
+            "matrix entries must be finite for norm",
+        ));
+    }
+    match ord {
+        "fro" => Ok(a.iter().map(|v| v * v).sum::<f64>().sqrt()),
+        "1" => {
+            // Max absolute column sum
+            let mut max_col = 0.0_f64;
+            for j in 0..n {
+                let mut col_sum = 0.0;
+                for i in 0..m {
+                    col_sum += a[i * n + j].abs();
+                }
+                max_col = max_col.max(col_sum);
+            }
+            Ok(max_col)
+        }
+        "inf" => {
+            // Max absolute row sum
+            let mut max_row = 0.0_f64;
+            for i in 0..m {
+                let mut row_sum = 0.0;
+                for j in 0..n {
+                    row_sum += a[i * n + j].abs();
+                }
+                max_row = max_row.max(row_sum);
+            }
+            Ok(max_row)
+        }
+        "2" => {
+            // Spectral norm = largest singular value
+            if m != n {
+                return Err(LinAlgError::ShapeContractViolation(
+                    "spectral norm requires square matrix",
+                ));
+            }
+            let sigmas = svd_nxn(a, n)?;
+            Ok(sigmas.first().copied().unwrap_or(0.0))
+        }
+        "nuc" => {
+            // Nuclear norm = sum of singular values
+            if m != n {
+                return Err(LinAlgError::ShapeContractViolation(
+                    "nuclear norm requires square matrix",
+                ));
+            }
+            let sigmas = svd_nxn(a, n)?;
+            Ok(sigmas.iter().sum())
+        }
+        _ => Err(LinAlgError::NormDetRankPolicyViolation(
+            "unknown norm order; use fro, 1, inf, 2, or nuc",
+        )),
+    }
+}
+
+/// Trace of an NxN flat matrix (sum of diagonal elements).
+pub fn trace_nxn(a: &[f64], n: usize) -> Result<f64, LinAlgError> {
+    if a.len() != n * n {
+        return Err(LinAlgError::ShapeContractViolation(
+            "trace_nxn: input must be n*n",
+        ));
+    }
+    Ok((0..n).map(|i| a[i * n + i]).sum())
+}
+
+/// Matrix rank via SVD (uses QR iteration for singular values).
+/// Returns the number of singular values above `rcond * sigma_max`.
+pub fn matrix_rank_nxn(a: &[f64], n: usize, rcond: f64) -> Result<usize, LinAlgError> {
+    if a.len() != n * n || n == 0 {
+        return Err(LinAlgError::ShapeContractViolation(
+            "matrix_rank_nxn: input must be n*n with n > 0",
+        ));
+    }
+    if !rcond.is_finite() || rcond < 0.0 {
+        return Err(LinAlgError::NormDetRankPolicyViolation(
+            "rcond must be finite and >= 0",
+        ));
+    }
+    if a.iter().any(|v| !v.is_finite()) {
+        return Err(LinAlgError::NormDetRankPolicyViolation(
+            "matrix entries must be finite for rank",
+        ));
+    }
+
+    // Compute A^T A, then eigenvalues via QR iteration to get singular values
+    let mut ata = vec![0.0; n * n];
+    for i in 0..n {
+        for j in 0..n {
+            let mut sum = 0.0;
+            for k in 0..n {
+                sum += a[k * n + i] * a[k * n + j];
+            }
+            ata[i * n + j] = sum;
+        }
+    }
+
+    // QR iteration on A^T A to find eigenvalues (which are sigma^2)
+    let mut m = ata;
+    for _ in 0..200 {
+        let (q, r) = qr_nxn(&m, n)?;
+        // M = R * Q
+        let mut next = vec![0.0; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                let mut sum = 0.0;
+                for k in 0..n {
+                    sum += r[i * n + k] * q[k * n + j];
+                }
+                next[i * n + j] = sum;
+            }
+        }
+        m = next;
+    }
+
+    // Diagonal of converged matrix = eigenvalues of A^T A = sigma^2
+    let mut sigmas: Vec<f64> = (0..n).map(|i| m[i * n + i].max(0.0).sqrt()).collect();
+    sigmas.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+
+    let sigma_max = sigmas.first().copied().unwrap_or(0.0);
+    if sigma_max <= f64::EPSILON {
+        return Ok(0);
+    }
+    let threshold = sigma_max * rcond;
+    Ok(sigmas.iter().filter(|&&s| s > threshold).count())
+}
+
+/// Compute singular values of an NxN matrix via QR iteration on A^T A.
+/// Returns singular values in descending order.
+pub fn svd_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
+    if a.len() != n * n || n == 0 {
+        return Err(LinAlgError::ShapeContractViolation(
+            "svd_nxn: input must be n*n with n > 0",
+        ));
+    }
+    if a.iter().any(|v| !v.is_finite()) {
+        return Err(LinAlgError::NormDetRankPolicyViolation(
+            "matrix entries must be finite for SVD",
+        ));
+    }
+
+    // Compute A^T A
+    let mut ata = vec![0.0; n * n];
+    for i in 0..n {
+        for j in 0..n {
+            let mut sum = 0.0;
+            for k in 0..n {
+                sum += a[k * n + i] * a[k * n + j];
+            }
+            ata[i * n + j] = sum;
+        }
+    }
+
+    // QR iteration on A^T A to find eigenvalues (sigma^2)
+    let mut m = ata;
+    for _ in 0..300 {
+        let (q, r) = qr_nxn(&m, n)?;
+        let mut next = vec![0.0; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                let mut sum = 0.0;
+                for k in 0..n {
+                    sum += r[i * n + k] * q[k * n + j];
+                }
+                next[i * n + j] = sum;
+            }
+        }
+        m = next;
+    }
+
+    let mut sigmas: Vec<f64> = (0..n).map(|i| m[i * n + i].max(0.0).sqrt()).collect();
+    sigmas.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(sigmas)
+}
+
+/// Compute eigenvalues of a symmetric NxN matrix via QR iteration.
+/// Returns eigenvalues in descending order.
+/// The matrix must be symmetric; behavior is undefined for non-symmetric input.
+pub fn eigvalsh_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
+    if a.len() != n * n || n == 0 {
+        return Err(LinAlgError::ShapeContractViolation(
+            "eigvalsh_nxn: input must be n*n with n > 0",
+        ));
+    }
+    if a.iter().any(|v| !v.is_finite()) {
+        return Err(LinAlgError::SpectralConvergenceFailed);
+    }
+
+    // QR iteration with Wilkinson shift for faster convergence
+    let mut m = a.to_vec();
+    for _ in 0..300 {
+        let (q, r) = qr_nxn(&m, n)?;
+        let mut next = vec![0.0; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                let mut sum = 0.0;
+                for k in 0..n {
+                    sum += r[i * n + k] * q[k * n + j];
+                }
+                next[i * n + j] = sum;
+            }
+        }
+        m = next;
+    }
+
+    let mut eigenvalues: Vec<f64> = (0..n).map(|i| m[i * n + i]).collect();
+    eigenvalues.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(eigenvalues)
+}
+
+/// Compute eigenvalues and eigenvectors of a symmetric NxN matrix via QR iteration.
+/// Returns (eigenvalues, eigenvectors_flat) where eigenvectors are stored column-major
+/// in a flat n*n array. Eigenvalues are in descending order.
+pub fn eigh_nxn(a: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), LinAlgError> {
+    if a.len() != n * n || n == 0 {
+        return Err(LinAlgError::ShapeContractViolation(
+            "eigh_nxn: input must be n*n with n > 0",
+        ));
+    }
+    if a.iter().any(|v| !v.is_finite()) {
+        return Err(LinAlgError::SpectralConvergenceFailed);
+    }
+
+    // Accumulate Q matrices: V = Q1 * Q2 * ... * Qk
+    let mut m = a.to_vec();
+    let mut v = vec![0.0; n * n];
+    // Initialize V = I
+    for i in 0..n {
+        v[i * n + i] = 1.0;
+    }
+
+    for _ in 0..300 {
+        let (q, r) = qr_nxn(&m, n)?;
+        // M = R * Q
+        let mut next = vec![0.0; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                let mut sum = 0.0;
+                for k in 0..n {
+                    sum += r[i * n + k] * q[k * n + j];
+                }
+                next[i * n + j] = sum;
+            }
+        }
+        // V = V * Q
+        let mut new_v = vec![0.0; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                let mut sum = 0.0;
+                for k in 0..n {
+                    sum += v[i * n + k] * q[k * n + j];
+                }
+                new_v[i * n + j] = sum;
+            }
+        }
+        m = next;
+        v = new_v;
+    }
+
+    let mut eigenvalues: Vec<f64> = (0..n).map(|i| m[i * n + i]).collect();
+
+    // Sort eigenvalues descending and permute eigenvectors accordingly
+    let mut indices: Vec<usize> = (0..n).collect();
+    indices.sort_by(|&a, &b| eigenvalues[b].partial_cmp(&eigenvalues[a]).unwrap_or(std::cmp::Ordering::Equal));
+
+    let sorted_eigenvalues: Vec<f64> = indices.iter().map(|&i| eigenvalues[i]).collect();
+    let mut sorted_v = vec![0.0; n * n];
+    for (col_out, &col_in) in indices.iter().enumerate() {
+        for row in 0..n {
+            sorted_v[row * n + col_out] = v[row * n + col_in];
+        }
+    }
+
+    eigenvalues = sorted_eigenvalues;
+    Ok((eigenvalues, sorted_v))
+}
+
+/// Condition number of a matrix (np.linalg.cond).
+/// Uses the ratio of largest to smallest singular value (2-norm condition number).
+pub fn cond_nxn(a: &[f64], n: usize) -> Result<f64, LinAlgError> {
+    let sigmas = svd_nxn(a, n)?;
+    let sigma_max = sigmas.first().copied().unwrap_or(0.0);
+    let sigma_min = sigmas.last().copied().unwrap_or(0.0);
+    if sigma_min.abs() < f64::EPSILON {
+        return Ok(f64::INFINITY);
+    }
+    Ok(sigma_max / sigma_min)
+}
+
+/// Matrix exponentiation: compute A^p for integer p (np.linalg.matrix_power).
+/// Uses repeated squaring. p can be negative (requires invertible matrix).
+pub fn matrix_power_nxn(a: &[f64], n: usize, p: i64) -> Result<Vec<f64>, LinAlgError> {
+    if a.len() != n * n || n == 0 {
+        return Err(LinAlgError::ShapeContractViolation(
+            "matrix_power_nxn: input must be n*n with n > 0",
+        ));
+    }
+
+    if p == 0 {
+        // A^0 = I
+        let mut eye = vec![0.0; n * n];
+        for i in 0..n {
+            eye[i * n + i] = 1.0;
+        }
+        return Ok(eye);
+    }
+
+    let base = if p < 0 {
+        inv_nxn(a, n)?
+    } else {
+        a.to_vec()
+    };
+
+    let mut exp = p.unsigned_abs();
+    let mut result = vec![0.0; n * n];
+    for i in 0..n {
+        result[i * n + i] = 1.0; // identity
+    }
+    let mut cur = base;
+
+    while exp > 0 {
+        if exp & 1 == 1 {
+            result = mat_mul_flat(&result, &cur, n);
+        }
+        cur = mat_mul_flat(&cur, &cur, n);
+        exp >>= 1;
+    }
+    Ok(result)
+}
+
+/// NxN least-squares solve: minimize ||Ax - b||_2 using normal equations.
+/// Returns the solution vector x.
+pub fn lstsq_nxn(a: &[f64], b: &[f64], m: usize, n: usize) -> Result<Vec<f64>, LinAlgError> {
+    if a.len() != m * n || b.len() != m || m == 0 || n == 0 {
+        return Err(LinAlgError::ShapeContractViolation(
+            "lstsq_nxn: a must be m*n, b must be m",
+        ));
+    }
+    if a.iter().any(|v| !v.is_finite()) || b.iter().any(|v| !v.is_finite()) {
+        return Err(LinAlgError::NormDetRankPolicyViolation(
+            "entries must be finite for lstsq",
+        ));
+    }
+
+    // Normal equations: A^T A x = A^T b
+    let mut ata = vec![0.0; n * n];
+    for i in 0..n {
+        for j in 0..n {
+            let mut sum = 0.0;
+            for k in 0..m {
+                sum += a[k * n + i] * a[k * n + j];
+            }
+            ata[i * n + j] = sum;
+        }
+    }
+
+    let mut atb = vec![0.0; n];
+    for i in 0..n {
+        let mut sum = 0.0;
+        for k in 0..m {
+            sum += a[k * n + i] * b[k];
+        }
+        atb[i] = sum;
+    }
+
+    solve_nxn(&ata, &atb, n)
+}
+
+/// Pseudoinverse of an NxN matrix (np.linalg.pinv) via normal equations.
+/// Computes A^+ = (A^T A)^{-1} A^T for full column rank matrices.
+pub fn pinv_nxn(a: &[f64], m: usize, n: usize) -> Result<Vec<f64>, LinAlgError> {
+    if a.len() != m * n || m == 0 || n == 0 {
+        return Err(LinAlgError::ShapeContractViolation(
+            "pinv_nxn: a must be m*n with m,n > 0",
+        ));
+    }
+    if a.iter().any(|v| !v.is_finite()) {
+        return Err(LinAlgError::NormDetRankPolicyViolation(
+            "entries must be finite for pinv",
+        ));
+    }
+
+    // Compute via lstsq for each column of identity
+    let mut result = vec![0.0; n * m];
+    for col in 0..m {
+        let mut e_col = vec![0.0; m];
+        e_col[col] = 1.0;
+        let x = lstsq_nxn(a, &e_col, m, n)?;
+        for row in 0..n {
+            result[row * m + col] = x[row];
+        }
+    }
+    Ok(result)
+}
+
+/// Helper: flat NxN matrix multiply C = A * B (row-major).
+fn mat_mul_flat(a: &[f64], b: &[f64], n: usize) -> Vec<f64> {
+    let mut c = vec![0.0; n * n];
+    for i in 0..n {
+        for j in 0..n {
+            let mut sum = 0.0;
+            for k in 0..n {
+                sum += a[i * n + k] * b[k * n + j];
+            }
+            c[i * n + j] = sum;
+        }
+    }
+    c
+}
+
 fn singular_values_2x2(matrix: [[f64; 2]; 2]) -> Result<[f64; 2], LinAlgError> {
     validate_finite_matrix_2x2(matrix)?;
     let a = matrix[0][0];
@@ -1045,11 +1771,15 @@ mod tests {
         LINALG_PACKET_ID, LINALG_PACKET_REASON_CODES, LinAlgError, LinAlgLogRecord,
         LinAlgRuntimeMode, MAX_BACKEND_REVALIDATION_ATTEMPTS, MAX_BATCH_SHAPE_CHECKS,
         MAX_TOLERANCE_SEARCH_DEPTH, MatrixNormOrder, QrMode, VectorNormOrder, cholesky_2x2,
-        det_2x2, eigh_2x2, eigvals_2x2, inv_2x2, lstsq_2x2, lstsq_output_shapes, matrix_norm_2x2,
-        matrix_rank_2x2, pinv_2x2, qr_2x2, qr_output_shapes, slogdet_2x2, solve_2x2, svd_2x2,
-        svd_output_shapes, validate_backend_bridge, validate_cholesky_diagonal,
-        validate_matrix_shape, validate_policy_metadata, validate_spectral_branch,
-        validate_square_matrix, validate_tolerance_policy, vector_norm,
+        cholesky_nxn, cond_nxn, det_2x2, det_nxn, eigh_2x2, eigh_nxn, eigvals_2x2, eigvalsh_nxn,
+        inv_2x2, inv_nxn, lstsq_2x2, lstsq_nxn,
+        lstsq_output_shapes, mat_mul_flat, matrix_norm_2x2, matrix_norm_frobenius,
+        matrix_norm_nxn, matrix_power_nxn, matrix_rank_2x2, matrix_rank_nxn,
+        pinv_2x2, pinv_nxn, trace_nxn,
+        qr_2x2, qr_nxn, qr_output_shapes, slogdet_2x2, slogdet_nxn,
+        solve_2x2, solve_nxn, svd_2x2, svd_nxn, svd_output_shapes, validate_backend_bridge,
+        validate_cholesky_diagonal, validate_matrix_shape, validate_policy_metadata,
+        validate_spectral_branch, validate_square_matrix, validate_tolerance_policy, vector_norm,
     };
 
     fn packet008_artifacts() -> Vec<String> {
@@ -1876,5 +2606,384 @@ mod tests {
             assert!(record.is_replay_complete());
             assert_eq!(record.reason_code, *reason_code);
         }
+    }
+
+    #[test]
+    fn solve_nxn_3x3_system() {
+        // A x = b  where x = [2, 3, -1]
+        let a = [2.0, 1.0, -1.0, -3.0, -1.0, 2.0, -2.0, 1.0, 2.0];
+        let b = [8.0, -11.0, -3.0];
+        let x = solve_nxn(&a, &b, 3).expect("3x3 solve");
+        assert!(approx_equal(x[0], 2.0, 1e-10));
+        assert!(approx_equal(x[1], 3.0, 1e-10));
+        assert!(approx_equal(x[2], -1.0, 1e-10));
+    }
+
+    #[test]
+    fn solve_nxn_rejects_singular() {
+        let a = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+        let b = [1.0, 2.0, 3.0];
+        let err = solve_nxn(&a, &b, 3).expect_err("singular");
+        assert_eq!(err.reason_code(), "linalg_solver_singularity");
+    }
+
+    #[test]
+    fn det_nxn_scalar_and_3x3() {
+        // 1x1
+        let d1 = det_nxn(&[5.0], 1).expect("1x1 det");
+        assert!(approx_equal(d1, 5.0, 1e-12));
+
+        // 3x3: det([[6,1,1],[4,-2,5],[2,8,7]]) = -306
+        let a3 = [6.0, 1.0, 1.0, 4.0, -2.0, 5.0, 2.0, 8.0, 7.0];
+        let d3 = det_nxn(&a3, 3).expect("3x3 det");
+        assert!(approx_equal(d3, -306.0, 1e-8));
+
+        // singular
+        let a_sing = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+        let d_sing = det_nxn(&a_sing, 3).expect("singular det");
+        assert!(approx_equal(d_sing, 0.0, 1e-10));
+    }
+
+    #[test]
+    fn inv_nxn_identity_reconstruction() {
+        let a = [2.0, 1.0, 0.0, 0.0, 3.0, 1.0, 1.0, 0.0, 2.0];
+        let inv = inv_nxn(&a, 3).expect("3x3 inv");
+
+        for i in 0..3 {
+            for j in 0..3 {
+                let mut sum = 0.0;
+                for k in 0..3 {
+                    sum += a[i * 3 + k] * inv[k * 3 + j];
+                }
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert!(
+                    approx_equal(sum, expected, 1e-10),
+                    "A*A^-1 [{i}][{j}] = {sum}, expected {expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn inv_nxn_rejects_singular() {
+        let a = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+        let err = inv_nxn(&a, 3).expect_err("singular inv");
+        assert_eq!(err.reason_code(), "linalg_solver_singularity");
+    }
+
+    #[test]
+    fn slogdet_nxn_agrees_with_det() {
+        let a = [6.0, 1.0, 1.0, 4.0, -2.0, 5.0, 2.0, 8.0, 7.0];
+        let det = det_nxn(&a, 3).expect("det");
+        let (sign, log_abs) = slogdet_nxn(&a, 3).expect("slogdet");
+        assert!(approx_equal(sign * log_abs.exp(), det, 1e-8));
+
+        // singular
+        let a_sing = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+        let (sign, log_abs) = slogdet_nxn(&a_sing, 3).expect("singular slogdet");
+        assert_eq!(sign, 0.0);
+        assert_eq!(log_abs, f64::NEG_INFINITY);
+    }
+
+    #[test]
+    fn solve_nxn_rejects_non_finite() {
+        let a = [f64::NAN, 1.0, 0.0, 1.0];
+        let b = [1.0, 2.0];
+        let err = solve_nxn(&a, &b, 2).expect_err("nan matrix");
+        assert_eq!(err.reason_code(), "linalg_norm_det_rank_policy_violation");
+    }
+
+    #[test]
+    fn cholesky_nxn_reconstructs_matrix() {
+        // 3x3 positive definite: [[4,2,1],[2,5,3],[1,3,6]]
+        let a = [4.0, 2.0, 1.0, 2.0, 5.0, 3.0, 1.0, 3.0, 6.0];
+        let l = cholesky_nxn(&a, 3).expect("3x3 cholesky");
+        // Verify L is lower triangular
+        assert!(approx_equal(l[0 * 3 + 1], 0.0, 1e-12));
+        assert!(approx_equal(l[0 * 3 + 2], 0.0, 1e-12));
+        assert!(approx_equal(l[1 * 3 + 2], 0.0, 1e-12));
+        // Verify L * L^T = A
+        for i in 0..3 {
+            for j in 0..3 {
+                let mut sum = 0.0;
+                for k in 0..3 {
+                    sum += l[i * 3 + k] * l[j * 3 + k];
+                }
+                assert!(
+                    approx_equal(sum, a[i * 3 + j], 1e-10),
+                    "L*L^T [{i}][{j}] = {sum}, expected {}",
+                    a[i * 3 + j]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cholesky_nxn_rejects_non_pd() {
+        let a = [1.0, 2.0, 2.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+        let err = cholesky_nxn(&a, 3).expect_err("non-pd");
+        assert_eq!(err.reason_code(), "linalg_cholesky_contract_violation");
+    }
+
+    #[test]
+    fn qr_nxn_reconstructs_and_is_orthogonal() {
+        let a = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 10.0];
+        let (q, r) = qr_nxn(&a, 3).expect("3x3 qr");
+
+        // Q^T Q should be identity
+        for i in 0..3 {
+            for j in 0..3 {
+                let mut dot = 0.0;
+                for k in 0..3 {
+                    dot += q[k * 3 + i] * q[k * 3 + j];
+                }
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert!(
+                    approx_equal(dot, expected, 1e-10),
+                    "Q^T*Q [{i}][{j}] = {dot}, expected {expected}"
+                );
+            }
+        }
+
+        // Q * R should reconstruct A
+        for i in 0..3 {
+            for j in 0..3 {
+                let mut sum = 0.0;
+                for k in 0..3 {
+                    sum += q[i * 3 + k] * r[k * 3 + j];
+                }
+                assert!(
+                    approx_equal(sum, a[i * 3 + j], 1e-10),
+                    "Q*R [{i}][{j}] = {sum}, expected {}",
+                    a[i * 3 + j]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn matrix_norm_frobenius_matches_expected() {
+        let a = [1.0, 2.0, 3.0, 4.0];
+        let norm = matrix_norm_frobenius(&a, 2).expect("frobenius");
+        let expected = (1.0 + 4.0 + 9.0 + 16.0_f64).sqrt();
+        assert!(approx_equal(norm, expected, 1e-12));
+    }
+
+    #[test]
+    fn matrix_rank_nxn_detects_profiles() {
+        // Full rank 3x3
+        let a = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let rank = matrix_rank_nxn(&a, 3, 1e-10).expect("identity rank");
+        assert_eq!(rank, 3);
+
+        // Rank 2 (third row = first + second)
+        let b = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0];
+        let rank = matrix_rank_nxn(&b, 3, 1e-10).expect("rank-2");
+        assert_eq!(rank, 2);
+
+        // Rank 0 (all zeros)
+        let z = [0.0; 9];
+        let rank = matrix_rank_nxn(&z, 3, 1e-10).expect("zero rank");
+        assert_eq!(rank, 0);
+    }
+
+    #[test]
+    fn svd_nxn_identity_singular_values() {
+        // SVD of 3x3 identity: singular values = [1, 1, 1]
+        let eye = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let sigmas = svd_nxn(&eye, 3).expect("identity svd");
+        assert_eq!(sigmas.len(), 3);
+        for s in &sigmas {
+            assert!((*s - 1.0).abs() < 1e-6, "sigma={s}");
+        }
+    }
+
+    #[test]
+    fn svd_nxn_diagonal_matrix() {
+        // SVD of diag(3, 2, 1): singular values = [3, 2, 1]
+        let d = [3.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 1.0];
+        let sigmas = svd_nxn(&d, 3).expect("diag svd");
+        assert!((sigmas[0] - 3.0).abs() < 1e-6);
+        assert!((sigmas[1] - 2.0).abs() < 1e-6);
+        assert!((sigmas[2] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn eigvalsh_nxn_symmetric_3x3() {
+        // Symmetric matrix: [[2, 1, 0], [1, 3, 1], [0, 1, 2]]
+        // Known eigenvalues approx: 4.0, 2.0, 1.0
+        let a = [2.0, 1.0, 0.0, 1.0, 3.0, 1.0, 0.0, 1.0, 2.0];
+        let eigvals = eigvalsh_nxn(&a, 3).expect("eigvalsh");
+        assert_eq!(eigvals.len(), 3);
+        // Eigenvalues of this matrix: 1, 2, 4 (compute via characteristic polynomial)
+        // x^3 - 7x^2 + 14x - 8 = (x-1)(x-2)(x-4)
+        assert!((eigvals[0] - 4.0).abs() < 1e-6, "eig0={}", eigvals[0]);
+        assert!((eigvals[1] - 2.0).abs() < 1e-6, "eig1={}", eigvals[1]);
+        assert!((eigvals[2] - 1.0).abs() < 1e-6, "eig2={}", eigvals[2]);
+    }
+
+    #[test]
+    fn eigh_nxn_eigenvectors_reconstruct() {
+        // Symmetric 3x3 identity: eigvals = [1,1,1], eigvecs = I
+        let eye = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let (eigvals, eigvecs) = eigh_nxn(&eye, 3).expect("eigh identity");
+        for e in &eigvals {
+            assert!((*e - 1.0).abs() < 1e-6, "eig={e}");
+        }
+        // Eigenvectors should be orthonormal
+        for col in 0..3 {
+            let mut norm_sq = 0.0;
+            for row in 0..3 {
+                norm_sq += eigvecs[row * 3 + col] * eigvecs[row * 3 + col];
+            }
+            assert!((norm_sq - 1.0).abs() < 1e-6, "eigvec col {col} norm^2={norm_sq}");
+        }
+    }
+
+    #[test]
+    fn eigh_nxn_reconstructs_matrix() {
+        // A = V * diag(eigenvalues) * V^T for symmetric A
+        let a = [2.0, 1.0, 0.0, 1.0, 3.0, 1.0, 0.0, 1.0, 2.0];
+        let n = 3;
+        let (eigvals, v) = eigh_nxn(&a, n).expect("eigh");
+        // Reconstruct: A' = V * diag(eigvals) * V^T
+        let mut reconstructed = vec![0.0; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                let mut sum = 0.0;
+                for k in 0..n {
+                    sum += v[i * n + k] * eigvals[k] * v[j * n + k];
+                }
+                reconstructed[i * n + j] = sum;
+            }
+        }
+        for i in 0..n * n {
+            assert!((reconstructed[i] - a[i]).abs() < 1e-6,
+                "reconstruct[{i}]={}, expected {}", reconstructed[i], a[i]);
+        }
+    }
+
+    #[test]
+    fn cond_nxn_identity_is_one() {
+        let eye = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let c = cond_nxn(&eye, 3).expect("cond identity");
+        assert!((c - 1.0).abs() < 1e-6, "cond(I)={c}");
+    }
+
+    #[test]
+    fn cond_nxn_singular_is_infinity() {
+        // Singular matrix: row 3 = row 1 + row 2
+        let a = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0];
+        let c = cond_nxn(&a, 3).expect("cond singular");
+        assert!(c.is_infinite(), "cond of singular matrix should be inf, got {c}");
+    }
+
+    #[test]
+    fn matrix_power_nxn_identity() {
+        let eye = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        // I^5 = I
+        let result = matrix_power_nxn(&eye, 3, 5).expect("I^5");
+        for i in 0..3 {
+            for j in 0..3 {
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert!((result[i * 3 + j] - expected).abs() < 1e-10);
+            }
+        }
+    }
+
+    #[test]
+    fn matrix_power_nxn_squared() {
+        // A = [[1,1],[0,1]], A^2 = [[1,2],[0,1]]
+        let a = [1.0, 1.0, 0.0, 1.0];
+        let sq = matrix_power_nxn(&a, 2, 2).expect("A^2");
+        assert!((sq[0] - 1.0).abs() < 1e-10);
+        assert!((sq[1] - 2.0).abs() < 1e-10);
+        assert!((sq[2] - 0.0).abs() < 1e-10);
+        assert!((sq[3] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn matrix_power_nxn_negative() {
+        // A^(-1) * A should give identity
+        let a = [2.0, 1.0, 1.0, 1.0];
+        let a_inv = matrix_power_nxn(&a, 2, -1).expect("A^-1");
+        let product = mat_mul_flat(&a, &a_inv, 2);
+        for i in 0..2 {
+            for j in 0..2 {
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert!((product[i * 2 + j] - expected).abs() < 1e-10,
+                    "A*A^-1[{i},{j}]={}", product[i * 2 + j]);
+            }
+        }
+    }
+
+    #[test]
+    fn lstsq_nxn_exact_system() {
+        // 3x2 system with exact solution: A*x = b
+        // A = [[1,0],[0,1],[1,1]], b = [1,2,3]
+        // Normal equations: A^T A = [[2,1],[1,2]], A^T b = [4,5]
+        // Solution: x = [1, 2]
+        let a = [1.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+        let b = [1.0, 2.0, 3.0];
+        let x = lstsq_nxn(&a, &b, 3, 2).expect("lstsq exact");
+        assert!((x[0] - 1.0).abs() < 1e-6, "x[0]={}", x[0]);
+        assert!((x[1] - 2.0).abs() < 1e-6, "x[1]={}", x[1]);
+    }
+
+    #[test]
+    fn pinv_nxn_reconstructs_identity() {
+        // For square invertible matrix, pinv = inv
+        let a = [2.0, 1.0, 1.0, 1.0];
+        let a_pinv = pinv_nxn(&a, 2, 2).expect("pinv 2x2");
+        // A * A+ should be I
+        let product = mat_mul_flat(&a, &a_pinv, 2);
+        for i in 0..2 {
+            for j in 0..2 {
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert!((product[i * 2 + j] - expected).abs() < 1e-6,
+                    "A*A+[{i},{j}]={}", product[i * 2 + j]);
+            }
+        }
+    }
+
+    #[test]
+    fn trace_nxn_identity() {
+        let eye = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        assert!((trace_nxn(&eye, 3).unwrap() - 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn trace_nxn_general() {
+        // trace([[1,2],[3,4]]) = 1 + 4 = 5
+        let a = [1.0, 2.0, 3.0, 4.0];
+        assert!((trace_nxn(&a, 2).unwrap() - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn matrix_norm_nxn_frobenius() {
+        let a = [1.0, 2.0, 3.0, 4.0];
+        let f = matrix_norm_nxn(&a, 2, 2, "fro").unwrap();
+        let expected = (1.0 + 4.0 + 9.0 + 16.0_f64).sqrt();
+        assert!((f - expected).abs() < 1e-10, "fro={f}, expected {expected}");
+    }
+
+    #[test]
+    fn matrix_norm_nxn_one_and_inf() {
+        // A = [[1, -2], [3, 4]]
+        // 1-norm = max col sum = max(|1|+|3|, |-2|+|4|) = max(4, 6) = 6
+        // inf-norm = max row sum = max(|1|+|-2|, |3|+|4|) = max(3, 7) = 7
+        let a = [1.0, -2.0, 3.0, 4.0];
+        let n1 = matrix_norm_nxn(&a, 2, 2, "1").unwrap();
+        assert!((n1 - 6.0).abs() < 1e-10, "1-norm={n1}");
+        let ni = matrix_norm_nxn(&a, 2, 2, "inf").unwrap();
+        assert!((ni - 7.0).abs() < 1e-10, "inf-norm={ni}");
+    }
+
+    #[test]
+    fn matrix_norm_nxn_spectral() {
+        // Identity: spectral norm = 1
+        let eye = [1.0, 0.0, 0.0, 1.0];
+        let s = matrix_norm_nxn(&eye, 2, 2, "2").unwrap();
+        assert!((s - 1.0).abs() < 1e-6, "spectral(I)={s}");
     }
 }

@@ -908,6 +908,175 @@ pub fn validate_npz_archive_budget(
     Ok(())
 }
 
+// ── loadtxt / savetxt ────────
+
+/// Parsed row-column text data result.
+#[derive(Debug, Clone)]
+pub struct TextArrayData {
+    /// Row-major values.
+    pub values: Vec<f64>,
+    /// Number of rows.
+    pub nrows: usize,
+    /// Number of columns.
+    pub ncols: usize,
+}
+
+/// Load data from a text string (np.loadtxt equivalent).
+/// Each line is a row; columns are separated by `delimiter`.
+/// Lines starting with `comments` char are skipped.
+/// `skiprows` lines are skipped from the start.
+/// `max_rows` limits the number of rows read (0 = no limit).
+pub fn loadtxt(
+    text: &str,
+    delimiter: char,
+    comments: char,
+    skiprows: usize,
+    max_rows: usize,
+) -> Result<TextArrayData, IOError> {
+    let mut values = Vec::new();
+    let mut ncols: Option<usize> = None;
+    let mut nrows = 0usize;
+    for (line_idx, line) in text.lines().enumerate() {
+        if line_idx < skiprows { continue; }
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with(comments) { continue; }
+        if max_rows > 0 && nrows >= max_rows { break; }
+        let row_vals: Vec<f64> = trimmed
+            .split(delimiter)
+            .map(|s| s.trim().parse::<f64>())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| IOError::ReadPayloadIncomplete(
+                Box::leak(format!("loadtxt: parse error at row {nrows}: {e}").into_boxed_str())
+            ))?;
+        match ncols {
+            None => ncols = Some(row_vals.len()),
+            Some(expected) if row_vals.len() != expected => {
+                return Err(IOError::ReadPayloadIncomplete(
+                    Box::leak(format!(
+                        "loadtxt: row {nrows} has {} columns, expected {expected}",
+                        row_vals.len()
+                    ).into_boxed_str())
+                ));
+            }
+            _ => {}
+        }
+        values.extend(row_vals);
+        nrows += 1;
+    }
+    Ok(TextArrayData {
+        values,
+        nrows,
+        ncols: ncols.unwrap_or(0),
+    })
+}
+
+/// Configuration for savetxt.
+#[derive(Debug, Clone)]
+pub struct SaveTxtConfig<'a> {
+    pub delimiter: &'a str,
+    pub fmt: &'a str,
+    pub header: &'a str,
+    pub footer: &'a str,
+    pub comments: &'a str,
+}
+
+impl Default for SaveTxtConfig<'_> {
+    fn default() -> Self {
+        Self {
+            delimiter: " ",
+            fmt: "%g",
+            header: "",
+            footer: "",
+            comments: "#",
+        }
+    }
+}
+
+/// Save data to a text string (np.savetxt equivalent).
+/// Writes row-major `values` with shape `(nrows, ncols)`.
+pub fn savetxt(
+    values: &[f64],
+    nrows: usize,
+    ncols: usize,
+    config: &SaveTxtConfig<'_>,
+) -> Result<String, IOError> {
+    if values.len() != nrows * ncols {
+        return Err(IOError::WriteContractViolation(
+            "savetxt: values length != nrows * ncols",
+        ));
+    }
+    let mut output = String::new();
+    if !config.header.is_empty() {
+        output.push_str(config.comments);
+        output.push(' ');
+        output.push_str(config.header);
+        output.push('\n');
+    }
+    for r in 0..nrows {
+        for c in 0..ncols {
+            if c > 0 {
+                output.push_str(config.delimiter);
+            }
+            let v = values[r * ncols + c];
+            match config.fmt {
+                "%.18e" | "%e" => output.push_str(&format!("{v:e}")),
+                "%d" | "%i" => output.push_str(&format!("{}", v as i64)),
+                _ => output.push_str(&format!("{v}")),
+            }
+        }
+        output.push('\n');
+    }
+    if !config.footer.is_empty() {
+        output.push_str(config.comments);
+        output.push(' ');
+        output.push_str(config.footer);
+        output.push('\n');
+    }
+    Ok(output)
+}
+
+/// Load data from a text string with more flexible parsing (np.genfromtxt equivalent).
+/// Missing values are replaced with `filling_values`.
+pub fn genfromtxt(
+    text: &str,
+    delimiter: char,
+    comments: char,
+    skip_header: usize,
+    filling_values: f64,
+) -> Result<TextArrayData, IOError> {
+    let mut values = Vec::new();
+    let mut ncols: Option<usize> = None;
+    let mut nrows = 0usize;
+    for (line_idx, line) in text.lines().enumerate() {
+        if line_idx < skip_header { continue; }
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with(comments) { continue; }
+        let row_vals: Vec<f64> = trimmed
+            .split(delimiter)
+            .map(|s| s.trim().parse::<f64>().unwrap_or(filling_values))
+            .collect();
+        match ncols {
+            None => ncols = Some(row_vals.len()),
+            Some(expected) if row_vals.len() != expected => {
+                // Pad or truncate to match
+                let mut padded = row_vals;
+                padded.resize(expected, filling_values);
+                values.extend(padded);
+                nrows += 1;
+                continue;
+            }
+            _ => {}
+        }
+        values.extend(row_vals);
+        nrows += 1;
+    }
+    Ok(TextArrayData {
+        values,
+        nrows,
+        ncols: ncols.unwrap_or(0),
+    })
+}
+
 pub fn validate_io_policy_metadata(mode: &str, class: &str) -> Result<(), IOError> {
     let known_mode = mode == "strict" || mode == "hardened";
     let known_class = class == "known_compatible_low_risk"
@@ -931,7 +1100,8 @@ mod tests {
         IOSupportedDType, LoadDispatch, MAX_ARCHIVE_MEMBERS, MAX_DISPATCH_RETRIES,
         MAX_HEADER_BYTES, MAX_MEMMAP_VALIDATION_RETRIES, MemmapMode, NPY_MAGIC_PREFIX,
         NPZ_MAGIC_PREFIX, NpyHeader, classify_load_dispatch, encode_npy_header_bytes,
-        enforce_pickle_policy, read_npy_bytes, synthesize_npz_member_names,
+        SaveTxtConfig, enforce_pickle_policy, genfromtxt, loadtxt, read_npy_bytes, savetxt,
+        synthesize_npz_member_names,
         validate_descriptor_roundtrip, validate_header_schema, validate_io_policy_metadata,
         validate_magic_version, validate_memmap_contract, validate_npz_archive_budget,
         validate_read_payload, validate_write_contract, write_npy_bytes,
@@ -1402,5 +1572,92 @@ mod tests {
         assert_eq!(err.reason_code(), "io_header_schema_invalid");
         let err = IOError::MagicInvalid;
         assert_eq!(err.reason_code(), "io_magic_invalid");
+    }
+
+    // ── loadtxt / savetxt tests ────────
+
+    #[test]
+    fn loadtxt_basic() {
+        let text = "1.0 2.0 3.0\n4.0 5.0 6.0\n";
+        let result = loadtxt(text, ' ', '#', 0, 0).unwrap();
+        assert_eq!(result.nrows, 2);
+        assert_eq!(result.ncols, 3);
+        assert_eq!(result.values, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn loadtxt_csv() {
+        let text = "1,2,3\n4,5,6";
+        let result = loadtxt(text, ',', '#', 0, 0).unwrap();
+        assert_eq!(result.nrows, 2);
+        assert_eq!(result.ncols, 3);
+    }
+
+    #[test]
+    fn loadtxt_comments_and_skiprows() {
+        let text = "# header\n# another comment\n1 2\n3 4\n";
+        let result = loadtxt(text, ' ', '#', 0, 0).unwrap();
+        assert_eq!(result.nrows, 2);
+        assert_eq!(result.values, vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn loadtxt_skiprows() {
+        let text = "header line\n1 2\n3 4\n";
+        let result = loadtxt(text, ' ', '#', 1, 0).unwrap();
+        assert_eq!(result.nrows, 2);
+    }
+
+    #[test]
+    fn loadtxt_max_rows() {
+        let text = "1 2\n3 4\n5 6\n";
+        let result = loadtxt(text, ' ', '#', 0, 2).unwrap();
+        assert_eq!(result.nrows, 2);
+    }
+
+    #[test]
+    fn savetxt_basic() {
+        let values = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let output = savetxt(&values, 2, 3, &SaveTxtConfig::default()).unwrap();
+        assert!(output.contains("1"));
+        assert!(output.contains("6"));
+        assert_eq!(output.lines().count(), 2);
+    }
+
+    #[test]
+    fn savetxt_with_header() {
+        let values = vec![1.0, 2.0];
+        let cfg = SaveTxtConfig { delimiter: ",", header: "x,y", ..SaveTxtConfig::default() };
+        let output = savetxt(&values, 1, 2, &cfg).unwrap();
+        assert!(output.starts_with("# x,y\n"));
+    }
+
+    #[test]
+    fn savetxt_roundtrip() {
+        let original = vec![1.5, 2.5, 3.5, 4.5];
+        let text = savetxt(&original, 2, 2, &SaveTxtConfig::default()).unwrap();
+        let loaded = loadtxt(&text, ' ', '#', 0, 0).unwrap();
+        assert_eq!(loaded.nrows, 2);
+        assert_eq!(loaded.ncols, 2);
+        assert_eq!(loaded.values, original);
+    }
+
+    #[test]
+    fn genfromtxt_with_missing() {
+        let text = "1,2,3\n4,,6\n";
+        let result = genfromtxt(text, ',', '#', 0, f64::NAN).unwrap();
+        assert_eq!(result.nrows, 2);
+        assert_eq!(result.ncols, 3);
+        assert_eq!(result.values[0], 1.0);
+        assert!(result.values[4].is_nan()); // missing value
+        assert_eq!(result.values[5], 6.0);
+    }
+
+    #[test]
+    fn genfromtxt_skip_header() {
+        let text = "col1,col2\n1,2\n3,4\n";
+        let result = genfromtxt(text, ',', '#', 1, 0.0).unwrap();
+        assert_eq!(result.nrows, 2);
+        assert_eq!(result.values, vec![1.0, 2.0, 3.0, 4.0]);
     }
 }
