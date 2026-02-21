@@ -827,10 +827,7 @@ impl UFuncArray {
             return self.values == other.values;
         }
         // Try broadcasting
-        match self.allclose(other, 0.0, 0.0) {
-            Ok(true) => true,
-            _ => false,
-        }
+        matches!(self.allclose(other, 0.0, 0.0), Ok(true))
     }
 
     /// Return an array representing the indices of a grid.
