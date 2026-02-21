@@ -5501,6 +5501,158 @@ impl UFuncArray {
         })
     }
 
+    /// Compute the inverse of rfft (np.fft.irfft).
+    /// Input has shape `[n//2+1, 2]` (hermitian-symmetric half).
+    /// `output_n` is the output length; if `None` defaults to `2*(input_len - 1)`.
+    /// Returns a real-valued array of shape `[output_n]`.
+    pub fn irfft(&self, output_n: Option<usize>) -> Result<Self, UFuncError> {
+        if self.shape.len() != 2 || self.shape[1] != 2 {
+            return Err(UFuncError::Msg(
+                "irfft: input must have shape [m, 2] (interleaved complex)".to_string(),
+            ));
+        }
+        let m = self.shape[0]; // number of complex coefficients
+        let n = output_n.unwrap_or(2 * (m.saturating_sub(1)));
+        if n == 0 {
+            return Ok(Self {
+                shape: vec![0],
+                values: vec![],
+                dtype: DType::F64,
+            });
+        }
+        // Reconstruct full spectrum from hermitian symmetry: X[k] = conj(X[n-k])
+        let mut re = vec![0.0; n];
+        let mut im = vec![0.0; n];
+        for k in 0..m.min(n) {
+            re[k] = self.values[k * 2];
+            im[k] = self.values[k * 2 + 1];
+        }
+        for k in m.min(n)..n {
+            let mirror = n - k;
+            if mirror < m {
+                re[k] = self.values[mirror * 2];
+                im[k] = -self.values[mirror * 2 + 1]; // conjugate
+            }
+        }
+        fft_dit(&mut re, &mut im, true);
+        Ok(Self {
+            shape: vec![n],
+            values: re,
+            dtype: DType::F64,
+        })
+    }
+
+    /// Compute the 2-D DFT (np.fft.fft2).
+    /// Input is a real 2-D array of shape `[rows, cols]`.
+    /// Returns interleaved complex output of shape `[rows, cols, 2]`.
+    pub fn fft2(&self) -> Result<Self, UFuncError> {
+        if self.shape.len() != 2 {
+            return Err(UFuncError::Msg(
+                "fft2: input must be a 2-D array".to_string(),
+            ));
+        }
+        let rows = self.shape[0];
+        let cols = self.shape[1];
+        if rows == 0 || cols == 0 {
+            return Ok(Self {
+                shape: vec![rows, cols, 2],
+                values: vec![],
+                dtype: DType::F64,
+            });
+        }
+        // FFT along each row
+        let mut re = vec![0.0; rows * cols];
+        let mut im = vec![0.0; rows * cols];
+        for r in 0..rows {
+            let mut row_re: Vec<f64> = (0..cols).map(|c| self.values[r * cols + c]).collect();
+            let mut row_im = vec![0.0; cols];
+            fft_dit(&mut row_re, &mut row_im, false);
+            for c in 0..cols {
+                re[r * cols + c] = row_re[c];
+                im[r * cols + c] = row_im[c];
+            }
+        }
+        // FFT along each column
+        for c in 0..cols {
+            let mut col_re: Vec<f64> = (0..rows).map(|r| re[r * cols + c]).collect();
+            let mut col_im: Vec<f64> = (0..rows).map(|r| im[r * cols + c]).collect();
+            fft_dit(&mut col_re, &mut col_im, false);
+            for r in 0..rows {
+                re[r * cols + c] = col_re[r];
+                im[r * cols + c] = col_im[r];
+            }
+        }
+        // Interleave
+        let mut values = Vec::with_capacity(rows * cols * 2);
+        for i in 0..rows * cols {
+            values.push(re[i]);
+            values.push(im[i]);
+        }
+        Ok(Self {
+            shape: vec![rows, cols, 2],
+            values,
+            dtype: DType::F64,
+        })
+    }
+
+    /// Compute the 2-D inverse DFT (np.fft.ifft2).
+    /// Input is interleaved complex of shape `[rows, cols, 2]`.
+    /// Returns interleaved complex output of shape `[rows, cols, 2]`.
+    pub fn ifft2(&self) -> Result<Self, UFuncError> {
+        if self.shape.len() != 3 || self.shape[2] != 2 {
+            return Err(UFuncError::Msg(
+                "ifft2: input must have shape [rows, cols, 2] (interleaved complex)".to_string(),
+            ));
+        }
+        let rows = self.shape[0];
+        let cols = self.shape[1];
+        if rows == 0 || cols == 0 {
+            return Ok(Self {
+                shape: vec![rows, cols, 2],
+                values: vec![],
+                dtype: DType::F64,
+            });
+        }
+        // Deinterleave
+        let mut re = vec![0.0; rows * cols];
+        let mut im = vec![0.0; rows * cols];
+        for i in 0..rows * cols {
+            re[i] = self.values[i * 2];
+            im[i] = self.values[i * 2 + 1];
+        }
+        // IFFT along each row
+        for r in 0..rows {
+            let mut row_re: Vec<f64> = (0..cols).map(|c| re[r * cols + c]).collect();
+            let mut row_im: Vec<f64> = (0..cols).map(|c| im[r * cols + c]).collect();
+            fft_dit(&mut row_re, &mut row_im, true);
+            for c in 0..cols {
+                re[r * cols + c] = row_re[c];
+                im[r * cols + c] = row_im[c];
+            }
+        }
+        // IFFT along each column
+        for c in 0..cols {
+            let mut col_re: Vec<f64> = (0..rows).map(|r| re[r * cols + c]).collect();
+            let mut col_im: Vec<f64> = (0..rows).map(|r| im[r * cols + c]).collect();
+            fft_dit(&mut col_re, &mut col_im, true);
+            for r in 0..rows {
+                re[r * cols + c] = col_re[r];
+                im[r * cols + c] = col_im[r];
+            }
+        }
+        // Interleave
+        let mut values = Vec::with_capacity(rows * cols * 2);
+        for i in 0..rows * cols {
+            values.push(re[i]);
+            values.push(im[i]);
+        }
+        Ok(Self {
+            shape: vec![rows, cols, 2],
+            values,
+            dtype: DType::F64,
+        })
+    }
+
     /// Return the DFT sample frequencies (np.fft.fftfreq).
     /// For a signal of length `n` sampled at spacing `d`.
     pub fn fftfreq(n: usize, d: f64) -> Self {
@@ -6758,6 +6910,63 @@ impl UFuncArray {
         }
     }
 
+    /// Gamma function (scipy.special.gamma / math.gamma).
+    /// Computes Gamma(x) for each element using Lanczos approximation.
+    pub fn gamma(&self) -> Self {
+        let values: Vec<f64> = self.values.iter().map(|&x| lanczos_gamma(x)).collect();
+        Self {
+            shape: self.shape.clone(),
+            values,
+            dtype: DType::F64,
+        }
+    }
+
+    /// Natural log of the absolute value of the Gamma function (scipy.special.gammaln).
+    pub fn lgamma(&self) -> Self {
+        let values: Vec<f64> = self
+            .values
+            .iter()
+            .map(|&x| lanczos_gamma(x).abs().ln())
+            .collect();
+        Self {
+            shape: self.shape.clone(),
+            values,
+            dtype: DType::F64,
+        }
+    }
+
+    /// Error function (scipy.special.erf).
+    /// Uses Horner-form rational approximation (Abramowitz & Stegun 7.1.26).
+    pub fn erf(&self) -> Self {
+        let values: Vec<f64> = self.values.iter().map(|&x| erf_approx(x)).collect();
+        Self {
+            shape: self.shape.clone(),
+            values,
+            dtype: DType::F64,
+        }
+    }
+
+    /// Complementary error function: erfc(x) = 1 - erf(x).
+    pub fn erfc(&self) -> Self {
+        let values: Vec<f64> = self.values.iter().map(|&x| 1.0 - erf_approx(x)).collect();
+        Self {
+            shape: self.shape.clone(),
+            values,
+            dtype: DType::F64,
+        }
+    }
+
+    /// Digamma (psi) function — the logarithmic derivative of the Gamma function.
+    /// Uses recurrence to shift argument to large values then asymptotic series.
+    pub fn digamma(&self) -> Self {
+        let values: Vec<f64> = self.values.iter().map(|&x| digamma_approx(x)).collect();
+        Self {
+            shape: self.shape.clone(),
+            values,
+            dtype: DType::F64,
+        }
+    }
+
     /// Unwrap phase angles by changing deltas > discont to their 2*pi complement (np.unwrap).
     pub fn unwrap(&self, discont: Option<f64>) -> Result<Self, UFuncError> {
         if self.shape.len() != 1 {
@@ -7663,6 +7872,88 @@ fn bessel_i0(x: f64) -> f64 {
                             + t * (-0.02057706
                                 + t * (0.02635537 + t * (-0.01647633 + t * 0.00392377))))))))
     }
+}
+
+/// Lanczos approximation for the Gamma function.
+/// Accurate to ~15 significant digits for real positive arguments.
+fn lanczos_gamma(x: f64) -> f64 {
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    // Reflection formula for x < 0.5
+    if x < 0.5 {
+        let reflected = lanczos_gamma(1.0 - x);
+        return std::f64::consts::PI / ((std::f64::consts::PI * x).sin() * reflected);
+    }
+    let x = x - 1.0;
+    // Lanczos g=7 coefficients
+    const P: [f64; 8] = [
+        676.5203681218851,
+        -1259.1392167224028,
+        771.32342877765313,
+        -176.61502916214059,
+        12.507343278686905,
+        -0.13857109526572012,
+        9.9843695780195716e-6,
+        1.5056327351493116e-7,
+    ];
+    let mut sum = 0.99999999999980993;
+    for (i, &p) in P.iter().enumerate() {
+        sum += p / (x + i as f64 + 1.0);
+    }
+    let t = x + 7.5; // g + 0.5
+    (2.0 * std::f64::consts::PI).sqrt() * t.powf(x + 0.5) * (-t).exp() * sum
+}
+
+/// Error function approximation using Abramowitz & Stegun formula 7.1.26.
+/// Maximum error: |epsilon(x)| <= 1.5e-7.
+fn erf_approx(x: f64) -> f64 {
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    if x == 0.0 {
+        return 0.0;
+    }
+    let sign = x.signum();
+    let x = x.abs();
+    const A1: f64 = 0.254829592;
+    const A2: f64 = -0.284496736;
+    const A3: f64 = 1.421413741;
+    const A4: f64 = -1.453152027;
+    const A5: f64 = 1.061405429;
+    const P: f64 = 0.3275911;
+    let t = 1.0 / (1.0 + P * x);
+    let poly = t * (A1 + t * (A2 + t * (A3 + t * (A4 + t * A5))));
+    sign * (1.0 - poly * (-x * x).exp())
+}
+
+/// Digamma function approximation.
+/// Uses recurrence psi(x+1) = psi(x) + 1/x to shift argument above 6,
+/// then asymptotic series.
+fn digamma_approx(mut x: f64) -> f64 {
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    // Reflection formula for x < 0
+    if x < 0.0 {
+        return digamma_approx(1.0 - x) - std::f64::consts::PI / (std::f64::consts::PI * x).tan();
+    }
+    if x == 0.0 {
+        return f64::NEG_INFINITY;
+    }
+    let mut result = 0.0;
+    // Recurrence to shift argument above 6
+    while x < 6.0 {
+        result -= 1.0 / x;
+        x += 1.0;
+    }
+    // Asymptotic series: psi(x) ~ ln(x) - 1/(2x) - 1/(12x²) + 1/(120x⁴) - 1/(252x⁶) + ...
+    result += x.ln() - 0.5 / x;
+    let x2 = x * x;
+    result -= 1.0 / (12.0 * x2);
+    result += 1.0 / (120.0 * x2 * x2);
+    result -= 1.0 / (252.0 * x2 * x2 * x2);
+    result
 }
 
 /// Mixed-radix Bluestein/Chirp-Z FFT supporting arbitrary lengths.
@@ -13052,5 +13343,192 @@ mod tests {
         assert!((c.values[3] - 6.0).abs() < 1e-10);
         assert!((c.values[4] - 8.0).abs() < 1e-10);
         assert!((c.values[5] - 10.0).abs() < 1e-10);
+    }
+
+    // ── irfft tests ──
+
+    #[test]
+    fn irfft_roundtrip() {
+        // rfft then irfft should recover original signal
+        let a = UFuncArray::new(vec![4], vec![1.0, 2.0, 3.0, 4.0], DType::F64).unwrap();
+        let rf = a.rfft(None).unwrap();
+        let recovered = rf.irfft(Some(4)).unwrap();
+        assert_eq!(recovered.shape, vec![4]);
+        for i in 0..4 {
+            assert!(
+                (recovered.values[i] - a.values[i]).abs() < 1e-10,
+                "irfft[{i}] = {}, expected {}",
+                recovered.values[i],
+                a.values[i]
+            );
+        }
+    }
+
+    #[test]
+    fn irfft_empty() {
+        let a = UFuncArray::new(vec![0, 2], vec![], DType::F64).unwrap();
+        let result = a.irfft(None).unwrap();
+        assert_eq!(result.shape, vec![0]);
+        assert!(result.values.is_empty());
+    }
+
+    // ── fft2 / ifft2 tests ──
+
+    #[test]
+    fn fft2_dc_component() {
+        // A 2x2 matrix of ones should have DC = 4 and all other coefficients = 0
+        let a = UFuncArray::new(vec![2, 2], vec![1.0, 1.0, 1.0, 1.0], DType::F64).unwrap();
+        let ft = a.fft2().unwrap();
+        assert_eq!(ft.shape, vec![2, 2, 2]);
+        // DC component at [0,0] = sum of all = 4
+        assert!((ft.values[0] - 4.0).abs() < 1e-10, "DC re={}", ft.values[0]);
+        assert!(ft.values[1].abs() < 1e-10, "DC im={}", ft.values[1]);
+        // All other components should be 0
+        for i in 1..4 {
+            assert!(
+                ft.values[i * 2].abs() < 1e-10,
+                "re[{i}]={}",
+                ft.values[i * 2]
+            );
+            assert!(
+                ft.values[i * 2 + 1].abs() < 1e-10,
+                "im[{i}]={}",
+                ft.values[i * 2 + 1]
+            );
+        }
+    }
+
+    #[test]
+    fn fft2_ifft2_roundtrip() {
+        let a =
+            UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
+        let ft = a.fft2().unwrap();
+        let recovered = ft.ifft2().unwrap();
+        assert_eq!(recovered.shape, vec![2, 3, 2]);
+        // Real parts should match original, imaginary parts should be ~0
+        for r in 0..2 {
+            for c in 0..3 {
+                let idx = r * 3 + c;
+                let re = recovered.values[idx * 2];
+                let im = recovered.values[idx * 2 + 1];
+                assert!(
+                    (re - a.values[idx]).abs() < 1e-10,
+                    "re[{r},{c}] = {re}, expected {}",
+                    a.values[idx]
+                );
+                assert!(im.abs() < 1e-10, "im[{r},{c}] = {im}");
+            }
+        }
+    }
+
+    #[test]
+    fn fft2_rejects_1d() {
+        let a = UFuncArray::new(vec![4], vec![1.0, 2.0, 3.0, 4.0], DType::F64).unwrap();
+        assert!(a.fft2().is_err());
+    }
+
+    // ── special math function tests ──
+
+    #[test]
+    fn gamma_basic_values() {
+        // Gamma(1) = 1, Gamma(2) = 1, Gamma(3) = 2, Gamma(4) = 6, Gamma(5) = 24
+        let a = UFuncArray::new(vec![5], vec![1.0, 2.0, 3.0, 4.0, 5.0], DType::F64).unwrap();
+        let g = a.gamma();
+        let expected = [1.0, 1.0, 2.0, 6.0, 24.0];
+        for (i, &exp) in expected.iter().enumerate() {
+            assert!(
+                (g.values[i] - exp).abs() < 1e-8,
+                "Gamma({}) = {}, expected {}",
+                a.values[i],
+                g.values[i],
+                exp
+            );
+        }
+    }
+
+    #[test]
+    fn gamma_half() {
+        // Gamma(0.5) = sqrt(pi) ≈ 1.7724538509
+        let a = UFuncArray::new(vec![1], vec![0.5], DType::F64).unwrap();
+        let g = a.gamma();
+        let sqrt_pi = std::f64::consts::PI.sqrt();
+        assert!(
+            (g.values[0] - sqrt_pi).abs() < 1e-8,
+            "Gamma(0.5) = {}, expected {sqrt_pi}",
+            g.values[0]
+        );
+    }
+
+    #[test]
+    fn lgamma_basic() {
+        // lgamma(1) = 0, lgamma(5) = ln(24) ≈ 3.178
+        let a = UFuncArray::new(vec![2], vec![1.0, 5.0], DType::F64).unwrap();
+        let lg = a.lgamma();
+        assert!(lg.values[0].abs() < 1e-8, "lgamma(1) = {}", lg.values[0]);
+        assert!(
+            (lg.values[1] - 24.0_f64.ln()).abs() < 1e-8,
+            "lgamma(5) = {}, expected {}",
+            lg.values[1],
+            24.0_f64.ln()
+        );
+    }
+
+    #[test]
+    fn erf_basic_values() {
+        // erf(0) = 0, erf(large) ≈ 1, erf(-large) ≈ -1
+        let a = UFuncArray::new(vec![3], vec![0.0, 5.0, -5.0], DType::F64).unwrap();
+        let e = a.erf();
+        assert!(e.values[0].abs() < 1e-10, "erf(0) = {}", e.values[0]);
+        assert!(
+            (e.values[1] - 1.0).abs() < 1e-6,
+            "erf(5) = {}, expected ~1",
+            e.values[1]
+        );
+        assert!(
+            (e.values[2] + 1.0).abs() < 1e-6,
+            "erf(-5) = {}, expected ~-1",
+            e.values[2]
+        );
+    }
+
+    #[test]
+    fn erf_known_value() {
+        // erf(1) ≈ 0.8427007929
+        let a = UFuncArray::new(vec![1], vec![1.0], DType::F64).unwrap();
+        let e = a.erf();
+        assert!(
+            (e.values[0] - 0.8427007929).abs() < 1e-5,
+            "erf(1) = {}",
+            e.values[0]
+        );
+    }
+
+    #[test]
+    fn erfc_complement() {
+        // erfc(x) = 1 - erf(x)
+        let a = UFuncArray::new(vec![3], vec![0.0, 1.0, 2.0], DType::F64).unwrap();
+        let e = a.erf();
+        let ec = a.erfc();
+        for i in 0..3 {
+            assert!(
+                (e.values[i] + ec.values[i] - 1.0).abs() < 1e-10,
+                "erf({}) + erfc({}) = {}, expected 1",
+                a.values[i],
+                a.values[i],
+                e.values[i] + ec.values[i]
+            );
+        }
+    }
+
+    #[test]
+    fn digamma_integer_values() {
+        // psi(1) = -gamma_euler ≈ -0.5772156649
+        let a = UFuncArray::new(vec![1], vec![1.0], DType::F64).unwrap();
+        let d = a.digamma();
+        assert!(
+            (d.values[0] - (-0.5772156649)).abs() < 1e-4,
+            "digamma(1) = {}, expected ≈ -0.5772",
+            d.values[0]
+        );
     }
 }

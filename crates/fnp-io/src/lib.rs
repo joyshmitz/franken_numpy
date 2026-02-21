@@ -927,6 +927,251 @@ pub fn validate_npz_archive_budget(
     Ok(())
 }
 
+// ── NPZ read/write ────────
+
+/// A named array inside an NPZ archive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NpzEntry {
+    pub name: String,
+    pub array: NpyArrayBytes,
+}
+
+/// Write multiple named arrays into an uncompressed NPZ archive (np.savez).
+///
+/// NPZ is a ZIP file containing .npy files. Each entry is stored without
+/// compression (STORE method). The entry name gets `.npy` appended if it
+/// doesn't already end with it.
+pub fn write_npz_bytes(entries: &[(&str, &NpyHeader, &[u8])]) -> Result<Vec<u8>, IOError> {
+    if entries.is_empty() {
+        return Err(IOError::NpzArchiveContractViolation(
+            "npz: cannot write archive with zero entries",
+        ));
+    }
+    if entries.len() > MAX_ARCHIVE_MEMBERS {
+        return Err(IOError::NpzArchiveContractViolation(
+            "npz: member count exceeds bounded limit",
+        ));
+    }
+
+    let mut buf: Vec<u8> = Vec::new();
+    let mut central_directory: Vec<u8> = Vec::new();
+    let mut entry_count: u16 = 0;
+
+    for &(name, header, payload) in entries {
+        let npy_data = write_npy_bytes(header, payload, false)?;
+        let file_name = if name.ends_with(".npy") {
+            name.to_string()
+        } else {
+            format!("{name}.npy")
+        };
+        let fname_bytes = file_name.as_bytes();
+
+        let local_offset = buf.len() as u32;
+
+        // CRC-32 (we store 0 since STORE method with no compression)
+        let crc = crc32_ieee(&npy_data);
+
+        // Local file header (30 bytes + filename)
+        buf.extend_from_slice(&[0x50, 0x4B, 0x03, 0x04]); // signature
+        buf.extend_from_slice(&20_u16.to_le_bytes()); // version needed (2.0)
+        buf.extend_from_slice(&0_u16.to_le_bytes()); // flags
+        buf.extend_from_slice(&0_u16.to_le_bytes()); // compression: STORE
+        buf.extend_from_slice(&0_u16.to_le_bytes()); // mod time
+        buf.extend_from_slice(&0_u16.to_le_bytes()); // mod date
+        buf.extend_from_slice(&crc.to_le_bytes()); // crc-32
+        buf.extend_from_slice(&(npy_data.len() as u32).to_le_bytes()); // compressed size
+        buf.extend_from_slice(&(npy_data.len() as u32).to_le_bytes()); // uncompressed size
+        buf.extend_from_slice(&(fname_bytes.len() as u16).to_le_bytes()); // filename len
+        buf.extend_from_slice(&0_u16.to_le_bytes()); // extra field len
+        buf.extend_from_slice(fname_bytes);
+        buf.extend_from_slice(&npy_data);
+
+        // Central directory entry (46 bytes + filename)
+        central_directory.extend_from_slice(&[0x50, 0x4B, 0x01, 0x02]); // signature
+        central_directory.extend_from_slice(&20_u16.to_le_bytes()); // version made by
+        central_directory.extend_from_slice(&20_u16.to_le_bytes()); // version needed
+        central_directory.extend_from_slice(&0_u16.to_le_bytes()); // flags
+        central_directory.extend_from_slice(&0_u16.to_le_bytes()); // compression
+        central_directory.extend_from_slice(&0_u16.to_le_bytes()); // mod time
+        central_directory.extend_from_slice(&0_u16.to_le_bytes()); // mod date
+        central_directory.extend_from_slice(&crc.to_le_bytes()); // crc-32
+        central_directory.extend_from_slice(&(npy_data.len() as u32).to_le_bytes());
+        central_directory.extend_from_slice(&(npy_data.len() as u32).to_le_bytes());
+        central_directory.extend_from_slice(&(fname_bytes.len() as u16).to_le_bytes());
+        central_directory.extend_from_slice(&0_u16.to_le_bytes()); // extra field len
+        central_directory.extend_from_slice(&0_u16.to_le_bytes()); // comment len
+        central_directory.extend_from_slice(&0_u16.to_le_bytes()); // disk number
+        central_directory.extend_from_slice(&0_u16.to_le_bytes()); // internal attrs
+        central_directory.extend_from_slice(&0_u32.to_le_bytes()); // external attrs
+        central_directory.extend_from_slice(&local_offset.to_le_bytes()); // offset
+        central_directory.extend_from_slice(fname_bytes);
+
+        entry_count += 1;
+    }
+
+    let cd_offset = buf.len() as u32;
+    buf.extend_from_slice(&central_directory);
+    let cd_size = central_directory.len() as u32;
+
+    // End of central directory record (22 bytes)
+    buf.extend_from_slice(&[0x50, 0x4B, 0x05, 0x06]); // signature
+    buf.extend_from_slice(&0_u16.to_le_bytes()); // disk number
+    buf.extend_from_slice(&0_u16.to_le_bytes()); // disk with CD
+    buf.extend_from_slice(&entry_count.to_le_bytes()); // entries on disk
+    buf.extend_from_slice(&entry_count.to_le_bytes()); // total entries
+    buf.extend_from_slice(&cd_size.to_le_bytes()); // CD size
+    buf.extend_from_slice(&cd_offset.to_le_bytes()); // CD offset
+    buf.extend_from_slice(&0_u16.to_le_bytes()); // comment length
+
+    Ok(buf)
+}
+
+/// Read an NPZ archive and return all named arrays (np.load for .npz files).
+///
+/// Only supports uncompressed (STORE) entries. Each entry must be a valid
+/// `.npy` file.
+pub fn read_npz_bytes(data: &[u8]) -> Result<Vec<NpzEntry>, IOError> {
+    if data.len() < 22 {
+        return Err(IOError::NpzArchiveContractViolation(
+            "npz: data too short for a ZIP archive",
+        ));
+    }
+    if data[..4] != NPZ_MAGIC_PREFIX {
+        return Err(IOError::NpzArchiveContractViolation(
+            "npz: not a valid ZIP/NPZ archive",
+        ));
+    }
+
+    // Find End of Central Directory (scan backwards for signature)
+    let mut eocd_pos = None;
+    for i in (0..data.len().saturating_sub(21)).rev() {
+        if data[i..i + 4] == [0x50, 0x4B, 0x05, 0x06] {
+            eocd_pos = Some(i);
+            break;
+        }
+    }
+    let eocd = eocd_pos.ok_or(IOError::NpzArchiveContractViolation(
+        "npz: cannot find end of central directory",
+    ))?;
+
+    let entry_count = u16::from_le_bytes([data[eocd + 10], data[eocd + 11]]) as usize;
+    let cd_size = u32::from_le_bytes([
+        data[eocd + 12],
+        data[eocd + 13],
+        data[eocd + 14],
+        data[eocd + 15],
+    ]) as usize;
+    let cd_offset = u32::from_le_bytes([
+        data[eocd + 16],
+        data[eocd + 17],
+        data[eocd + 18],
+        data[eocd + 19],
+    ]) as usize;
+
+    validate_npz_archive_budget(entry_count, cd_size, 0)?;
+
+    let mut entries = Vec::with_capacity(entry_count);
+    let mut pos = cd_offset;
+
+    for _ in 0..entry_count {
+        if pos + 46 > data.len() {
+            return Err(IOError::NpzArchiveContractViolation(
+                "npz: central directory truncated",
+            ));
+        }
+        if data[pos..pos + 4] != [0x50, 0x4B, 0x01, 0x02] {
+            return Err(IOError::NpzArchiveContractViolation(
+                "npz: invalid central directory entry signature",
+            ));
+        }
+
+        let compression = u16::from_le_bytes([data[pos + 10], data[pos + 11]]);
+        if compression != 0 {
+            return Err(IOError::NpzArchiveContractViolation(
+                "npz: only uncompressed (STORE) entries are supported",
+            ));
+        }
+
+        let compressed_size = u32::from_le_bytes([
+            data[pos + 20],
+            data[pos + 21],
+            data[pos + 22],
+            data[pos + 23],
+        ]) as usize;
+        let fname_len = u16::from_le_bytes([data[pos + 28], data[pos + 29]]) as usize;
+        let extra_len = u16::from_le_bytes([data[pos + 30], data[pos + 31]]) as usize;
+        let comment_len = u16::from_le_bytes([data[pos + 32], data[pos + 33]]) as usize;
+        let local_offset = u32::from_le_bytes([
+            data[pos + 42],
+            data[pos + 43],
+            data[pos + 44],
+            data[pos + 45],
+        ]) as usize;
+
+        let fname_start = pos + 46;
+        if fname_start + fname_len > data.len() {
+            return Err(IOError::NpzArchiveContractViolation(
+                "npz: filename extends beyond data",
+            ));
+        }
+        let file_name =
+            String::from_utf8_lossy(&data[fname_start..fname_start + fname_len]).into_owned();
+
+        // Parse local file header to find data start
+        if local_offset + 30 > data.len() {
+            return Err(IOError::NpzArchiveContractViolation(
+                "npz: local header offset out of bounds",
+            ));
+        }
+        let local_fname_len =
+            u16::from_le_bytes([data[local_offset + 26], data[local_offset + 27]]) as usize;
+        let local_extra_len =
+            u16::from_le_bytes([data[local_offset + 28], data[local_offset + 29]]) as usize;
+        let data_start = local_offset + 30 + local_fname_len + local_extra_len;
+        let data_end = data_start + compressed_size;
+
+        if data_end > data.len() {
+            return Err(IOError::NpzArchiveContractViolation(
+                "npz: entry data extends beyond archive",
+            ));
+        }
+
+        let npy_bytes = &data[data_start..data_end];
+        let array = read_npy_bytes(npy_bytes, false)?;
+
+        // Strip .npy suffix from name for user convenience
+        let clean_name = file_name
+            .strip_suffix(".npy")
+            .unwrap_or(&file_name)
+            .to_string();
+
+        entries.push(NpzEntry {
+            name: clean_name,
+            array,
+        });
+
+        pos = fname_start + fname_len + extra_len + comment_len;
+    }
+
+    Ok(entries)
+}
+
+/// IEEE 802.3 CRC-32 (used by ZIP format).
+fn crc32_ieee(data: &[u8]) -> u32 {
+    let mut crc: u32 = 0xFFFF_FFFF;
+    for &byte in data {
+        crc ^= byte as u32;
+        for _ in 0..8 {
+            if crc & 1 != 0 {
+                crc = (crc >> 1) ^ 0xEDB8_8320;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    !crc
+}
+
 // ── loadtxt / savetxt ────────
 
 /// Parsed row-column text data result.
@@ -1156,10 +1401,11 @@ mod tests {
         MAX_HEADER_BYTES, MAX_MEMMAP_VALIDATION_RETRIES, MemmapMode, NPY_MAGIC_PREFIX,
         NPZ_MAGIC_PREFIX, NpyHeader, SaveTxtConfig, classify_load_dispatch,
         encode_npy_header_bytes, enforce_pickle_policy, genfromtxt, loadtxt, loadtxt_usecols,
-        read_npy_bytes, savetxt, synthesize_npz_member_names, validate_descriptor_roundtrip,
-        validate_header_schema, validate_io_policy_metadata, validate_magic_version,
-        validate_memmap_contract, validate_npz_archive_budget, validate_read_payload,
-        validate_write_contract, write_npy_bytes, write_npy_bytes_with_version, write_npy_preamble,
+        read_npy_bytes, read_npz_bytes, savetxt, synthesize_npz_member_names,
+        validate_descriptor_roundtrip, validate_header_schema, validate_io_policy_metadata,
+        validate_magic_version, validate_memmap_contract, validate_npz_archive_budget,
+        validate_read_payload, validate_write_contract, write_npy_bytes,
+        write_npy_bytes_with_version, write_npy_preamble, write_npz_bytes,
     };
 
     fn packet009_artifacts() -> Vec<String> {
@@ -1842,5 +2088,113 @@ mod tests {
         assert_eq!(IOSupportedDType::U64.item_size(), Some(8));
         assert_eq!(IOSupportedDType::F64.item_size(), Some(8));
         assert_eq!(IOSupportedDType::Object.item_size(), None);
+    }
+
+    // ── NPZ tests ──
+
+    #[test]
+    fn npz_single_array_roundtrip() {
+        let header = NpyHeader {
+            shape: vec![3],
+            fortran_order: false,
+            descr: IOSupportedDType::F64,
+        };
+        let payload: Vec<u8> = [1.0_f64, 2.0, 3.0]
+            .into_iter()
+            .flat_map(f64::to_le_bytes)
+            .collect();
+        let npz = write_npz_bytes(&[("arr0", &header, &payload)]).expect("write npz");
+        // Verify it starts with ZIP magic
+        assert_eq!(&npz[..4], &NPZ_MAGIC_PREFIX);
+
+        let entries = read_npz_bytes(&npz).expect("read npz");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "arr0");
+        assert_eq!(entries[0].array.header.shape, vec![3]);
+        assert_eq!(entries[0].array.header.descr, IOSupportedDType::F64);
+        assert_eq!(entries[0].array.payload, payload);
+    }
+
+    #[test]
+    fn npz_multiple_arrays_roundtrip() {
+        let h1 = NpyHeader {
+            shape: vec![2],
+            fortran_order: false,
+            descr: IOSupportedDType::F64,
+        };
+        let p1: Vec<u8> = [10.0_f64, 20.0]
+            .into_iter()
+            .flat_map(f64::to_le_bytes)
+            .collect();
+        let h2 = NpyHeader {
+            shape: vec![2, 2],
+            fortran_order: false,
+            descr: IOSupportedDType::I32,
+        };
+        let p2: Vec<u8> = [1_i32, 2, 3, 4]
+            .into_iter()
+            .flat_map(i32::to_le_bytes)
+            .collect();
+
+        let npz = write_npz_bytes(&[("x", &h1, &p1), ("matrix", &h2, &p2)]).expect("write npz");
+        let entries = read_npz_bytes(&npz).expect("read npz");
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].name, "x");
+        assert_eq!(entries[0].array.header.descr, IOSupportedDType::F64);
+        assert_eq!(entries[0].array.payload, p1);
+
+        assert_eq!(entries[1].name, "matrix");
+        assert_eq!(entries[1].array.header.shape, vec![2, 2]);
+        assert_eq!(entries[1].array.header.descr, IOSupportedDType::I32);
+        assert_eq!(entries[1].array.payload, p2);
+    }
+
+    #[test]
+    fn npz_empty_archive_rejected() {
+        let result = write_npz_bytes(&[]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn npz_dispatch_detection() {
+        let h = NpyHeader {
+            shape: vec![1],
+            fortran_order: false,
+            descr: IOSupportedDType::F64,
+        };
+        let p: Vec<u8> = 42.0_f64.to_le_bytes().to_vec();
+        let npz = write_npz_bytes(&[("a", &h, &p)]).expect("write");
+        let dispatch = classify_load_dispatch(&npz[..8], false).expect("dispatch");
+        assert_eq!(dispatch, LoadDispatch::Npz);
+    }
+
+    #[test]
+    fn npz_boolean_array_roundtrip() {
+        let h = NpyHeader {
+            shape: vec![3],
+            fortran_order: false,
+            descr: IOSupportedDType::Bool,
+        };
+        let p = vec![1u8, 0, 1];
+        let npz = write_npz_bytes(&[("flags", &h, &p)]).expect("write");
+        let entries = read_npz_bytes(&npz).expect("read");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].array.header.descr, IOSupportedDType::Bool);
+        assert_eq!(entries[0].array.payload, vec![1, 0, 1]);
+    }
+
+    #[test]
+    fn npz_truncated_data_rejected() {
+        let h = NpyHeader {
+            shape: vec![1],
+            fortran_order: false,
+            descr: IOSupportedDType::F64,
+        };
+        let p: Vec<u8> = 1.0_f64.to_le_bytes().to_vec();
+        let npz = write_npz_bytes(&[("a", &h, &p)]).expect("write");
+        // Truncate
+        let truncated = &npz[..npz.len() / 2];
+        assert!(read_npz_bytes(truncated).is_err());
     }
 }

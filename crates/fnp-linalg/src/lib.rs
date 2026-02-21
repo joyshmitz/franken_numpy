@@ -1174,6 +1174,168 @@ pub fn eig_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
     Ok(eigenvalues)
 }
 
+/// Eigenvalues AND eigenvectors of a general (non-symmetric) matrix (np.linalg.eig).
+///
+/// Returns `(eigenvalues, eigenvectors)` where:
+/// - eigenvalues: interleaved `[re0, im0, re1, im1, ...]` (length `2*n`)
+/// - eigenvectors: column-major interleaved complex matrix of size `n x n`,
+///   stored as `[re(v[0,0]), im(v[0,0]), re(v[1,0]), im(v[1,0]), ..., re(v[0,1]), ...]`
+///   Total length `2*n*n`. Column `j` is the eigenvector for eigenvalue `j`.
+///
+/// For real eigenvalues the imaginary parts are zero.
+/// For complex conjugate pairs the two eigenvectors are also conjugate.
+pub fn eig_nxn_full(a: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), LinAlgError> {
+    if a.len() != n * n || n == 0 {
+        return Err(LinAlgError::ShapeContractViolation(
+            "eig_nxn_full: input must be n*n with n > 0",
+        ));
+    }
+    if a.iter().any(|v| !v.is_finite()) {
+        return Err(LinAlgError::SpectralConvergenceFailed);
+    }
+
+    // QR iteration accumulating the product of Q matrices
+    let mut m = a.to_vec();
+    let mut v = vec![0.0; n * n];
+    for i in 0..n {
+        v[i * n + i] = 1.0;
+    }
+
+    for _ in 0..500 {
+        let (q, r) = qr_nxn(&m, n)?;
+        // M = R * Q
+        let mut next = vec![0.0; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                let mut sum = 0.0;
+                for k in 0..n {
+                    sum += r[i * n + k] * q[k * n + j];
+                }
+                next[i * n + j] = sum;
+            }
+        }
+        // V = V * Q
+        let mut new_v = vec![0.0; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                let mut sum = 0.0;
+                for k in 0..n {
+                    sum += v[i * n + k] * q[k * n + j];
+                }
+                new_v[i * n + j] = sum;
+            }
+        }
+        m = next;
+        v = new_v;
+    }
+
+    // Extract eigenvalues from quasi-upper-triangular Schur form
+    let mut eigenvalues = Vec::with_capacity(n * 2);
+    // Build eigenvectors: for real eigenvalues the Schur vector is the eigenvector.
+    // For complex conjugate pairs from a 2x2 block we reconstruct the complex eigenvectors.
+    let mut eigvecs_re = vec![0.0; n * n];
+    let mut eigvecs_im = vec![0.0; n * n];
+
+    let mut i = 0;
+    while i < n {
+        if i + 1 < n && m[(i + 1) * n + i].abs() > 1e-10 {
+            // 2x2 block: complex conjugate eigenvalue pair
+            let a11 = m[i * n + i];
+            let a12 = m[i * n + (i + 1)];
+            let a21 = m[(i + 1) * n + i];
+            let a22 = m[(i + 1) * n + (i + 1)];
+            let trace = a11 + a22;
+            let det = a11 * a22 - a12 * a21;
+            let disc = trace * trace - 4.0 * det;
+            if disc < 0.0 {
+                let real = trace / 2.0;
+                let imag = (-disc).sqrt() / 2.0;
+                eigenvalues.push(real);
+                eigenvalues.push(imag);
+                eigenvalues.push(real);
+                eigenvalues.push(-imag);
+            } else {
+                let sqrt_disc = disc.sqrt();
+                eigenvalues.push((trace + sqrt_disc) / 2.0);
+                eigenvalues.push(0.0);
+                eigenvalues.push((trace - sqrt_disc) / 2.0);
+                eigenvalues.push(0.0);
+            }
+
+            // Reconstruct complex eigenvectors from Schur vectors
+            // For the 2x2 Schur block, eigenvector in Schur basis:
+            //   [1, (lambda - a11)/a12] for the first eigenvalue
+            // Then transform back: v_full = V * v_schur
+            if disc < 0.0 {
+                let imag = (-disc).sqrt() / 2.0;
+                // Schur-basis vector: [1, (imag_part) / a12 * j] for first eigenvalue
+                // s = (lambda - a11) / a12 = i*imag / a12
+                let s_im = imag / a12;
+                // First eigenvector (column i): V[:,i] + j * s_im * V[:,i+1]
+                // Second eigenvector (column i+1): conjugate
+                for row in 0..n {
+                    eigvecs_re[row * n + i] = v[row * n + i];
+                    eigvecs_im[row * n + i] = s_im * v[row * n + (i + 1)];
+                    eigvecs_re[row * n + (i + 1)] = v[row * n + i];
+                    eigvecs_im[row * n + (i + 1)] = -s_im * v[row * n + (i + 1)];
+                }
+            } else {
+                // Real distinct eigenvalues from 2x2 block
+                let sqrt_disc = disc.sqrt();
+                let lam1 = (trace + sqrt_disc) / 2.0;
+                // Schur-basis: [1, (lam1-a11)/a12]
+                let s = if a12.abs() > 1e-15 {
+                    (lam1 - a11) / a12
+                } else {
+                    0.0
+                };
+                for row in 0..n {
+                    eigvecs_re[row * n + i] = v[row * n + i] + s * v[row * n + (i + 1)];
+                    eigvecs_re[row * n + (i + 1)] = v[row * n + i]
+                        + ((trace - sqrt_disc) / 2.0 - a11) / a12.max(1e-15) * v[row * n + (i + 1)];
+                }
+            }
+            i += 2;
+        } else {
+            // 1x1 block: real eigenvalue, Schur vector = eigenvector
+            eigenvalues.push(m[i * n + i]);
+            eigenvalues.push(0.0);
+            for row in 0..n {
+                eigvecs_re[row * n + i] = v[row * n + i];
+            }
+            i += 1;
+        }
+    }
+
+    // Normalize each eigenvector column
+    for col in 0..n {
+        let mut norm_sq = 0.0;
+        for row in 0..n {
+            let re = eigvecs_re[row * n + col];
+            let im = eigvecs_im[row * n + col];
+            norm_sq += re * re + im * im;
+        }
+        let norm = norm_sq.sqrt();
+        if norm > 1e-15 {
+            for row in 0..n {
+                eigvecs_re[row * n + col] /= norm;
+                eigvecs_im[row * n + col] /= norm;
+            }
+        }
+    }
+
+    // Interleave into output format: [re(v[0,0]), im(v[0,0]), re(v[1,0]), im(v[1,0]), ...]
+    let mut eigvecs = Vec::with_capacity(2 * n * n);
+    for col in 0..n {
+        for row in 0..n {
+            eigvecs.push(eigvecs_re[row * n + col]);
+            eigvecs.push(eigvecs_im[row * n + col]);
+        }
+    }
+
+    Ok((eigenvalues, eigvecs))
+}
+
 /// Condition number of a matrix (np.linalg.cond).
 /// Uses the ratio of largest to smallest singular value (2-norm condition number).
 pub fn cond_nxn(a: &[f64], n: usize) -> Result<f64, LinAlgError> {
@@ -1992,14 +2154,15 @@ mod tests {
         LINALG_PACKET_ID, LINALG_PACKET_REASON_CODES, LinAlgError, LinAlgLogRecord,
         LinAlgRuntimeMode, MAX_BACKEND_REVALIDATION_ATTEMPTS, MAX_BATCH_SHAPE_CHECKS,
         MAX_TOLERANCE_SEARCH_DEPTH, MatrixNormOrder, QrMode, VectorNormOrder, cholesky_2x2,
-        cholesky_nxn, cond_nxn, det_2x2, det_nxn, eig_nxn, eigh_2x2, eigh_nxn, eigvals_2x2,
-        eigvalsh_nxn, inv_2x2, inv_nxn, lstsq_2x2, lstsq_nxn, lstsq_output_shapes, lu_factor_nxn,
-        lu_solve, mat_mul_flat, matrix_norm_2x2, matrix_norm_frobenius, matrix_norm_nxn,
-        matrix_power_nxn, matrix_rank_2x2, matrix_rank_nxn, pinv_2x2, pinv_nxn, qr_2x2, qr_nxn,
-        qr_output_shapes, slogdet_2x2, slogdet_nxn, solve_2x2, solve_nxn, solve_nxn_multi,
-        solve_triangular, svd_2x2, svd_nxn, svd_output_shapes, trace_nxn, validate_backend_bridge,
-        validate_cholesky_diagonal, validate_matrix_shape, validate_policy_metadata,
-        validate_spectral_branch, validate_square_matrix, validate_tolerance_policy, vector_norm,
+        cholesky_nxn, cond_nxn, det_2x2, det_nxn, eig_nxn, eig_nxn_full, eigh_2x2, eigh_nxn,
+        eigvals_2x2, eigvalsh_nxn, inv_2x2, inv_nxn, lstsq_2x2, lstsq_nxn, lstsq_output_shapes,
+        lu_factor_nxn, lu_solve, mat_mul_flat, matrix_norm_2x2, matrix_norm_frobenius,
+        matrix_norm_nxn, matrix_power_nxn, matrix_rank_2x2, matrix_rank_nxn, pinv_2x2, pinv_nxn,
+        qr_2x2, qr_nxn, qr_output_shapes, slogdet_2x2, slogdet_nxn, solve_2x2, solve_nxn,
+        solve_nxn_multi, solve_triangular, svd_2x2, svd_nxn, svd_output_shapes, trace_nxn,
+        validate_backend_bridge, validate_cholesky_diagonal, validate_matrix_shape,
+        validate_policy_metadata, validate_spectral_branch, validate_square_matrix,
+        validate_tolerance_policy, vector_norm,
     };
 
     fn packet008_artifacts() -> Vec<String> {
@@ -3263,6 +3426,100 @@ mod tests {
         imags.sort_by(|a, b| a.partial_cmp(b).unwrap());
         assert!((imags[0] - 1.0).abs() < 1e-6, "im magnitude={}", imags[0]);
         assert!((imags[1] - 1.0).abs() < 1e-6, "im magnitude={}", imags[1]);
+    }
+
+    #[test]
+    fn eig_nxn_full_symmetric_eigenvectors() {
+        // Symmetric 2x2: [[2, 1], [1, 2]], eigenvalues 3 and 1
+        let a = [2.0, 1.0, 1.0, 2.0];
+        let (eigs, vecs) = eig_nxn_full(&a, 2).unwrap();
+        assert_eq!(eigs.len(), 4);
+        assert_eq!(vecs.len(), 8); // 2 columns, 2 rows, 2 (re/im) = 8
+
+        // Each eigenvalue should be real
+        assert!(eigs[1].abs() < 1e-6, "im0={}", eigs[1]);
+        assert!(eigs[3].abs() < 1e-6, "im1={}", eigs[3]);
+
+        // Verify A*v ≈ lambda*v for each eigenvector
+        for col in 0..2 {
+            let lam_re = eigs[col * 2];
+            let v_re = [vecs[col * 4], vecs[col * 4 + 2]]; // row 0, row 1 real parts
+            // A*v
+            let av0 = a[0] * v_re[0] + a[1] * v_re[1];
+            let av1 = a[2] * v_re[0] + a[3] * v_re[1];
+            assert!(
+                (av0 - lam_re * v_re[0]).abs() < 1e-4,
+                "A*v[0]={av0}, lam*v[0]={}",
+                lam_re * v_re[0]
+            );
+            assert!(
+                (av1 - lam_re * v_re[1]).abs() < 1e-4,
+                "A*v[1]={av1}, lam*v[1]={}",
+                lam_re * v_re[1]
+            );
+        }
+    }
+
+    #[test]
+    fn eig_nxn_full_diagonal() {
+        // Diagonal 3x3: eigenvalues are the diagonal entries
+        let a = [5.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 1.0];
+        let (eigs, vecs) = eig_nxn_full(&a, 3).unwrap();
+        assert_eq!(eigs.len(), 6);
+        assert_eq!(vecs.len(), 18); // 3 cols * 3 rows * 2
+
+        // Each eigenvector should be a unit basis vector (up to sign)
+        for col in 0..3 {
+            let lam = eigs[col * 2];
+            // Verify A*v ≈ lam*v
+            for row in 0..3 {
+                let v_re = vecs[col * 6 + row * 2]; // col * (n*2) + row * 2
+                let mut av = 0.0;
+                for k in 0..3 {
+                    av += a[row * 3 + k] * vecs[col * 6 + k * 2];
+                }
+                assert!(
+                    (av - lam * v_re).abs() < 1e-4,
+                    "col={col} row={row} av={av} lam*v={}",
+                    lam * v_re
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn eig_nxn_full_rotation_complex_eigenvectors() {
+        // 90-degree rotation: eigenvalues ±i
+        let a = [0.0, -1.0, 1.0, 0.0];
+        let (eigs, vecs) = eig_nxn_full(&a, 2).unwrap();
+        assert_eq!(eigs.len(), 4);
+        assert_eq!(vecs.len(), 8);
+
+        // Eigenvalues should be purely imaginary
+        assert!(eigs[0].abs() < 1e-6, "re0={}", eigs[0]);
+        assert!(eigs[2].abs() < 1e-6, "re1={}", eigs[2]);
+        assert!((eigs[1].abs() - 1.0).abs() < 1e-6);
+        assert!((eigs[3].abs() - 1.0).abs() < 1e-6);
+
+        // Eigenvectors should be non-zero and normalized
+        for col in 0..2 {
+            let mut norm_sq = 0.0;
+            for row in 0..2 {
+                let re = vecs[col * 4 + row * 2];
+                let im = vecs[col * 4 + row * 2 + 1];
+                norm_sq += re * re + im * im;
+            }
+            assert!(
+                (norm_sq - 1.0).abs() < 1e-4,
+                "eigenvector {col} not normalized: norm²={norm_sq}"
+            );
+        }
+    }
+
+    #[test]
+    fn eig_nxn_full_rejects_empty() {
+        let result = eig_nxn_full(&[], 0);
+        assert!(result.is_err());
     }
 
     #[test]
