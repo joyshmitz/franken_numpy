@@ -949,6 +949,77 @@ pub fn eigh_nxn(a: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), LinAlgError
     Ok((eigenvalues, sorted_v))
 }
 
+/// Eigenvalues of a general (possibly non-symmetric) NxN matrix via QR iteration.
+/// Returns eigenvalues as interleaved (re, im) pairs: [re0, im0, re1, im1, ...].
+/// For real eigenvalues, the imaginary part is 0.
+/// The QR iteration converges to a quasi-upper-triangular (real Schur) form;
+/// 1x1 diagonal blocks give real eigenvalues, 2x2 blocks give complex conjugate pairs.
+pub fn eig_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
+    if a.len() != n * n || n == 0 {
+        return Err(LinAlgError::ShapeContractViolation(
+            "eig_nxn: input must be n*n with n > 0",
+        ));
+    }
+    if a.iter().any(|v| !v.is_finite()) {
+        return Err(LinAlgError::SpectralConvergenceFailed);
+    }
+
+    // QR iteration to get real Schur form
+    let mut m = a.to_vec();
+    for _ in 0..500 {
+        let (q, r) = qr_nxn(&m, n)?;
+        let mut next = vec![0.0; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                let mut sum = 0.0;
+                for k in 0..n {
+                    sum += r[i * n + k] * q[k * n + j];
+                }
+                next[i * n + j] = sum;
+            }
+        }
+        m = next;
+    }
+
+    // Extract eigenvalues from quasi-upper-triangular form
+    let mut eigenvalues = Vec::with_capacity(n * 2);
+    let mut i = 0;
+    while i < n {
+        if i + 1 < n && m[(i + 1) * n + i].abs() > 1e-10 {
+            // 2x2 block: eigenvalues are complex conjugate pair
+            let a11 = m[i * n + i];
+            let a12 = m[i * n + (i + 1)];
+            let a21 = m[(i + 1) * n + i];
+            let a22 = m[(i + 1) * n + (i + 1)];
+            let trace = a11 + a22;
+            let det = a11 * a22 - a12 * a21;
+            let disc = trace * trace - 4.0 * det;
+            if disc < 0.0 {
+                let real = trace / 2.0;
+                let imag = (-disc).sqrt() / 2.0;
+                eigenvalues.push(real);
+                eigenvalues.push(imag);
+                eigenvalues.push(real);
+                eigenvalues.push(-imag);
+            } else {
+                let sqrt_disc = disc.sqrt();
+                eigenvalues.push((trace + sqrt_disc) / 2.0);
+                eigenvalues.push(0.0);
+                eigenvalues.push((trace - sqrt_disc) / 2.0);
+                eigenvalues.push(0.0);
+            }
+            i += 2;
+        } else {
+            // 1x1 block: real eigenvalue
+            eigenvalues.push(m[i * n + i]);
+            eigenvalues.push(0.0);
+            i += 1;
+        }
+    }
+
+    Ok(eigenvalues)
+}
+
 /// Condition number of a matrix (np.linalg.cond).
 /// Uses the ratio of largest to smallest singular value (2-norm condition number).
 pub fn cond_nxn(a: &[f64], n: usize) -> Result<f64, LinAlgError> {
@@ -1771,7 +1842,8 @@ mod tests {
         LINALG_PACKET_ID, LINALG_PACKET_REASON_CODES, LinAlgError, LinAlgLogRecord,
         LinAlgRuntimeMode, MAX_BACKEND_REVALIDATION_ATTEMPTS, MAX_BATCH_SHAPE_CHECKS,
         MAX_TOLERANCE_SEARCH_DEPTH, MatrixNormOrder, QrMode, VectorNormOrder, cholesky_2x2,
-        cholesky_nxn, cond_nxn, det_2x2, det_nxn, eigh_2x2, eigh_nxn, eigvals_2x2, eigvalsh_nxn,
+        cholesky_nxn, cond_nxn, det_2x2, det_nxn, eig_nxn, eigh_2x2, eigh_nxn, eigvals_2x2,
+        eigvalsh_nxn,
         inv_2x2, inv_nxn, lstsq_2x2, lstsq_nxn,
         lstsq_output_shapes, mat_mul_flat, matrix_norm_2x2, matrix_norm_frobenius,
         matrix_norm_nxn, matrix_power_nxn, matrix_rank_2x2, matrix_rank_nxn,
@@ -2985,5 +3057,47 @@ mod tests {
         let eye = [1.0, 0.0, 0.0, 1.0];
         let s = matrix_norm_nxn(&eye, 2, 2, "2").unwrap();
         assert!((s - 1.0).abs() < 1e-6, "spectral(I)={s}");
+    }
+
+    #[test]
+    fn eig_nxn_symmetric_gives_real_eigenvalues() {
+        // Symmetric 2x2: [[2, 1], [1, 2]], eigenvalues = 3, 1
+        let a = [2.0, 1.0, 1.0, 2.0];
+        let eigs = eig_nxn(&a, 2).unwrap();
+        // Should have 2 eigenvalues with ~0 imaginary parts
+        assert_eq!(eigs.len(), 4); // [re0, im0, re1, im1]
+        assert!(eigs[1].abs() < 1e-6, "im0={}", eigs[1]); // real
+        assert!(eigs[3].abs() < 1e-6, "im1={}", eigs[3]); // real
+        let mut vals = [eigs[0], eigs[2]];
+        vals.sort_by(|a, b| b.partial_cmp(a).unwrap());
+        assert!((vals[0] - 3.0).abs() < 1e-6, "eig0={}", vals[0]);
+        assert!((vals[1] - 1.0).abs() < 1e-6, "eig1={}", vals[1]);
+    }
+
+    #[test]
+    fn eig_nxn_diagonal_matrix() {
+        let a = [5.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 1.0];
+        let eigs = eig_nxn(&a, 3).unwrap();
+        assert_eq!(eigs.len(), 6);
+        let mut reals: Vec<f64> = (0..3).map(|i| eigs[i * 2]).collect();
+        reals.sort_by(|a, b| b.partial_cmp(a).unwrap());
+        assert!((reals[0] - 5.0).abs() < 1e-6);
+        assert!((reals[1] - 3.0).abs() < 1e-6);
+        assert!((reals[2] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn eig_nxn_rotation_gives_complex_eigenvalues() {
+        // 90-degree rotation: [[0, -1], [1, 0]], eigenvalues = ±i
+        let a = [0.0, -1.0, 1.0, 0.0];
+        let eigs = eig_nxn(&a, 2).unwrap();
+        assert_eq!(eigs.len(), 4);
+        // Both eigenvalues should have real part ~0 and imaginary parts ±1
+        assert!(eigs[0].abs() < 1e-6, "re0={}", eigs[0]);
+        assert!(eigs[2].abs() < 1e-6, "re1={}", eigs[2]);
+        let mut imags = [eigs[1].abs(), eigs[3].abs()];
+        imags.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert!((imags[0] - 1.0).abs() < 1e-6, "im magnitude={}", imags[0]);
+        assert!((imags[1] - 1.0).abs() < 1e-6, "im magnitude={}", imags[1]);
     }
 }
