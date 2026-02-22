@@ -1,7 +1,7 @@
 [
   {
-    "id": "dtype002_adv_unknown_lhs_complex128",
-    "lhs": "complex128",
+    "id": "dtype002_adv_unknown_lhs_complex256",
+    "lhs": "complex256",
     "rhs": "i32",
     "expected_error_contains": "unknown lhs dtype",
     "expected_reason_code": "dtype_normalization_failed",

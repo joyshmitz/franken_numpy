@@ -159,9 +159,9 @@
     },
     "steps": [
       {
-        "id": "step_dtype_unknown_lhs_complex128",
+        "id": "step_dtype_unknown_lhs_complex256",
         "kind": "dtype_fixture_case",
-        "case_id": "dtype002_adv_unknown_lhs_complex128",
+        "case_id": "dtype002_adv_unknown_lhs_complex256",
         "fixture_set": "adversarial"
       },
       {
@@ -186,7 +186,7 @@
     ],
     "links": {
       "differential_fixture_ids": [
-        "dtype002_adv_unknown_lhs_complex128",
+        "dtype002_adv_unknown_lhs_complex256",
         "dtype002_adv_unknown_rhs_decimal",
         "dtype002_adv_unknown_lhs_string"
       ],

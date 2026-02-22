@@ -3905,8 +3905,8 @@ mod tests {
     fn cross_product_self_is_zero() {
         let a = [3.0, -1.0, 4.0];
         let result = cross_product(&a, &a).unwrap();
-        for i in 0..3 {
-            assert!(result[i].abs() < 1e-15);
+        for val in &result[..3] {
+            assert!(val.abs() < 1e-15);
         }
     }
 

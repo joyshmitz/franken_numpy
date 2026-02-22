@@ -14,6 +14,11 @@ pub enum DType {
     U64,
     F32,
     F64,
+    Complex64,
+    Complex128,
+    Str,
+    DateTime64,
+    TimeDelta64,
 }
 
 impl DType {
@@ -31,6 +36,11 @@ impl DType {
             Self::U64 => "u64",
             Self::F32 => "f32",
             Self::F64 => "f64",
+            Self::Complex64 => "complex64",
+            Self::Complex128 => "complex128",
+            Self::Str => "str",
+            Self::DateTime64 => "datetime64",
+            Self::TimeDelta64 => "timedelta64",
         }
     }
 
@@ -40,7 +50,14 @@ impl DType {
             Self::Bool | Self::I8 | Self::U8 => 1,
             Self::I16 | Self::U16 => 2,
             Self::I32 | Self::U32 | Self::F32 => 4,
-            Self::I64 | Self::U64 | Self::F64 => 8,
+            Self::I64
+            | Self::U64
+            | Self::F64
+            | Self::Complex64
+            | Self::DateTime64
+            | Self::TimeDelta64 => 8,
+            Self::Complex128 => 16,
+            Self::Str => 0, // variable-length
         }
     }
 
@@ -58,7 +75,29 @@ impl DType {
             "u64" | "uint64" => Some(Self::U64),
             "f32" | "float32" => Some(Self::F32),
             "f64" | "float64" => Some(Self::F64),
-            _ => None,
+            "c8" | "complex64" => Some(Self::Complex64),
+            "c16" | "complex128" => Some(Self::Complex128),
+            "str" | "U" => Some(Self::Str),
+            "datetime64" | "M8" => Some(Self::DateTime64),
+            "timedelta64" | "m8" => Some(Self::TimeDelta64),
+            _ => {
+                // Handle string dtype with length: U10, U32, etc.
+                if name.starts_with('U') && name[1..].parse::<usize>().is_ok() {
+                    return Some(Self::Str);
+                }
+                // Handle bytes dtype: S10, S32, etc.
+                if name.starts_with('S') && name[1..].parse::<usize>().is_ok() {
+                    return Some(Self::Str);
+                }
+                // Handle datetime with unit: datetime64[ns], datetime64[us], etc.
+                if name.starts_with("datetime64") {
+                    return Some(Self::DateTime64);
+                }
+                if name.starts_with("timedelta64") {
+                    return Some(Self::TimeDelta64);
+                }
+                None
+            }
         }
     }
 
@@ -82,6 +121,18 @@ impl DType {
     #[must_use]
     pub const fn is_float(self) -> bool {
         matches!(self, Self::F32 | Self::F64)
+    }
+
+    /// Returns `true` if this is a complex floating-point type.
+    #[must_use]
+    pub const fn is_complex(self) -> bool {
+        matches!(self, Self::Complex64 | Self::Complex128)
+    }
+
+    /// Returns `true` if this is a numeric type (integer, float, or complex).
+    #[must_use]
+    pub const fn is_numeric(self) -> bool {
+        self.is_integer() || self.is_float() || self.is_complex()
     }
 }
 
@@ -145,11 +196,35 @@ pub const fn promote(lhs: DType, rhs: DType) -> DType {
         (F32, I8 | I16 | U8 | U16) | (I8 | I16 | U8 | U16, F32) => F32,
         // Larger integers + F32 -> F64 (F32 can't exactly represent all I32/I64/U32/U64 values)
         (F32, I32 | I64 | U32 | U64) | (I32 | I64 | U32 | U64, F32) => F64,
-        // Any type + F64 -> F64
-        (F64, _) | (_, F64) => F64,
-
         // Float-float: pick wider
         (F32, F32) => F32,
+
+        // Complex promotion: complex absorbs float and integer
+        (Complex64, Complex64) => Complex64,
+        (Complex128, Complex128) => Complex128,
+        (Complex64, Complex128) | (Complex128, Complex64) => Complex128,
+        // Float + Complex: promote to matching complex
+        (F32, Complex64) | (Complex64, F32) => Complex64,
+        (F64, Complex64) | (Complex64, F64) | (F32, Complex128) | (Complex128, F32) => Complex128,
+        (F64, Complex128) | (Complex128, F64) => Complex128,
+        // Small integers + Complex64 -> Complex64 (mirrors F32 mantissa rule)
+        // Note: Bool is already handled by the (Bool, x) | (x, Bool) => x rule above
+        (Complex64, I8 | I16 | U8 | U16) | (I8 | I16 | U8 | U16, Complex64) => Complex64,
+        // Larger integers + Complex64 -> Complex128 (mirrors F32->F64 rule)
+        (Complex64, I32 | I64 | U32 | U64) | (I32 | I64 | U32 | U64, Complex64) => Complex128,
+        // Any integer + Complex128 -> Complex128
+        (Complex128, _) | (_, Complex128) => Complex128,
+
+        // DateTime and TimeDelta: don't promote with numeric types
+        (DateTime64, DateTime64) => DateTime64,
+        (TimeDelta64, TimeDelta64) => TimeDelta64,
+        (DateTime64, TimeDelta64) | (TimeDelta64, DateTime64) => DateTime64,
+
+        // Str: stays Str
+        (Str, Str) => Str,
+
+        // Any remaining combinations with non-numeric types: F64 as fallback
+        _ => F64,
     }
 }
 
@@ -165,6 +240,9 @@ pub const fn promote_for_sum_reduction(dt: DType) -> DType {
         DType::I64 => DType::I64,
         DType::F32 => DType::F32,
         DType::F64 => DType::F64,
+        DType::Complex64 => DType::Complex64,
+        DType::Complex128 => DType::Complex128,
+        DType::Str | DType::DateTime64 | DType::TimeDelta64 => dt,
     }
 }
 
@@ -173,6 +251,7 @@ pub const fn promote_for_sum_reduction(dt: DType) -> DType {
 /// `numpy.mean` behaviour.
 #[must_use]
 pub const fn promote_for_mean_reduction(dt: DType) -> DType {
+    #[allow(clippy::match_same_arms)]
     match dt {
         DType::Bool
         | DType::I8
@@ -185,6 +264,9 @@ pub const fn promote_for_mean_reduction(dt: DType) -> DType {
         | DType::U64 => DType::F64,
         DType::F32 => DType::F32,
         DType::F64 => DType::F64,
+        DType::Complex64 => DType::Complex64,
+        DType::Complex128 => DType::Complex128,
+        DType::Str | DType::DateTime64 | DType::TimeDelta64 => dt,
     }
 }
 
@@ -196,21 +278,28 @@ pub const fn can_cast_lossless(src: DType, dst: DType) -> bool {
 
     matches!(
         (src, dst),
-        // Bool can cast to anything
-        (Bool, _)
+        // Bool can cast to anything numeric
+        (Bool, Bool | I8 | I16 | I32 | I64 | U8 | U16 | U32 | U64 | F32 | F64 | Complex64 | Complex128)
         // Signed integers: can cast to wider signed or to F64
-        | (I8, I8 | I16 | I32 | I64 | F32 | F64)
-        | (I16, I16 | I32 | I64 | F32 | F64)
-        | (I32, I32 | I64 | F64)
-        | (I64, I64 | F64)
+        | (I8, I8 | I16 | I32 | I64 | F32 | F64 | Complex64 | Complex128)
+        | (I16, I16 | I32 | I64 | F32 | F64 | Complex64 | Complex128)
+        | (I32, I32 | I64 | F64 | Complex128)
+        | (I64, I64 | F64 | Complex128)
         // Unsigned integers: can cast to wider unsigned, wider signed, or F64
-        | (U8, U8 | U16 | U32 | U64 | I16 | I32 | I64 | F32 | F64)
-        | (U16, U16 | U32 | U64 | I32 | I64 | F32 | F64)
-        | (U32, U32 | U64 | I64 | F64)
-        | (U64, U64 | F64)
-        // Floats: can cast to wider float
-        | (F32, F32 | F64)
-        | (F64, F64)
+        | (U8, U8 | U16 | U32 | U64 | I16 | I32 | I64 | F32 | F64 | Complex64 | Complex128)
+        | (U16, U16 | U32 | U64 | I32 | I64 | F32 | F64 | Complex64 | Complex128)
+        | (U32, U32 | U64 | I64 | F64 | Complex128)
+        | (U64, U64 | F64 | Complex128)
+        // Floats: can cast to wider float or matching complex
+        | (F32, F32 | F64 | Complex64 | Complex128)
+        | (F64, F64 | Complex128)
+        // Complex: can cast to wider complex
+        | (Complex64, Complex64 | Complex128)
+        | (Complex128, Complex128)
+        // Non-numeric: only self-cast
+        | (Str, Str)
+        | (DateTime64, DateTime64)
+        | (TimeDelta64, TimeDelta64)
     )
 }
 
@@ -245,6 +334,15 @@ pub fn can_cast(from: DType, to: DType, casting: &str) -> bool {
                 return true;
             }
             if from.is_float() && to.is_float() {
+                return true;
+            }
+            if from.is_complex() && to.is_complex() {
+                return true;
+            }
+            if from.is_float() && to.is_complex() {
+                return true;
+            }
+            if from.is_integer() && to.is_complex() {
                 return true;
             }
             from.is_integer() && to.is_float()
@@ -310,7 +408,11 @@ pub fn min_scalar_type(value: f64) -> DType {
 pub fn common_type(dtypes: &[DType]) -> DType {
     let mut result = DType::F32;
     for &dt in dtypes {
-        let as_float = if dt.is_float() { dt } else { DType::F64 };
+        let as_float = if dt.is_float() || dt.is_complex() {
+            dt
+        } else {
+            DType::F64
+        };
         result = promote(result, as_float);
     }
     result
@@ -323,7 +425,7 @@ mod tests {
         promote_for_mean_reduction, promote_for_sum_reduction, result_type,
     };
 
-    fn all_dtypes() -> [DType; 11] {
+    fn all_numeric_dtypes() -> [DType; 13] {
         [
             DType::Bool,
             DType::I8,
@@ -336,12 +438,14 @@ mod tests {
             DType::U64,
             DType::F32,
             DType::F64,
+            DType::Complex64,
+            DType::Complex128,
         ]
     }
 
     #[test]
     fn promotion_is_commutative() {
-        let dtypes = all_dtypes();
+        let dtypes = all_numeric_dtypes();
 
         for &lhs in &dtypes {
             for &rhs in &dtypes {
@@ -352,7 +456,7 @@ mod tests {
 
     #[test]
     fn promotion_is_transitive_over_scoped_matrix() {
-        let dtypes = all_dtypes();
+        let dtypes = all_numeric_dtypes();
 
         for &src in &dtypes {
             for &mid in &dtypes {
@@ -438,11 +542,12 @@ mod tests {
 
     #[test]
     fn parse_roundtrip_for_known_dtypes() {
-        for dtype in all_dtypes() {
+        for dtype in all_numeric_dtypes() {
             let parsed = DType::parse(dtype.name()).expect("known dtype should parse");
             assert_eq!(parsed, dtype);
         }
-        assert!(DType::parse("complex128").is_none());
+        // complex128 now parses successfully (added with complex type support)
+        assert_eq!(DType::parse("complex128"), Some(DType::Complex128));
     }
 
     #[test]
@@ -472,14 +577,14 @@ mod tests {
 
     #[test]
     fn promotion_is_idempotent() {
-        for dtype in all_dtypes() {
+        for dtype in all_numeric_dtypes() {
             assert_eq!(promote(dtype, dtype), dtype);
         }
     }
 
     #[test]
     fn lossless_cast_is_reflexive() {
-        for dtype in all_dtypes() {
+        for dtype in all_numeric_dtypes() {
             assert!(
                 can_cast_lossless(dtype, dtype),
                 "{dtype:?} must cast to itself"
@@ -489,7 +594,7 @@ mod tests {
 
     #[test]
     fn lossless_cast_is_transitive_over_scoped_matrix() {
-        let dtypes = all_dtypes();
+        let dtypes = all_numeric_dtypes();
         for &src in &dtypes {
             for &mid in &dtypes {
                 for &dst in &dtypes {
@@ -506,7 +611,7 @@ mod tests {
 
     #[test]
     fn lossless_cast_implies_promotion_to_destination() {
-        let dtypes = all_dtypes();
+        let dtypes = all_numeric_dtypes();
         for &src in &dtypes {
             for &dst in &dtypes {
                 if can_cast_lossless(src, dst) {
@@ -548,7 +653,7 @@ mod tests {
 
     #[test]
     fn is_integer_and_is_float_are_disjoint() {
-        for dtype in all_dtypes() {
+        for dtype in all_numeric_dtypes() {
             assert!(
                 !(dtype.is_integer() && dtype.is_float()),
                 "{dtype:?} should not be both integer and float"
@@ -602,5 +707,77 @@ mod tests {
         assert_eq!(common_type(&[DType::F32, DType::F64]), DType::F64);
         assert_eq!(common_type(&[DType::I32, DType::F32]), DType::F64);
         assert_eq!(common_type(&[DType::I32, DType::I64]), DType::F64);
+    }
+
+    // ── Complex and non-numeric dtype tests ──
+
+    #[test]
+    fn parse_complex_dtypes() {
+        assert_eq!(DType::parse("complex64"), Some(DType::Complex64));
+        assert_eq!(DType::parse("complex128"), Some(DType::Complex128));
+        assert_eq!(DType::parse("c8"), Some(DType::Complex64));
+        assert_eq!(DType::parse("c16"), Some(DType::Complex128));
+    }
+
+    #[test]
+    fn parse_string_datetime_dtypes() {
+        assert_eq!(DType::parse("str"), Some(DType::Str));
+        assert_eq!(DType::parse("U"), Some(DType::Str));
+        assert_eq!(DType::parse("U10"), Some(DType::Str));
+        assert_eq!(DType::parse("S32"), Some(DType::Str));
+        assert_eq!(DType::parse("datetime64"), Some(DType::DateTime64));
+        assert_eq!(DType::parse("M8"), Some(DType::DateTime64));
+        assert_eq!(DType::parse("datetime64[ns]"), Some(DType::DateTime64));
+        assert_eq!(DType::parse("timedelta64"), Some(DType::TimeDelta64));
+        assert_eq!(DType::parse("m8"), Some(DType::TimeDelta64));
+    }
+
+    #[test]
+    fn complex_promotion() {
+        assert_eq!(
+            promote(DType::Complex64, DType::Complex64),
+            DType::Complex64
+        );
+        assert_eq!(
+            promote(DType::Complex64, DType::Complex128),
+            DType::Complex128
+        );
+        assert_eq!(promote(DType::F32, DType::Complex64), DType::Complex64);
+        assert_eq!(promote(DType::F64, DType::Complex64), DType::Complex128);
+        assert_eq!(promote(DType::I32, DType::Complex64), DType::Complex128);
+    }
+
+    #[test]
+    fn complex_is_complex() {
+        assert!(DType::Complex64.is_complex());
+        assert!(DType::Complex128.is_complex());
+        assert!(!DType::F64.is_complex());
+    }
+
+    #[test]
+    fn is_numeric_classification() {
+        // Bool is not integer/float/complex in our classification
+        assert!(!DType::Bool.is_numeric());
+        assert!(!DType::Str.is_numeric());
+        assert!(!DType::DateTime64.is_numeric());
+        assert!(!DType::TimeDelta64.is_numeric());
+        assert!(DType::I32.is_numeric());
+        assert!(DType::F64.is_numeric());
+        assert!(DType::Complex128.is_numeric());
+    }
+
+    #[test]
+    fn complex_item_sizes() {
+        assert_eq!(DType::Complex64.item_size(), 8); // 2 * f32
+        assert_eq!(DType::Complex128.item_size(), 16); // 2 * f64
+    }
+
+    #[test]
+    fn can_cast_complex_safe() {
+        assert!(can_cast_lossless(DType::F32, DType::Complex64));
+        assert!(can_cast_lossless(DType::F64, DType::Complex128));
+        assert!(can_cast_lossless(DType::Complex64, DType::Complex128));
+        assert!(!can_cast_lossless(DType::Complex128, DType::F64));
+        assert!(!can_cast_lossless(DType::Complex64, DType::F32));
     }
 }

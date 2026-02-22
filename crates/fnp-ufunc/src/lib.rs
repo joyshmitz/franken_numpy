@@ -3480,6 +3480,9 @@ impl UFuncArray {
             }
             DType::F32 => self.values.iter().map(|&v| (v as f32) as f64).collect(),
             DType::F64 => self.values.clone(),
+            // Complex: store real parts (imaginary zeroed); Str/DateTime/TimeDelta: identity
+            DType::Complex64 | DType::Complex128 => self.values.clone(),
+            DType::Str | DType::DateTime64 | DType::TimeDelta64 => self.values.clone(),
         };
         Self {
             shape: self.shape.clone(),
@@ -7353,6 +7356,11 @@ impl UFuncArray {
             DType::U32 => "uint32",
             DType::U64 => "uint64",
             DType::F32 => "float32",
+            DType::Complex64 => "complex64",
+            DType::Complex128 => "complex128",
+            DType::Str => "str",
+            DType::DateTime64 => "datetime64",
+            DType::TimeDelta64 => "timedelta64",
         };
         if dtype_str.is_empty() {
             format!("array({content})")
@@ -7916,6 +7924,7 @@ fn bessel_i0(x: f64) -> f64 {
 
 /// Bessel function of the first kind, order 0.
 /// Uses polynomial approximations from Abramowitz and Stegun (9.4.1, 9.4.3).
+#[allow(clippy::inconsistent_digit_grouping)]
 fn bessel_j0(x: f64) -> f64 {
     if x == 0.0 {
         return 1.0;
@@ -7934,20 +7943,21 @@ fn bessel_j0(x: f64) -> f64 {
     } else {
         let z = 8.0 / ax;
         let y = z * z;
-        let xx = ax - 0.785_398_163_4; // ax - pi/4
+        let xx = ax - std::f64::consts::FRAC_PI_4;
         let p0 = 1.0
             + y * (-0.1098628627e-2
                 + y * (0.2734510407e-4 + y * (-0.2073370639e-5 + y * 0.2093887211e-6)));
         let q0 = -0.1562499995e-1
             + y * (0.1430488765e-3
                 + y * (-0.6911147651e-5 + y * (0.7621095161e-6 - y * 0.934935152e-7)));
-        let factor = (0.636_619_772 / ax).sqrt();
+        let factor = (std::f64::consts::FRAC_2_PI / ax).sqrt();
         factor * (p0 * xx.cos() - z * q0 * xx.sin())
     }
 }
 
 /// Bessel function of the first kind, order 1.
 /// Uses polynomial approximations from Abramowitz and Stegun.
+#[allow(clippy::inconsistent_digit_grouping)]
 fn bessel_j1(x: f64) -> f64 {
     let ax = x.abs();
     if ax < 8.0 {
@@ -7964,14 +7974,14 @@ fn bessel_j1(x: f64) -> f64 {
     } else {
         let z = 8.0 / ax;
         let y = z * z;
-        let xx = ax - 2.356_194_491; // ax - 3*pi/4
+        let xx = ax - 3.0 * std::f64::consts::FRAC_PI_4;
         let p1 = 1.0
             + y * (0.183105e-2
                 + y * (-0.3516396496e-4 + y * (0.2457520174e-5 - y * 0.240337019e-6)));
         let q1 = 0.04687499995
             + y * (-0.2002690873e-3
                 + y * (0.8449199096e-5 + y * (-0.88228987e-6 + y * 0.105787412e-6)));
-        let factor = (0.636_619_772 / ax).sqrt();
+        let factor = (std::f64::consts::FRAC_2_PI / ax).sqrt();
         let result = factor * (p1 * xx.cos() - z * q1 * xx.sin());
         if x < 0.0 { -result } else { result }
     }
@@ -7979,6 +7989,7 @@ fn bessel_j1(x: f64) -> f64 {
 
 /// Bessel function of the second kind, order 0.
 /// Uses polynomial approximations from Abramowitz and Stegun.
+#[allow(clippy::inconsistent_digit_grouping)]
 fn bessel_y0(x: f64) -> f64 {
     if x <= 0.0 {
         return f64::NEG_INFINITY;
@@ -7992,24 +8003,25 @@ fn bessel_y0(x: f64) -> f64 {
         let den = 40_076_544_269.0
             + y * (745_249_964.8
                 + y * (7_189_466.438 + y * (47_447.26470 + y * (226.1030244 + y))));
-        (num / den) + 0.636_619_772 * bessel_j0(x) * x.ln()
+        (num / den) + std::f64::consts::FRAC_2_PI * bessel_j0(x) * x.ln()
     } else {
         let z = 8.0 / x;
         let y = z * z;
-        let xx = x - 0.785_398_163_4;
+        let xx = x - std::f64::consts::FRAC_PI_4;
         let p0 = 1.0
             + y * (-0.1098628627e-2
                 + y * (0.2734510407e-4 + y * (-0.2073370639e-5 + y * 0.2093887211e-6)));
         let q0 = -0.1562499995e-1
             + y * (0.1430488765e-3
                 + y * (-0.6911147651e-5 + y * (0.7621095161e-6 - y * 0.934935152e-7)));
-        let factor = (0.636_619_772 / x).sqrt();
+        let factor = (std::f64::consts::FRAC_2_PI / x).sqrt();
         factor * (p0 * xx.sin() + z * q0 * xx.cos())
     }
 }
 
 /// Bessel function of the second kind, order 1.
 /// Uses polynomial approximations from Abramowitz and Stegun.
+#[allow(clippy::inconsistent_digit_grouping)]
 fn bessel_y1(x: f64) -> f64 {
     if x <= 0.0 {
         return f64::NEG_INFINITY;
@@ -8025,18 +8037,18 @@ fn bessel_y1(x: f64) -> f64 {
             + y * (424_441_966_400.0
                 + y * (3_733_650_367.0
                     + y * (22_459_040.02 + y * (103_680.252 + y * 365.9584658))));
-        (num / den) + 0.636_619_772 * (bessel_j1(x) * x.ln() - 1.0 / x)
+        (num / den) + std::f64::consts::FRAC_2_PI * (bessel_j1(x) * x.ln() - 1.0 / x)
     } else {
         let z = 8.0 / x;
         let y = z * z;
-        let xx = x - 2.356_194_491;
+        let xx = x - 3.0 * std::f64::consts::FRAC_PI_4;
         let p1 = 1.0
             + y * (0.183105e-2
                 + y * (-0.3516396496e-4 + y * (0.2457520174e-5 - y * 0.240337019e-6)));
         let q1 = 0.04687499995
             + y * (-0.2002690873e-3
                 + y * (0.8449199096e-5 + y * (-0.88228987e-6 + y * 0.105787412e-6)));
-        let factor = (0.636_619_772 / x).sqrt();
+        let factor = (std::f64::consts::FRAC_2_PI / x).sqrt();
         factor * (p1 * xx.sin() + z * q1 * xx.cos())
     }
 }
@@ -8054,6 +8066,7 @@ fn lanczos_gamma(x: f64) -> f64 {
     }
     let x = x - 1.0;
     // Lanczos g=7 coefficients
+    #[allow(clippy::excessive_precision)]
     const P: [f64; 8] = [
         676.5203681218851,
         -1259.1392167224028,
@@ -8064,6 +8077,7 @@ fn lanczos_gamma(x: f64) -> f64 {
         9.9843695780195716e-6,
         1.5056327351493116e-7,
     ];
+    #[allow(clippy::excessive_precision)]
     let mut sum = 0.99999999999980993;
     for (i, &p) in P.iter().enumerate() {
         sum += p / (x + i as f64 + 1.0);

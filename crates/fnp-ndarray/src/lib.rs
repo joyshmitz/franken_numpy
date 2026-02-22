@@ -370,6 +370,74 @@ impl NdLayout {
         })
     }
 
+    /// Returns the number of dimensions (rank) of this layout.
+    #[must_use]
+    pub fn ndim(&self) -> usize {
+        self.shape.len()
+    }
+
+    /// Returns `true` if the layout represents a C-contiguous (row-major) array.
+    ///
+    /// A C-contiguous array has strides that match what `contiguous_strides(..., C)`
+    /// would produce: the last axis has stride == item_size, and each prior axis
+    /// has stride == (product of subsequent dimensions) * item_size.
+    ///
+    /// A zero-dimensional or scalar layout is always considered contiguous.
+    /// A layout with any zero-length dimension is contiguous by convention.
+    #[must_use]
+    pub fn is_contiguous(&self) -> bool {
+        if self.item_size == 0 {
+            return false;
+        }
+        if self.shape.is_empty() {
+            return true;
+        }
+        if self.shape.contains(&0) {
+            return true;
+        }
+        let mut expected_stride = self.item_size as isize;
+        for (&dim, &stride) in self.shape.iter().zip(&self.strides).rev() {
+            if dim == 1 {
+                // Dimensions of size 1 don't constrain the stride
+                continue;
+            }
+            if stride != expected_stride {
+                return false;
+            }
+            expected_stride = stride * dim as isize;
+        }
+        true
+    }
+
+    /// Returns `true` if the layout represents a Fortran-contiguous (column-major) array.
+    ///
+    /// A Fortran-contiguous array has strides that match what `contiguous_strides(..., F)`
+    /// would produce: the first axis has stride == item_size, and each subsequent axis
+    /// has stride == (product of prior dimensions) * item_size.
+    #[must_use]
+    pub fn is_fortran_contiguous(&self) -> bool {
+        if self.item_size == 0 {
+            return false;
+        }
+        if self.shape.is_empty() {
+            return true;
+        }
+        if self.shape.contains(&0) {
+            return true;
+        }
+        let mut expected_stride = self.item_size as isize;
+        for (&dim, &stride) in self.shape.iter().zip(&self.strides) {
+            if dim == 1 {
+                continue;
+            }
+            if stride != expected_stride {
+                return false;
+            }
+            expected_stride = stride * dim as isize;
+        }
+        true
+    }
+
     pub fn sliding_window_view(&self, window_shape: Vec<usize>) -> Result<Self, ShapeError> {
         if window_shape.len() != self.shape.len() {
             return Err(ShapeError::RankMismatch {
@@ -791,6 +859,70 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn is_contiguous_c_order() {
+        let layout = NdLayout::contiguous(vec![3, 4, 5], 8, MemoryOrder::C).expect("layout");
+        assert!(layout.is_contiguous());
+        assert!(!layout.is_fortran_contiguous());
+    }
+
+    #[test]
+    fn is_contiguous_f_order() {
+        let layout = NdLayout::contiguous(vec![3, 4, 5], 8, MemoryOrder::F).expect("layout");
+        assert!(!layout.is_contiguous());
+        assert!(layout.is_fortran_contiguous());
+    }
+
+    #[test]
+    fn is_contiguous_scalar() {
+        let layout = NdLayout::contiguous(vec![], 8, MemoryOrder::C).expect("layout");
+        assert!(layout.is_contiguous());
+        assert!(layout.is_fortran_contiguous());
+    }
+
+    #[test]
+    fn is_contiguous_1d() {
+        let layout = NdLayout::contiguous(vec![10], 8, MemoryOrder::C).expect("layout");
+        // 1-D contiguous is both C and F contiguous
+        assert!(layout.is_contiguous());
+        assert!(layout.is_fortran_contiguous());
+    }
+
+    #[test]
+    fn is_contiguous_zero_dim() {
+        let layout = NdLayout::contiguous(vec![0, 5], 8, MemoryOrder::C).expect("layout");
+        // Zero-length arrays are contiguous by convention
+        assert!(layout.is_contiguous());
+        assert!(layout.is_fortran_contiguous());
+    }
+
+    #[test]
+    fn is_contiguous_broadcast_not_contiguous() {
+        let base = NdLayout::contiguous(vec![1, 5], 8, MemoryOrder::C).expect("layout");
+        let broadcast = base.broadcast_to(vec![3, 5]).expect("broadcast");
+        // Broadcast arrays with 0-strides are not contiguous
+        assert!(!broadcast.is_contiguous());
+        assert!(!broadcast.is_fortran_contiguous());
+    }
+
+    #[test]
+    fn is_contiguous_singleton_dims_ignored() {
+        // Shape [1, 5, 1] with C strides should be both C and F contiguous
+        // because dimensions of size 1 don't constrain strides
+        let layout = NdLayout::contiguous(vec![1, 5, 1], 8, MemoryOrder::C).expect("layout");
+        assert!(layout.is_contiguous());
+        // Size-1 dimensions are unconstrained, so F order also holds
+        assert!(layout.is_fortran_contiguous());
+    }
+
+    #[test]
+    fn ndim_matches_shape_len() {
+        let layout = NdLayout::contiguous(vec![3, 4, 5], 8, MemoryOrder::C).expect("layout");
+        assert_eq!(layout.ndim(), 3);
+        let scalar = NdLayout::contiguous(vec![], 8, MemoryOrder::C).expect("layout");
+        assert_eq!(scalar.ndim(), 0);
     }
 
     #[test]

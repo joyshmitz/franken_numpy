@@ -1184,28 +1184,66 @@ impl Generator {
             .collect()
     }
 
+    /// Generate standard exponential samples (scale=1).
+    ///
+    /// Mimics `rng.standard_exponential(size)`.
+    #[must_use]
+    pub fn standard_exponential(&mut self, size: usize) -> Vec<f64> {
+        (0..size)
+            .map(|_| {
+                let u = self.next_f64().max(f64::MIN_POSITIVE);
+                -u.ln()
+            })
+            .collect()
+    }
+
+    /// Generate standard gamma samples (scale=1).
+    ///
+    /// Mimics `rng.standard_gamma(shape, size)`.
+    #[must_use]
+    pub fn standard_gamma(&mut self, shape_param: f64, size: usize) -> Vec<f64> {
+        (0..size).map(|_| self.sample_gamma(shape_param)).collect()
+    }
+
+    /// Generate random bytes.
+    ///
+    /// Mimics `rng.bytes(length)`. Returns `length` random bytes.
+    #[must_use]
+    pub fn bytes(&mut self, length: usize) -> Vec<u8> {
+        let mut result = Vec::with_capacity(length);
+        let mut remaining = length;
+        while remaining > 0 {
+            let word = self.next_u64();
+            let bytes = word.to_le_bytes();
+            let take = remaining.min(8);
+            result.extend_from_slice(&bytes[..take]);
+            remaining -= take;
+        }
+        result
+    }
+
     /// Generate Poisson-distributed samples using the inverse transform method
     /// for small lambda, Knuth's algorithm for moderate lambda.
     ///
     /// Mimics `rng.poisson(lam, size)`.
     #[must_use]
     pub fn poisson(&mut self, lam: f64, size: usize) -> Vec<u64> {
-        (0..size)
-            .map(|_| {
-                // Knuth's algorithm
-                let l = (-lam).exp();
-                let mut k = 0u64;
-                let mut p = 1.0;
-                loop {
-                    k += 1;
-                    p *= self.next_f64();
-                    if p <= l {
-                        break;
-                    }
-                }
-                k - 1
-            })
-            .collect()
+        (0..size).map(|_| self.sample_poisson_single(lam)).collect()
+    }
+
+    fn sample_poisson_single(&mut self, lam: f64) -> u64 {
+        // Knuth's algorithm
+        let l = (-lam).exp();
+        let mut k = 0u64;
+        let mut p = 1.0;
+        loop {
+            k += 1;
+            p *= self.next_f64();
+            if p <= l {
+                break;
+            }
+        }
+        k - 1
     }
 
     /// Generate binomially distributed samples.
@@ -1254,6 +1292,76 @@ impl Generator {
                 pool.swap(i, j);
             }
             Ok(pool[..size].to_vec())
+        }
+    }
+
+    /// Choose random elements from an array with probability weights.
+    ///
+    /// Mimics `rng.choice(a, size, replace, p=weights)`. The `p` array
+    /// must sum to 1.0 (within tolerance) and have the same length as `a`.
+    ///
+    /// For `replace=true`, uses the inverse-CDF method.
+    /// For `replace=false`, uses sequential weighted sampling without replacement.
+    pub fn choice_weighted(
+        &mut self,
+        a: &[f64],
+        size: usize,
+        replace: bool,
+        p: &[f64],
+    ) -> Result<Vec<f64>, RandomError> {
+        let n = a.len();
+        if p.len() != n {
+            return Err(RandomError::InvalidUpperBound);
+        }
+        if !replace && size > n {
+            return Err(RandomError::InvalidUpperBound);
+        }
+        // Validate probabilities are non-negative and sum to ~1.0
+        let sum: f64 = p.iter().sum();
+        if (sum - 1.0).abs() > 1e-8 || p.iter().any(|&v| v < 0.0) {
+            return Err(RandomError::InvalidUpperBound);
+        }
+
+        if replace {
+            // Inverse-CDF sampling
+            let mut cdf = Vec::with_capacity(n);
+            let mut cumulative = 0.0;
+            for &prob in p {
+                cumulative += prob;
+                cdf.push(cumulative);
+            }
+            let mut result = Vec::with_capacity(size);
+            for _ in 0..size {
+                let u = self.next_f64();
+                let idx = cdf.partition_point(|&c| c <= u).min(n - 1);
+                result.push(a[idx]);
+            }
+            Ok(result)
+        } else {
+            // Weighted sampling without replacement
+            let mut weights = p.to_vec();
+            let mut indices: Vec<usize> = (0..n).collect();
+            let mut result = Vec::with_capacity(size);
+            for _ in 0..size {
+                let total: f64 = weights.iter().sum();
+                if total <= 0.0 {
+                    break;
+                }
+                let u = self.next_f64() * total;
+                let mut cumulative = 0.0;
+                let mut chosen = indices.len() - 1;
+                for (i, &w) in weights.iter().enumerate() {
+                    cumulative += w;
+                    if cumulative > u {
+                        chosen = i;
+                        break;
+                    }
+                }
+                result.push(a[indices[chosen]]);
+                indices.swap_remove(chosen);
+                weights.swap_remove(chosen);
+            }
+            Ok(result)
         }
     }
 
@@ -1537,6 +1645,59 @@ impl Generator {
                 let z = self.sample_standard_normal_single();
                 let chi2 = self.sample_gamma(df / 2.0) * 2.0;
                 z / (chi2 / df).sqrt()
+            })
+            .collect()
+    }
+
+    /// Non-central chi-squared distribution (scipy.stats.ncx2).
+    ///
+    /// Generated as the sum of `df` independent standard normals shifted by `nonc/df`,
+    /// or equivalently: Poisson(nonc/2) mixture of chi-squared variates.
+    /// Uses the simpler additive method: sum of (Z + sqrt(nonc/df))² for each df.
+    pub fn noncentral_chisquare(&mut self, df: f64, nonc: f64, size: usize) -> Vec<f64> {
+        (0..size)
+            .map(|_| {
+                if df >= 1.0 {
+                    // X ~ chi²(df-1) + (Z + sqrt(nonc))²
+                    let chi2_part = if df > 1.0 {
+                        self.sample_gamma((df - 1.0) / 2.0) * 2.0
+                    } else {
+                        0.0
+                    };
+                    let z = self.sample_standard_normal_single() + nonc.sqrt();
+                    chi2_part + z * z
+                } else {
+                    // df < 1: use Poisson mixture
+                    let i = self.sample_poisson_single(nonc / 2.0);
+                    self.sample_gamma(df / 2.0 + i as f64) * 2.0
+                }
+            })
+            .collect()
+    }
+
+    /// Non-central F-distribution (scipy.stats.ncf).
+    ///
+    /// Ratio of non-central chi-squared to central chi-squared:
+    /// `(X1/dfnum) / (X2/dfden)` where X1 ~ ncχ²(dfnum, nonc), X2 ~ χ²(dfden).
+    pub fn noncentral_f(&mut self, dfnum: f64, dfden: f64, nonc: f64, size: usize) -> Vec<f64> {
+        (0..size)
+            .map(|_| {
+                let nc_chi2 = {
+                    if dfnum >= 1.0 {
+                        let chi2_part = if dfnum > 1.0 {
+                            self.sample_gamma((dfnum - 1.0) / 2.0) * 2.0
+                        } else {
+                            0.0
+                        };
+                        let z = self.sample_standard_normal_single() + nonc.sqrt();
+                        chi2_part + z * z
+                    } else {
+                        let i = self.sample_poisson_single(nonc / 2.0);
+                        self.sample_gamma(dfnum / 2.0 + i as f64) * 2.0
+                    }
+                };
+                let chi2 = self.sample_gamma(dfden / 2.0) * 2.0;
+                (nc_chi2 / dfnum) / (chi2 / dfden)
             })
             .collect()
     }
@@ -3028,5 +3189,139 @@ mod tests {
             .sum::<f64>()
             / 5000.0;
         assert!(cov_emp > 0.2, "empirical cov={cov_emp}, expected positive");
+    }
+
+    #[test]
+    fn noncentral_chisquare_positive_values() {
+        let mut rng = test_generator();
+        let samples = rng.noncentral_chisquare(4.0, 1.0, 1000);
+        assert_eq!(samples.len(), 1000);
+        // All values should be positive
+        assert!(samples.iter().all(|&v| v > 0.0));
+        // Mean should be df + nonc = 5.0
+        let mean: f64 = samples.iter().sum::<f64>() / 1000.0;
+        assert!((mean - 5.0).abs() < 1.0, "ncx2 mean={mean}, expected ~5.0");
+    }
+
+    #[test]
+    fn noncentral_chisquare_reduces_to_central() {
+        // With nonc=0, should behave like regular chi-squared
+        let mut rng = test_generator();
+        let samples = rng.noncentral_chisquare(5.0, 0.0, 2000);
+        let mean: f64 = samples.iter().sum::<f64>() / 2000.0;
+        // Mean of chi²(5) = 5
+        assert!((mean - 5.0).abs() < 0.5, "chi2 mean={mean}, expected ~5.0");
+    }
+
+    #[test]
+    fn noncentral_f_positive_values() {
+        let mut rng = test_generator();
+        let samples = rng.noncentral_f(5.0, 10.0, 1.0, 1000);
+        assert_eq!(samples.len(), 1000);
+        assert!(samples.iter().all(|&v| v > 0.0));
+    }
+
+    #[test]
+    fn noncentral_f_mean_approximation() {
+        // Mean of ncF(d1, d2, lambda) ≈ d2*(d1+lambda) / (d1*(d2-2)) when d2 > 2
+        let mut rng = test_generator();
+        let d1 = 5.0;
+        let d2 = 20.0;
+        let lam = 2.0;
+        let samples = rng.noncentral_f(d1, d2, lam, 5000);
+        let mean: f64 = samples.iter().sum::<f64>() / 5000.0;
+        let expected_mean = d2 * (d1 + lam) / (d1 * (d2 - 2.0));
+        assert!(
+            (mean - expected_mean).abs() < 0.5,
+            "ncf mean={mean}, expected ~{expected_mean}"
+        );
+    }
+
+    #[test]
+    fn standard_exponential_mean() {
+        let mut rng = test_generator();
+        let samples = rng.standard_exponential(5000);
+        assert_eq!(samples.len(), 5000);
+        assert!(samples.iter().all(|&v| v >= 0.0));
+        let mean: f64 = samples.iter().sum::<f64>() / 5000.0;
+        assert!(
+            (mean - 1.0).abs() < 0.1,
+            "standard_exponential mean={mean}, expected ~1.0"
+        );
+    }
+
+    #[test]
+    fn standard_gamma_mean() {
+        let mut rng = test_generator();
+        let shape_param = 3.0;
+        let samples = rng.standard_gamma(shape_param, 5000);
+        assert_eq!(samples.len(), 5000);
+        assert!(samples.iter().all(|&v| v >= 0.0));
+        let mean: f64 = samples.iter().sum::<f64>() / 5000.0;
+        assert!(
+            (mean - shape_param).abs() < 0.3,
+            "standard_gamma mean={mean}, expected ~{shape_param}"
+        );
+    }
+
+    #[test]
+    fn bytes_correct_length() {
+        let mut rng = test_generator();
+        let data = rng.bytes(100);
+        assert_eq!(data.len(), 100);
+        // At least some variance (not all zeros)
+        let distinct: std::collections::HashSet<u8> = data.iter().copied().collect();
+        assert!(distinct.len() > 1, "expected diverse byte values");
+    }
+
+    #[test]
+    fn bytes_empty() {
+        let mut rng = test_generator();
+        let data = rng.bytes(0);
+        assert!(data.is_empty());
+    }
+
+    #[test]
+    fn bytes_partial_word() {
+        let mut rng = test_generator();
+        let data = rng.bytes(3);
+        assert_eq!(data.len(), 3);
+    }
+
+    #[test]
+    fn choice_weighted_replace() {
+        let mut rng = test_generator();
+        let a = [10.0, 20.0, 30.0];
+        let p = [0.7, 0.2, 0.1];
+        let samples = rng.choice_weighted(&a, 1000, true, &p).unwrap();
+        assert_eq!(samples.len(), 1000);
+        // Most picks should be 10.0 (p=0.7)
+        let count_10 = samples.iter().filter(|&&v| v == 10.0).count();
+        assert!(count_10 > 500, "expected majority 10.0, got {count_10}");
+    }
+
+    #[test]
+    fn choice_weighted_no_replace() {
+        let mut rng = test_generator();
+        let a = [1.0, 2.0, 3.0, 4.0, 5.0];
+        let p = [0.4, 0.3, 0.2, 0.05, 0.05];
+        let samples = rng.choice_weighted(&a, 3, false, &p).unwrap();
+        assert_eq!(samples.len(), 3);
+        // All values should be from the original array
+        for &v in &samples {
+            assert!(a.contains(&v), "unexpected value {v}");
+        }
+    }
+
+    #[test]
+    fn choice_weighted_rejects_bad_probabilities() {
+        let mut rng = test_generator();
+        let a = [1.0, 2.0, 3.0];
+        // Probabilities don't sum to 1
+        let p = [0.5, 0.2, 0.1];
+        assert!(rng.choice_weighted(&a, 1, true, &p).is_err());
+        // Negative probability
+        let p2 = [0.5, 0.7, -0.2];
+        assert!(rng.choice_weighted(&a, 1, true, &p2).is_err());
     }
 }
