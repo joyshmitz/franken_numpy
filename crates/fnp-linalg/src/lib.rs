@@ -846,7 +846,12 @@ pub fn tensorsolve(
 
     // x_shape is the trailing dims of a after b_shape
     let x_shape = &a_shape[b_ndim..];
-    let n: usize = b_data.len(); // product of b_shape
+    let n: usize = b_shape.iter().product();
+    if b_data.len() != n {
+        return Err(LinAlgError::ShapeContractViolation(
+            "tensorsolve: b_data length must equal product of b_shape",
+        ));
+    }
     let m: usize = x_shape.iter().product(); // product of x_shape
 
     if n != m {
@@ -2226,6 +2231,51 @@ pub fn logm_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
     Ok(result)
 }
 
+/// Polar decomposition of an NxN matrix: A = U * P.
+///
+/// `U` is a unitary (orthogonal) matrix and `P` is a positive semi-definite
+/// symmetric matrix. Computed via SVD: if A = Us * S * Vt, then U = Us * Vt
+/// and P = V * S * Vt.
+///
+/// Returns `(u_flat, p_flat)` each of length n*n.
+///
+/// Equivalent to `scipy.linalg.polar(a)`.
+pub fn polar_nxn(a: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), LinAlgError> {
+    if a.len() != n * n || n == 0 {
+        return Err(LinAlgError::ShapeContractViolation(
+            "polar_nxn: input must be n*n with n > 0",
+        ));
+    }
+
+    // Get full SVD: A = Us * diag(S) * Vt
+    let (u_s, s_vals, vt) = svd_mxn_full(a, n, n)?;
+
+    // U = Us * Vt
+    let u_mat = mat_mul_flat(&u_s, &vt, n);
+
+    // P = V * diag(S) * Vt
+    // First compute V (transpose of Vt)
+    let mut v = vec![0.0; n * n];
+    for i in 0..n {
+        for j in 0..n {
+            v[i * n + j] = vt[j * n + i];
+        }
+    }
+
+    // V * diag(S) — multiply columns of V by singular values
+    let mut v_s = vec![0.0; n * n];
+    for i in 0..n {
+        for j in 0..n {
+            v_s[i * n + j] = v[i * n + j] * s_vals[j];
+        }
+    }
+
+    // P = V_S * Vt
+    let p_mat = mat_mul_flat(&v_s, &vt, n);
+
+    Ok((u_mat, p_mat))
+}
+
 /// NxN least-squares solve: minimize ||Ax - b||_2 using normal equations.
 /// Returns the solution vector x.
 pub fn lstsq_nxn(a: &[f64], b: &[f64], m: usize, n: usize) -> Result<Vec<f64>, LinAlgError> {
@@ -3015,7 +3065,7 @@ mod tests {
         inv_2x2, inv_nxn, kron_nxn, logm_nxn, lstsq_2x2, lstsq_nxn, lstsq_output_shapes,
         lu_factor_nxn, lu_solve, mat_mul_flat, mat_mul_rect, matrix_norm_2x2,
         matrix_norm_frobenius, matrix_norm_nxn, matrix_power_nxn, matrix_rank_2x2, matrix_rank_nxn,
-        multi_dot, pinv_2x2, pinv_nxn, qr_2x2, qr_mxn, qr_nxn, qr_output_shapes, schur_nxn,
+        multi_dot, pinv_2x2, pinv_nxn, polar_nxn, qr_2x2, qr_mxn, qr_nxn, qr_output_shapes, schur_nxn,
         slogdet_2x2, slogdet_nxn, solve_2x2, solve_nxn, solve_nxn_multi, solve_triangular,
         sqrtm_nxn, svd_2x2, svd_mxn, svd_mxn_full, svd_nxn, svd_output_shapes, tensorinv,
         tensorsolve, trace_nxn, validate_backend_bridge, validate_cholesky_diagonal,
@@ -5030,6 +5080,103 @@ mod tests {
         assert!(result[1].abs() < 1e-6, "logm diag [0,1]");
         assert!(result[2].abs() < 1e-6, "logm diag [1,0]");
         assert!((result[3] - 2.0).abs() < 1e-4, "logm diag [1,1]");
+    }
+
+    // ── Polar decomposition tests ──
+
+    #[test]
+    fn polar_identity() {
+        let a = [1.0, 0.0, 0.0, 1.0];
+        let (u, p) = polar_nxn(&a, 2).unwrap();
+        // Identity: U = I, P = I
+        for i in 0..2 {
+            for j in 0..2 {
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert!(
+                    (u[i * 2 + j] - expected).abs() < 1e-10,
+                    "polar U identity [{i},{j}]"
+                );
+                assert!(
+                    (p[i * 2 + j] - expected).abs() < 1e-10,
+                    "polar P identity [{i},{j}]"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn polar_reconstruction() {
+        // A = U * P => U * P should reconstruct A
+        let a = [2.0, 1.0, 0.5, 3.0];
+        let (u, p) = polar_nxn(&a, 2).unwrap();
+        let reconstructed = mat_mul_flat(&u, &p, 2);
+        for i in 0..4 {
+            assert!(
+                (reconstructed[i] - a[i]).abs() < 1e-10,
+                "polar reconstruction [{i}]"
+            );
+        }
+    }
+
+    #[test]
+    fn polar_u_is_orthogonal() {
+        let a = [2.0, 1.0, 0.5, 3.0];
+        let (u, _p) = polar_nxn(&a, 2).unwrap();
+        // U * U^T should be identity
+        let mut ut = vec![0.0; 4];
+        for i in 0..2 {
+            for j in 0..2 {
+                ut[i * 2 + j] = u[j * 2 + i];
+            }
+        }
+        let uut = mat_mul_flat(&u, &ut, 2);
+        for i in 0..2 {
+            for j in 0..2 {
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert!(
+                    (uut[i * 2 + j] - expected).abs() < 1e-10,
+                    "U orthogonality [{i},{j}]"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn polar_p_is_symmetric() {
+        let a = [2.0, 1.0, 0.5, 3.0];
+        let (_u, p) = polar_nxn(&a, 2).unwrap();
+        // P should be symmetric
+        assert!((p[1] - p[2]).abs() < 1e-10, "P symmetry");
+    }
+
+    #[test]
+    fn polar_p_positive_semidefinite() {
+        let a = [2.0, 1.0, 0.5, 3.0];
+        let (_u, p) = polar_nxn(&a, 2).unwrap();
+        // Eigenvalues of P should be non-negative
+        // For 2x2: eigenvalues = (trace +/- sqrt(trace^2 - 4*det)) / 2
+        let tr = p[0] + p[3];
+        let det = p[0] * p[3] - p[1] * p[2];
+        let disc = tr * tr - 4.0 * det;
+        assert!(disc >= -1e-10, "P discriminant non-negative");
+        let sqrt_disc = disc.max(0.0).sqrt();
+        let eig1 = (tr + sqrt_disc) / 2.0;
+        let eig2 = (tr - sqrt_disc) / 2.0;
+        assert!(eig1 >= -1e-10, "P eigenvalue 1 non-negative");
+        assert!(eig2 >= -1e-10, "P eigenvalue 2 non-negative");
+    }
+
+    #[test]
+    fn polar_3x3() {
+        let a = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 10.0]; // non-singular
+        let (u, p) = polar_nxn(&a, 3).unwrap();
+        let reconstructed = mat_mul_flat(&u, &p, 3);
+        for i in 0..9 {
+            assert!(
+                (reconstructed[i] - a[i]).abs() < 1e-8,
+                "polar 3x3 reconstruction [{i}]"
+            );
+        }
     }
 
     // ── Cholesky solve tests ──

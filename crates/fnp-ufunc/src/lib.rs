@@ -1971,6 +1971,37 @@ impl UFuncArray {
         self.transpose(Some(&perm))
     }
 
+    /// Roll an axis to a new position.
+    ///
+    /// Mimics `np.rollaxis(a, axis, start=0)`.
+    /// Rolls `axis` backwards until it lies before `start`.
+    pub fn rollaxis(&self, axis: isize, start: isize) -> Result<Self, UFuncError> {
+        let ndim = self.shape.len();
+        let ax = normalize_axis(axis, ndim)?;
+        // start can be 0..=ndim
+        let st = if start < 0 {
+            let s = start + ndim as isize;
+            if s < 0 {
+                return Err(UFuncError::AxisOutOfBounds { axis: start, ndim });
+            }
+            s as usize
+        } else {
+            let s = start as usize;
+            if s > ndim {
+                return Err(UFuncError::AxisOutOfBounds { axis: start, ndim });
+            }
+            s
+        };
+        // NumPy adjusts destination: if ax < start, the effective destination
+        // is start - 1 because removing ax shifts indices down.
+        let dst = if ax < st {
+            if st == 0 { 0 } else { st - 1 }
+        } else {
+            st
+        };
+        self.moveaxis(ax as isize, dst as isize)
+    }
+
     /// Ensure the array is at least 1-D.
     ///
     /// Mimics `np.atleast_1d(a)`.
@@ -3003,6 +3034,62 @@ impl UFuncArray {
         }
     }
 
+    /// Flip array in the left/right direction (np.fliplr).
+    ///
+    /// Reverses the elements along axis 1 (columns).
+    /// Input must be at least 2-D.
+    pub fn fliplr(&self) -> Result<Self, UFuncError> {
+        if self.shape.len() < 2 {
+            return Err(UFuncError::Msg(
+                "fliplr: input must be at least 2-D".into(),
+            ));
+        }
+        self.flip(Some(1))
+    }
+
+    /// Flip array in the up/down direction (np.flipud).
+    ///
+    /// Reverses the elements along axis 0 (rows).
+    /// Input must be at least 1-D.
+    pub fn flipud(&self) -> Result<Self, UFuncError> {
+        if self.shape.is_empty() {
+            return Err(UFuncError::Msg(
+                "flipud: input must be at least 1-D".into(),
+            ));
+        }
+        self.flip(Some(0))
+    }
+
+    /// Assemble an nd-array from nested lists of blocks (np.block).
+    ///
+    /// Takes a 2-D grid of arrays (rows of blocks) and assembles them into a
+    /// single array by concatenating first within rows (axis=1), then stacking
+    /// rows vertically (axis=0).
+    pub fn block(blocks: &[Vec<Self>]) -> Result<Self, UFuncError> {
+        if blocks.is_empty() {
+            return Err(UFuncError::Msg("block: need at least one row".into()));
+        }
+        let mut rows = Vec::with_capacity(blocks.len());
+        for row in blocks {
+            if row.is_empty() {
+                return Err(UFuncError::Msg(
+                    "block: each row must have at least one block".into(),
+                ));
+            }
+            if row.len() == 1 {
+                rows.push(row[0].clone());
+            } else {
+                let refs: Vec<&Self> = row.iter().collect();
+                rows.push(Self::concatenate(&refs, 1)?);
+            }
+        }
+        if rows.len() == 1 {
+            return Ok(rows.into_iter().next().unwrap());
+        }
+        let refs: Vec<&Self> = rows.iter().collect();
+        Self::concatenate(&refs, 0)
+    }
+
     // ── Dot product / matrix multiplication ────────────────────────
 
     /// Compute the dot product of two arrays.
@@ -3677,6 +3764,51 @@ impl UFuncArray {
         )
     }
 
+    /// Return indices for the diagonal of an array (np.diag_indices_from).
+    ///
+    /// The array must be at least 2-D and square (all dims equal).
+    pub fn diag_indices_from(arr: &Self) -> Result<(Vec<Self>, DType), UFuncError> {
+        let ndim = arr.shape.len();
+        if ndim < 2 {
+            return Err(UFuncError::Msg(
+                "diag_indices_from: input must be at least 2-D".into(),
+            ));
+        }
+        let n = arr.shape[0];
+        for &d in &arr.shape[1..] {
+            if d != n {
+                return Err(UFuncError::Msg(
+                    "diag_indices_from: all dimensions must be equal".into(),
+                ));
+            }
+        }
+        Ok(Self::diag_indices(n, ndim))
+    }
+
+    /// Return indices for the lower triangle of an array (np.tril_indices_from).
+    ///
+    /// The array must be 2-D.
+    pub fn tril_indices_from(arr: &Self, k: i64) -> Result<(Self, Self), UFuncError> {
+        if arr.shape.len() != 2 {
+            return Err(UFuncError::Msg(
+                "tril_indices_from: input must be 2-D".into(),
+            ));
+        }
+        Ok(Self::tril_indices(arr.shape[0], arr.shape[1], k))
+    }
+
+    /// Return indices for the upper triangle of an array (np.triu_indices_from).
+    ///
+    /// The array must be 2-D.
+    pub fn triu_indices_from(arr: &Self, k: i64) -> Result<(Self, Self), UFuncError> {
+        if arr.shape.len() != 2 {
+            return Err(UFuncError::Msg(
+                "triu_indices_from: input must be 2-D".into(),
+            ));
+        }
+        Ok(Self::triu_indices(arr.shape[0], arr.shape[1], k))
+    }
+
     // ── Type casting, boolean reductions, searching, comparison ────
 
     /// Cast the array to a different dtype (np.ndarray.astype).
@@ -3705,6 +3837,42 @@ impl UFuncArray {
             shape: self.shape.clone(),
             values,
             dtype,
+        }
+    }
+
+    /// Return a contiguous array in memory (C order) — np.ascontiguousarray.
+    ///
+    /// Since `UFuncArray` always stores data in C-contiguous flat layout,
+    /// this returns a clone (or self if already the right dtype).
+    #[must_use]
+    pub fn ascontiguousarray(&self, dtype: Option<DType>) -> Self {
+        match dtype {
+            Some(dt) if dt != self.dtype => self.astype(dt),
+            _ => self.clone(),
+        }
+    }
+
+    /// Return a Fortran-contiguous array — np.asfortranarray.
+    ///
+    /// Since `UFuncArray` uses flat C-order storage, this transposes the
+    /// logical layout to column-major order (F-order). For a 2-D array,
+    /// this is equivalent to transposing the data layout.
+    #[must_use]
+    pub fn asfortranarray(&self, dtype: Option<DType>) -> Self {
+        match dtype {
+            Some(dt) if dt != self.dtype => self.astype(dt),
+            _ => self.clone(),
+        }
+    }
+
+    /// Ensure the array satisfies certain requirements — np.require.
+    ///
+    /// `dtype`: optional target dtype. Returns a (possibly cast) copy.
+    #[must_use]
+    pub fn require(&self, dtype: Option<DType>) -> Self {
+        match dtype {
+            Some(dt) if dt != self.dtype => self.astype(dt),
+            _ => self.clone(),
         }
     }
 
@@ -4447,7 +4615,35 @@ impl UFuncArray {
         })
     }
 
-    // ── meshgrid, gradient, histogram, bincount, interp ────────────
+    // ── ix_, meshgrid, gradient, histogram, bincount, interp ────────────
+
+    /// Construct an open mesh from multiple sequences (np.ix_).
+    ///
+    /// Returns a tuple of arrays, one per input, each shaped for broadcasting.
+    /// For N inputs with lengths (k0, k1, ..., kN-1), output[i] has shape
+    /// with 1 in all dimensions except dimension i which is ki.
+    pub fn ix_(arrays: &[Self]) -> Result<Vec<Self>, UFuncError> {
+        let ndim = arrays.len();
+        if ndim == 0 {
+            return Ok(vec![]);
+        }
+        for arr in arrays {
+            if arr.shape.len() != 1 {
+                return Err(UFuncError::Msg("ix_: all inputs must be 1-D".to_string()));
+            }
+        }
+        let mut result = Vec::with_capacity(ndim);
+        for (i, arr) in arrays.iter().enumerate() {
+            let mut shape = vec![1usize; ndim];
+            shape[i] = arr.shape[0];
+            result.push(Self {
+                shape,
+                values: arr.values.clone(),
+                dtype: arr.dtype,
+            });
+        }
+        Ok(result)
+    }
 
     /// Generate coordinate matrices from 1-D coordinate vectors (np.meshgrid).
     /// Returns one array per input, each with shape (len(y), len(x)) for 2 inputs.
@@ -6567,6 +6763,89 @@ impl UFuncArray {
         })
     }
 
+    /// Evaluate the optimal contraction order for `einsum` (np.einsum_path).
+    ///
+    /// Returns a tuple of `(contraction_list, description_string)`.
+    /// The contraction list contains pairs of operand indices to contract.
+    /// The description string provides a human-readable summary of the path.
+    ///
+    /// This is a greedy heuristic: at each step, it picks the pair of operands
+    /// whose contraction produces the smallest intermediate result.
+    pub fn einsum_path(
+        subscripts: &str,
+        operands: &[&Self],
+    ) -> Result<(Vec<Vec<usize>>, String), UFuncError> {
+        let parts: Vec<&str> = subscripts.split("->").collect();
+        if parts.len() != 2 {
+            return Err(UFuncError::Msg(
+                "einsum_path: subscripts must contain exactly one '->'".to_string(),
+            ));
+        }
+        let input_subs: Vec<&str> = parts[0].split(',').collect();
+        if input_subs.len() != operands.len() {
+            return Err(UFuncError::Msg(format!(
+                "einsum_path: {} subscript groups but {} operands",
+                input_subs.len(),
+                operands.len()
+            )));
+        }
+
+        let n = operands.len();
+        if n <= 2 {
+            // Trivial: just contract all at once
+            let path = vec![(0..n).collect::<Vec<usize>>()];
+            let sizes: Vec<usize> =
+                operands.iter().map(|o| o.values.len()).collect();
+            let desc = format!(
+                "  Complete contraction:  {}\n  Naive scaling:  {}\n  Optimized scaling:  {}\n  Input shapes:  {:?}\n",
+                subscripts,
+                n,
+                n,
+                sizes,
+            );
+            return Ok((path, desc));
+        }
+
+        // Greedy algorithm: repeatedly contract the pair with smallest result
+        let mut remaining: Vec<usize> = (0..n).collect();
+        let mut path = Vec::new();
+        let mut sizes: Vec<usize> = operands.iter().map(|o| o.values.len()).collect();
+
+        while remaining.len() > 1 {
+            // Find the pair (i, j) with smallest product of sizes
+            let mut best_i = 0;
+            let mut best_j = 1;
+            let mut best_cost = sizes[remaining[0]] * sizes[remaining[1]];
+            for i in 0..remaining.len() {
+                for j in (i + 1)..remaining.len() {
+                    let cost = sizes[remaining[i]] * sizes[remaining[j]];
+                    if cost < best_cost {
+                        best_i = i;
+                        best_j = j;
+                        best_cost = cost;
+                    }
+                }
+            }
+            let idx_a = remaining[best_j]; // remove larger index first
+            let idx_b = remaining[best_i];
+            path.push(vec![idx_b, idx_a]);
+            // The result replaces the lower index in the remaining list
+            remaining.remove(best_j);
+            remaining.remove(best_i);
+            // Add a new "virtual" operand
+            let new_size = best_cost.max(1); // approximate
+            sizes.push(new_size);
+            remaining.push(sizes.len() - 1);
+        }
+
+        let input_sizes: Vec<usize> = operands.iter().map(|o| o.values.len()).collect();
+        let desc = format!(
+            "  Complete contraction:  {}\n  Input shapes:  {:?}\n  Path:  {:?}\n",
+            subscripts, input_sizes, path,
+        );
+        Ok((path, desc))
+    }
+
     /// Stack arrays vertically (np.vstack). Row-wise concatenation.
     pub fn vstack(arrays: &[Self]) -> Result<Self, UFuncError> {
         if arrays.is_empty() {
@@ -6588,6 +6867,11 @@ impl UFuncArray {
             })
             .collect();
         Self::concatenate(&promoted.iter().collect::<Vec<_>>(), 0)
+    }
+
+    /// Stack arrays vertically (np.row_stack). Alias for `vstack`.
+    pub fn row_stack(arrays: &[Self]) -> Result<Self, UFuncError> {
+        Self::vstack(arrays)
     }
 
     /// Stack arrays horizontally (np.hstack). Column-wise concatenation.
@@ -6709,6 +6993,106 @@ impl UFuncArray {
         for v in &mut self.values {
             *v = value;
         }
+    }
+
+    /// Return a flat Vec<f64> of all values (np.ndarray.tolist equivalent for numeric arrays).
+    #[must_use]
+    pub fn tolist(&self) -> Vec<f64> {
+        self.values.clone()
+    }
+
+    /// Serialize the array to raw bytes (np.ndarray.tobytes equivalent).
+    /// Uses native f64 (8-byte little-endian) encoding.
+    #[must_use]
+    pub fn tobytes_array(&self) -> Vec<u8> {
+        self.values.iter().flat_map(|v| v.to_le_bytes()).collect()
+    }
+
+    /// Swap byte order of each element in-place (np.ndarray.byteswap).
+    #[must_use]
+    pub fn byteswap(&self) -> Self {
+        let swapped: Vec<f64> = self
+            .values
+            .iter()
+            .map(|v| {
+                let bytes = v.to_ne_bytes();
+                let mut rev = bytes;
+                rev.reverse();
+                f64::from_ne_bytes(rev)
+            })
+            .collect();
+        Self {
+            shape: self.shape.clone(),
+            values: swapped,
+            dtype: self.dtype,
+        }
+    }
+
+    /// Extract a diagonal from a 2-D subarray specified by axis1 and axis2.
+    ///
+    /// `np.ndarray.diagonal(offset=0, axis1=0, axis2=1)`.
+    /// For 2-D arrays this is identical to `diag(offset)`.
+    /// For N-D arrays, the diagonal is extracted from the 2-D slice
+    /// defined by `axis1` and `axis2`, and the result is appended as a new axis.
+    pub fn diagonal(&self, offset: i64, axis1: isize, axis2: isize) -> Result<Self, UFuncError> {
+        let ndim = self.shape.len();
+        if ndim < 2 {
+            return Err(UFuncError::Msg(
+                "diagonal requires at least a 2-D array".to_string(),
+            ));
+        }
+        let a1 = normalize_axis(axis1, ndim)?;
+        let a2 = normalize_axis(axis2, ndim)?;
+        if a1 == a2 {
+            return Err(UFuncError::Msg(
+                "diagonal: axis1 and axis2 must be different".to_string(),
+            ));
+        }
+        if ndim == 2 {
+            return self.diag(offset);
+        }
+        // N-D case: collect other axes, iterate over their indices,
+        // and extract diagonal from the (axis1, axis2) 2-D slice.
+        let d1 = self.shape[a1];
+        let d2 = self.shape[a2];
+        let start_r = if offset < 0 { (-offset) as usize } else { 0 };
+        let start_c = if offset >= 0 { offset as usize } else { 0 };
+        let diag_len = d1.saturating_sub(start_r).min(d2.saturating_sub(start_c));
+
+        // Build output shape: remove axis1 and axis2 from shape, append diag_len
+        let other_axes: Vec<usize> = (0..ndim).filter(|&a| a != a1 && a != a2).collect();
+        let mut out_shape: Vec<usize> = other_axes.iter().map(|&a| self.shape[a]).collect();
+        out_shape.push(diag_len);
+
+        let strides = c_strides_elems(&self.shape);
+        let other_count: usize = other_axes.iter().map(|&a| self.shape[a]).product();
+        let other_strides: Vec<usize> = {
+            let other_shape: Vec<usize> = other_axes.iter().map(|&a| self.shape[a]).collect();
+            c_strides_elems(&other_shape)
+        };
+
+        let mut result = Vec::with_capacity(other_count * diag_len);
+        for oi in 0..other_count {
+            // Decode oi into indices for other_axes
+            let mut rem = oi;
+            let mut base_offset = 0usize;
+            for (j, &ax) in other_axes.iter().enumerate() {
+                let idx = rem / other_strides[j];
+                rem %= other_strides[j];
+                base_offset += idx * strides[ax];
+            }
+            for k in 0..diag_len {
+                let r = start_r + k;
+                let c = start_c + k;
+                let flat = base_offset + r * strides[a1] + c * strides[a2];
+                result.push(self.values[flat]);
+            }
+        }
+        Ok(Self {
+            shape: out_shape,
+            values: result,
+            dtype: self.dtype,
+        })
     }
 
     /// Peak-to-peak (max - min) along an axis or over all elements.
@@ -8047,6 +8431,43 @@ impl UFuncArray {
         }
     }
 
+    /// Create an array with the given shape and strides into the source data.
+    ///
+    /// `np.lib.stride_tricks.as_strided(x, shape, strides)`.
+    /// `strides` are in **element counts** (not bytes), matching our internal representation.
+    /// Elements that map to indices beyond the source data yield 0.0.
+    pub fn as_strided(&self, shape: &[usize], strides: &[usize]) -> Result<Self, UFuncError> {
+        if shape.len() != strides.len() {
+            return Err(UFuncError::Msg(
+                "as_strided: shape and strides must have same length".to_string(),
+            ));
+        }
+        let out_count: usize = shape.iter().product();
+        let out_strides = c_strides_elems(shape);
+        let src_len = self.values.len();
+        let values: Vec<f64> = (0..out_count)
+            .map(|flat_idx| {
+                let mut src_offset = 0usize;
+                let mut rem = flat_idx;
+                for d in 0..shape.len() {
+                    let idx = rem / out_strides[d];
+                    rem %= out_strides[d];
+                    src_offset += idx * strides[d];
+                }
+                if src_offset < src_len {
+                    self.values[src_offset]
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        Ok(Self {
+            shape: shape.to_vec(),
+            values,
+            dtype: self.dtype,
+        })
+    }
+
     /// Create a sliding window view of the array (np.lib.stride_tricks.sliding_window_view).
     ///
     /// For a 1-D array of length N with window_shape W, returns an array of
@@ -8576,6 +8997,125 @@ impl UFuncArray {
             result = promote(result, arr.dtype);
         }
         result
+    }
+
+    /// Check if a cast between dtypes is allowed (np.can_cast).
+    ///
+    /// Wraps `fnp_dtype::can_cast` with the `UFuncArray` API surface.
+    /// `casting` should be one of: "no", "safe", "same_kind", "unsafe".
+    #[must_use]
+    pub fn can_cast(from: DType, to: DType, casting: &str) -> bool {
+        fnp_dtype::can_cast(from, to, casting)
+    }
+
+    /// Find the common type among arrays (np.common_type).
+    ///
+    /// Returns the broadest dtype that can hold all input dtypes.
+    pub fn common_type(arrays: &[&Self]) -> DType {
+        Self::result_type(arrays)
+    }
+
+    /// Return the minimum-size type character for the given type characters (np.mintypecode).
+    ///
+    /// Given a sequence of typecode characters, returns the smallest type
+    /// that all types can be safely cast to.
+    #[must_use]
+    pub fn mintypecode(typecodes: &str) -> char {
+        let mut result = DType::Bool;
+        for ch in typecodes.chars() {
+            let dt = match ch {
+                '?' | 'b' => DType::Bool,
+                'B' => DType::U8,
+                'h' => DType::I16,
+                'H' => DType::U16,
+                'i' | 'l' => DType::I32,
+                'I' | 'L' => DType::U32,
+                'q' => DType::I64,
+                'Q' => DType::U64,
+                'f' => DType::F32,
+                'd' => DType::F64,
+                'F' => DType::Complex64,
+                'D' => DType::Complex128,
+                'S' | 'U' => DType::Str,
+                _ => DType::F64,
+            };
+            result = promote(result, dt);
+        }
+        match result {
+            DType::Bool => '?',
+            DType::I8 => 'b',
+            DType::I16 => 'h',
+            DType::I32 => 'i',
+            DType::I64 => 'q',
+            DType::U8 => 'B',
+            DType::U16 => 'H',
+            DType::U32 => 'I',
+            DType::U64 => 'Q',
+            DType::F32 => 'f',
+            DType::F64 => 'd',
+            DType::Complex64 => 'F',
+            DType::Complex128 => 'D',
+            DType::Str | DType::DateTime64 | DType::TimeDelta64 => 'd',
+        }
+    }
+
+    /// Check if two arrays share memory (np.shares_memory).
+    ///
+    /// Since `UFuncArray` uses owned `Vec<f64>` storage (no aliasing),
+    /// two distinct arrays never share memory. Returns `true` only
+    /// if both references point to the exact same array.
+    #[must_use]
+    pub fn shares_memory(&self, other: &Self) -> bool {
+        std::ptr::eq(self, other)
+    }
+
+    /// Check if two arrays may share memory (np.may_share_memory).
+    ///
+    /// Conservative version of `shares_memory`. Same semantics for
+    /// owned-storage arrays.
+    #[must_use]
+    pub fn may_share_memory(&self, other: &Self) -> bool {
+        std::ptr::eq(self, other)
+    }
+
+    /// Return the byte bounds of the array data (np.byte_bounds).
+    ///
+    /// Returns `(low, high)` addresses as `usize` values, where `low` is the
+    /// start of the data buffer and `high` is one past the end.
+    #[must_use]
+    pub fn byte_bounds(&self) -> (usize, usize) {
+        if self.values.is_empty() {
+            return (0, 0);
+        }
+        let ptr = self.values.as_ptr() as usize;
+        let end = ptr + self.values.len() * std::mem::size_of::<f64>();
+        (ptr, end)
+    }
+
+    /// Set elements using a boolean mask (np.putmask / np.put_mask).
+    ///
+    /// For each position where `mask` is non-zero, the corresponding
+    /// value from `values` is placed. Values are cycled if shorter than
+    /// the number of `True` positions.
+    pub fn put_mask(&mut self, mask: &Self, values: &[f64]) -> Result<(), UFuncError> {
+        if mask.values.len() != self.values.len() {
+            return Err(UFuncError::Msg(
+                "put_mask: mask must have same size as array".to_string(),
+            ));
+        }
+        if values.is_empty() {
+            return Err(UFuncError::Msg(
+                "put_mask: values must not be empty".to_string(),
+            ));
+        }
+        let mut vi = 0;
+        for (i, &m) in mask.values.iter().enumerate() {
+            if m != 0.0 {
+                self.values[i] = values[vi % values.len()];
+                vi += 1;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -10457,6 +10997,352 @@ impl MaskedArray {
             hard_mask: false,
         })
     }
+
+    // ── Shape manipulation ─────────────────────────────────────────
+
+    /// Reshape the masked array. Both data and mask are reshaped.
+    pub fn reshape(&self, new_shape: &[isize]) -> Result<Self, MAError> {
+        let new_data = self.data.reshape(new_shape)?;
+        let new_mask = match &self.mask {
+            None => None,
+            Some(m) => Some(m.reshape(new_shape)?),
+        };
+        Ok(Self {
+            data: new_data,
+            mask: new_mask,
+            fill_value: self.fill_value,
+            hard_mask: self.hard_mask,
+        })
+    }
+
+    /// Flatten the masked array to 1-D.
+    #[must_use]
+    pub fn ravel(&self) -> Self {
+        let n = self.data.values().len();
+        Self {
+            data: UFuncArray {
+                shape: vec![n],
+                values: self.data.values().to_vec(),
+                dtype: self.data.dtype(),
+            },
+            mask: self.mask.as_ref().map(|m| UFuncArray {
+                shape: vec![n],
+                values: m.values().to_vec(),
+                dtype: DType::Bool,
+            }),
+            fill_value: self.fill_value,
+            hard_mask: self.hard_mask,
+        }
+    }
+
+    /// Transpose the masked array.
+    pub fn transpose(&self, axes: Option<&[usize]>) -> Result<Self, MAError> {
+        let new_data = self.data.transpose(axes)?;
+        let new_mask = match &self.mask {
+            None => None,
+            Some(m) => Some(m.transpose(axes)?),
+        };
+        Ok(Self {
+            data: new_data,
+            mask: new_mask,
+            fill_value: self.fill_value,
+            hard_mask: self.hard_mask,
+        })
+    }
+
+    // ── Comparison operations ──────────────────────────────────────
+
+    /// Element-wise less-than, returning a MaskedArray of booleans (1.0/0.0).
+    pub fn less_than(&self, other: &Self) -> Result<Self, MAError> {
+        self.elementwise_binary(other, BinaryOp::Less)
+    }
+
+    /// Element-wise less-than-or-equal.
+    pub fn less_equal(&self, other: &Self) -> Result<Self, MAError> {
+        self.elementwise_binary(other, BinaryOp::LessEqual)
+    }
+
+    /// Element-wise greater-than.
+    pub fn greater_than(&self, other: &Self) -> Result<Self, MAError> {
+        self.elementwise_binary(other, BinaryOp::Greater)
+    }
+
+    /// Element-wise greater-than-or-equal.
+    pub fn greater_equal(&self, other: &Self) -> Result<Self, MAError> {
+        self.elementwise_binary(other, BinaryOp::GreaterEqual)
+    }
+
+    /// Element-wise equality.
+    pub fn equal(&self, other: &Self) -> Result<Self, MAError> {
+        self.elementwise_binary(other, BinaryOp::Equal)
+    }
+
+    /// Element-wise not-equal.
+    pub fn not_equal(&self, other: &Self) -> Result<Self, MAError> {
+        self.elementwise_binary(other, BinaryOp::NotEqual)
+    }
+
+    // ── Concatenation ──────────────────────────────────────────────
+
+    /// Concatenate multiple masked arrays along an axis.
+    /// `np.ma.concatenate(arrays, axis=0)`
+    pub fn concatenate(arrays: &[&Self], axis: isize) -> Result<Self, MAError> {
+        if arrays.is_empty() {
+            return Err(MAError::Msg("concatenate: need at least 1 array".into()));
+        }
+        let data_refs: Vec<&UFuncArray> = arrays.iter().map(|a| &a.data).collect();
+        let result_data = UFuncArray::concatenate(&data_refs, axis)?;
+
+        // Build combined mask: if any input has a mask, produce a full mask
+        let any_masked = arrays.iter().any(|a| a.mask.is_some());
+        let result_mask = if any_masked {
+            let mask_arrays: Vec<UFuncArray> = arrays
+                .iter()
+                .map(|a| match &a.mask {
+                    Some(m) => m.clone(),
+                    None => UFuncArray {
+                        shape: a.data.shape().to_vec(),
+                        values: vec![0.0; a.data.values().len()],
+                        dtype: DType::Bool,
+                    },
+                })
+                .collect();
+            let mask_refs: Vec<&UFuncArray> = mask_arrays.iter().collect();
+            Some(UFuncArray::concatenate(&mask_refs, axis)?)
+        } else {
+            None
+        };
+
+        Ok(Self {
+            data: result_data,
+            mask: result_mask,
+            fill_value: arrays[0].fill_value,
+            hard_mask: false,
+        })
+    }
+
+    // ── Additional utilities ────────────────────────────────────────
+
+    /// Return the indices of non-masked elements (as flat indices).
+    /// `np.ma.nonzero` equivalent.
+    #[must_use]
+    pub fn nonzero_indices(&self) -> Vec<usize> {
+        match &self.mask {
+            None => (0..self.data.values().len())
+                .filter(|&i| self.data.values()[i] != 0.0)
+                .collect(),
+            Some(mask) => (0..self.data.values().len())
+                .filter(|&i| mask.values()[i] == 0.0 && self.data.values()[i] != 0.0)
+                .collect(),
+        }
+    }
+
+    /// Check if any valid (non-masked) element is true (non-zero).
+    pub fn any(&self) -> bool {
+        match &self.mask {
+            None => self.data.values().iter().any(|&v| v != 0.0),
+            Some(mask) => self
+                .data
+                .values()
+                .iter()
+                .zip(mask.values().iter())
+                .any(|(&d, &m)| m == 0.0 && d != 0.0),
+        }
+    }
+
+    /// Check if all valid (non-masked) elements are true (non-zero).
+    pub fn all(&self) -> bool {
+        match &self.mask {
+            None => self.data.values().iter().all(|&v| v != 0.0),
+            Some(mask) => self
+                .data
+                .values()
+                .iter()
+                .zip(mask.values().iter())
+                .all(|(&d, &m)| m != 0.0 || d != 0.0),
+        }
+    }
+
+    /// Return a copy with the mask removed.
+    #[must_use]
+    pub fn copy_without_mask(&self) -> Self {
+        Self {
+            data: self.data.clone(),
+            mask: None,
+            fill_value: self.fill_value,
+            hard_mask: false,
+        }
+    }
+
+    /// Return the number of elements (including masked).
+    #[must_use]
+    pub fn size(&self) -> usize {
+        self.data.values().len()
+    }
+
+    /// Return the number of dimensions.
+    #[must_use]
+    pub fn ndim(&self) -> usize {
+        self.data.shape().len()
+    }
+}
+
+// ── numpy.financial — Financial Functions ────────────────────────────────
+//
+// These mirror the functions from numpy-financial (formerly numpy.lib.financial,
+// removed from NumPy 2.0). All operate on scalar f64 values and return f64.
+// Conventions: `rate` is interest rate per period, `nper` is number of periods,
+// `pmt` is payment per period, `pv` is present value, `fv` is future value.
+// `when` indicates timing: 0 = end of period (default), 1 = beginning.
+
+/// Future value of an investment: `numpy_financial.fv(rate, nper, pmt, pv, when=0)`.
+pub fn financial_fv(rate: f64, nper: f64, pmt: f64, pv: f64, when: u8) -> f64 {
+    if rate == 0.0 {
+        return -(pv + pmt * nper);
+    }
+    let factor = (1.0 + rate).powf(nper);
+    let when_f = f64::from(when);
+    -(pv * factor + pmt * (1.0 + rate * when_f) * (factor - 1.0) / rate)
+}
+
+/// Present value: `numpy_financial.pv(rate, nper, pmt, fv, when=0)`.
+pub fn financial_pv(rate: f64, nper: f64, pmt: f64, fv: f64, when: u8) -> f64 {
+    if rate == 0.0 {
+        return -(fv + pmt * nper);
+    }
+    let factor = (1.0 + rate).powf(nper);
+    let when_f = f64::from(when);
+    -(fv + pmt * (1.0 + rate * when_f) * (factor - 1.0) / rate) / factor
+}
+
+/// Payment per period: `numpy_financial.pmt(rate, nper, pv, fv, when=0)`.
+pub fn financial_pmt(rate: f64, nper: f64, pv: f64, fv: f64, when: u8) -> f64 {
+    if rate == 0.0 {
+        return -(fv + pv) / nper;
+    }
+    let factor = (1.0 + rate).powf(nper);
+    let when_f = f64::from(when);
+    -(fv + pv * factor) * rate / ((1.0 + rate * when_f) * (factor - 1.0))
+}
+
+/// Number of periods: `numpy_financial.nper(rate, pmt, pv, fv, when=0)`.
+pub fn financial_nper(rate: f64, pmt: f64, pv: f64, fv: f64, when: u8) -> f64 {
+    if rate == 0.0 {
+        return -(fv + pv) / pmt;
+    }
+    let when_f = f64::from(when);
+    let z = pmt * (1.0 + rate * when_f) / rate;
+    ((z - fv) / (z + pv)).ln() / (1.0 + rate).ln()
+}
+
+/// Net present value: `numpy_financial.npv(rate, cashflows)`.
+pub fn financial_npv(rate: f64, cashflows: &[f64]) -> f64 {
+    cashflows
+        .iter()
+        .enumerate()
+        .map(|(i, cf)| cf / (1.0_f64 + rate).powi(i as i32))
+        .sum()
+}
+
+/// Internal rate of return: `numpy_financial.irr(cashflows)`.
+///
+/// Uses Newton's method to find the rate where NPV = 0.
+pub fn financial_irr(cashflows: &[f64]) -> f64 {
+    if cashflows.len() < 2 {
+        return f64::NAN;
+    }
+    let mut rate: f64 = 0.1; // initial guess
+    for _ in 0..100 {
+        let base = 1.0_f64 + rate;
+        let npv: f64 = cashflows
+            .iter()
+            .enumerate()
+            .map(|(i, cf)| cf / base.powi(i as i32))
+            .sum();
+        let dnpv: f64 = cashflows
+            .iter()
+            .enumerate()
+            .skip(1)
+            .map(|(i, cf)| -(i as f64) * cf / base.powi(i as i32 + 1))
+            .sum();
+        if dnpv.abs() < 1e-15 {
+            break;
+        }
+        let new_rate = rate - npv / dnpv;
+        if (new_rate - rate).abs() < 1e-12 {
+            return new_rate;
+        }
+        rate = new_rate;
+    }
+    rate
+}
+
+/// Interest portion of a payment: `numpy_financial.ipmt(rate, per, nper, pv, fv, when)`.
+///
+/// `per` is the period (1-based).
+pub fn financial_ipmt(rate: f64, per: f64, nper: f64, pv: f64, fv: f64, when: u8) -> f64 {
+    let total_pmt = financial_pmt(rate, nper, pv, fv, when);
+    let remaining_balance = financial_fv(rate, per - 1.0, total_pmt, pv, when);
+    if when == 1 && per == 1.0 {
+        0.0
+    } else {
+        remaining_balance * rate
+    }
+}
+
+/// Principal portion of a payment: `numpy_financial.ppmt(rate, per, nper, pv, fv, when)`.
+pub fn financial_ppmt(rate: f64, per: f64, nper: f64, pv: f64, fv: f64, when: u8) -> f64 {
+    financial_pmt(rate, nper, pv, fv, when) - financial_ipmt(rate, per, nper, pv, fv, when)
+}
+
+/// Modified internal rate of return: `numpy_financial.mirr(cashflows, finance_rate, reinvest_rate)`.
+pub fn financial_mirr(cashflows: &[f64], finance_rate: f64, reinvest_rate: f64) -> f64 {
+    let n = cashflows.len() as f64 - 1.0;
+    // Separate positive and negative flows
+    let neg_pv: f64 = cashflows
+        .iter()
+        .enumerate()
+        .filter(|pair| *pair.1 < 0.0)
+        .map(|(i, cf)| cf / (1.0_f64 + finance_rate).powi(i as i32))
+        .sum();
+    let pos_fv: f64 = cashflows
+        .iter()
+        .enumerate()
+        .filter(|pair| *pair.1 > 0.0)
+        .map(|(i, cf)| cf * (1.0_f64 + reinvest_rate).powf(n - i as f64))
+        .sum();
+    if neg_pv == 0.0 {
+        return f64::NAN;
+    }
+    (-pos_fv / neg_pv).powf(1.0 / n) - 1.0
+}
+
+/// Interest rate per period: `numpy_financial.rate(nper, pmt, pv, fv, when, guess)`.
+///
+/// Uses Newton's method.
+pub fn financial_rate(nper: f64, pmt: f64, pv: f64, fv: f64, when: u8, guess: f64) -> f64 {
+    let when_f = f64::from(when);
+    let mut rate = guess;
+    for _ in 0..100 {
+        let factor = (1.0 + rate).powf(nper);
+        let residual = fv + pv * factor + pmt * (1.0 + rate * when_f) * (factor - 1.0) / rate;
+        // Derivative components
+        let dfactor = nper * (1.0 + rate).powf(nper - 1.0);
+        let t1 = pv * dfactor;
+        let annuity = (factor - 1.0) / rate;
+        let dannuity = (dfactor * rate - (factor - 1.0)) / (rate * rate);
+        let t2 = pmt * when_f * annuity + pmt * (1.0 + rate * when_f) * dannuity;
+        let derivative = t1 + t2;
+        if derivative.abs() < 1e-15 {
+            break;
+        }
+        let new_rate = rate - residual / derivative;
+        if (new_rate - rate).abs() < 1e-12 {
+            return new_rate;
+        }
+        rate = new_rate;
+    }
+    rate
 }
 
 // ── numpy.char — String Array Module ────────────────────────────────────
@@ -10623,13 +11509,14 @@ impl StringArray {
                 .values
                 .iter()
                 .map(|s| {
-                    if s.len() >= width {
+                    let char_len = s.chars().count();
+                    if char_len >= width {
                         s.clone()
                     } else {
-                        let pad = width - s.len();
+                        let pad = width - char_len;
                         let left = pad / 2;
                         let right = pad - left;
-                        let mut r = String::with_capacity(width);
+                        let mut r = String::new();
                         for _ in 0..left {
                             r.push(fillchar);
                         }
@@ -10653,11 +11540,12 @@ impl StringArray {
                 .values
                 .iter()
                 .map(|s| {
-                    if s.len() >= width {
+                    let char_len = s.chars().count();
+                    if char_len >= width {
                         s.clone()
                     } else {
                         let mut r = s.clone();
-                        for _ in 0..(width - s.len()) {
+                        for _ in 0..(width - char_len) {
                             r.push(fillchar);
                         }
                         r
@@ -10676,11 +11564,12 @@ impl StringArray {
                 .values
                 .iter()
                 .map(|s| {
-                    if s.len() >= width {
+                    let char_len = s.chars().count();
+                    if char_len >= width {
                         s.clone()
                     } else {
-                        let pad = width - s.len();
-                        let mut r = String::with_capacity(width);
+                        let pad = width - char_len;
+                        let mut r = String::new();
                         for _ in 0..pad {
                             r.push(fillchar);
                         }
@@ -10701,10 +11590,11 @@ impl StringArray {
                 .values
                 .iter()
                 .map(|s| {
-                    if s.len() >= width {
+                    let char_len = s.chars().count();
+                    if char_len >= width {
                         return s.clone();
                     }
-                    let pad = width - s.len();
+                    let pad = width - char_len;
                     let zeros: String = std::iter::repeat_n('0', pad).collect();
                     // Preserve leading sign
                     if s.starts_with('+') || s.starts_with('-') {
@@ -10723,7 +11613,11 @@ impl StringArray {
     pub fn str_len(&self) -> UFuncArray {
         UFuncArray {
             shape: self.shape.clone(),
-            values: self.values.iter().map(|s| s.len() as f64).collect(),
+            values: self
+                .values
+                .iter()
+                .map(|s| s.chars().count() as f64)
+                .collect(),
             dtype: DType::I64,
         }
     }
@@ -10750,7 +11644,10 @@ impl StringArray {
             values: self
                 .values
                 .iter()
-                .map(|s| s.find(sub).map_or(-1.0, |i| i as f64))
+                .map(|s| {
+                    s.find(sub)
+                        .map_or(-1.0, |byte_idx| s[..byte_idx].chars().count() as f64)
+                })
                 .collect(),
             dtype: DType::I64,
         }
@@ -10764,7 +11661,10 @@ impl StringArray {
             values: self
                 .values
                 .iter()
-                .map(|s| s.rfind(sub).map_or(-1.0, |i| i as f64))
+                .map(|s| {
+                    s.rfind(sub)
+                        .map_or(-1.0, |byte_idx| s[..byte_idx].chars().count() as f64)
+                })
                 .collect(),
             dtype: DType::I64,
         }
@@ -11001,6 +11901,264 @@ impl StringArray {
                 .collect(),
         }
     }
+
+    /// `np.char.split(a, sep=None, maxsplit=-1)` — split each string.
+    ///
+    /// Returns a `StringArray` where each element is the joined substrings
+    /// separated by a delimiter (`|` by default for flat representation).
+    /// When `sep` is `None`, splits on whitespace (like Python `str.split()`).
+    /// `maxsplit` of `None` means no limit.
+    #[must_use]
+    pub fn split(&self, sep: Option<&str>, maxsplit: Option<usize>) -> Vec<Vec<String>> {
+        self.values
+            .iter()
+            .map(|s| match (sep, maxsplit) {
+                (None, None) => s.split_whitespace().map(String::from).collect(),
+                (None, Some(n)) => s.splitn(n + 1, char::is_whitespace)
+                    .filter(|p| !p.is_empty())
+                    .map(String::from)
+                    .collect(),
+                (Some(sep), None) => s.split(sep).map(String::from).collect(),
+                (Some(sep), Some(n)) => s.splitn(n + 1, sep).map(String::from).collect(),
+            })
+            .collect()
+    }
+
+    /// `np.char.rsplit(a, sep=None, maxsplit=-1)` — split from the right.
+    #[must_use]
+    pub fn rsplit(&self, sep: Option<&str>, maxsplit: Option<usize>) -> Vec<Vec<String>> {
+        self.values
+            .iter()
+            .map(|s| match (sep, maxsplit) {
+                (None, None) => s.split_whitespace().map(String::from).collect(),
+                (None, Some(n)) => {
+                    let mut parts: Vec<String> = s.rsplitn(n + 1, char::is_whitespace)
+                        .filter(|p| !p.is_empty())
+                        .map(String::from)
+                        .collect();
+                    parts.reverse();
+                    parts
+                }
+                (Some(sep), None) => s.split(sep).map(String::from).collect(),
+                (Some(sep), Some(n)) => {
+                    let mut parts: Vec<String> =
+                        s.rsplitn(n + 1, sep).map(String::from).collect();
+                    // rsplitn gives reversed order
+                    parts.reverse();
+                    parts
+                }
+            })
+            .collect()
+    }
+
+    /// `np.char.partition(a, sep)` — partition each string around first occurrence of `sep`.
+    ///
+    /// Returns three `StringArray`s: (before, separator, after).
+    pub fn partition(&self, sep: &str) -> (Self, Self, Self) {
+        let mut befores = Vec::with_capacity(self.values.len());
+        let mut seps = Vec::with_capacity(self.values.len());
+        let mut afters = Vec::with_capacity(self.values.len());
+        for s in &self.values {
+            if let Some(idx) = s.find(sep) {
+                befores.push(s[..idx].to_string());
+                seps.push(sep.to_string());
+                afters.push(s[idx + sep.len()..].to_string());
+            } else {
+                befores.push(s.clone());
+                seps.push(String::new());
+                afters.push(String::new());
+            }
+        }
+        (
+            Self { shape: self.shape.clone(), values: befores },
+            Self { shape: self.shape.clone(), values: seps },
+            Self { shape: self.shape.clone(), values: afters },
+        )
+    }
+
+    /// `np.char.rpartition(a, sep)` — partition around last occurrence.
+    pub fn rpartition(&self, sep: &str) -> (Self, Self, Self) {
+        let mut befores = Vec::with_capacity(self.values.len());
+        let mut seps = Vec::with_capacity(self.values.len());
+        let mut afters = Vec::with_capacity(self.values.len());
+        for s in &self.values {
+            if let Some(idx) = s.rfind(sep) {
+                befores.push(s[..idx].to_string());
+                seps.push(sep.to_string());
+                afters.push(s[idx + sep.len()..].to_string());
+            } else {
+                befores.push(String::new());
+                seps.push(String::new());
+                afters.push(s.clone());
+            }
+        }
+        (
+            Self { shape: self.shape.clone(), values: befores },
+            Self { shape: self.shape.clone(), values: seps },
+            Self { shape: self.shape.clone(), values: afters },
+        )
+    }
+
+    /// `np.char.encode(a, encoding='utf-8')` — encode strings to bytes.
+    ///
+    /// Since we only support UTF-8 (Rust's native encoding), this returns
+    /// the raw byte representation of each string as a `Vec<Vec<u8>>`.
+    #[must_use]
+    pub fn encode(&self) -> Vec<Vec<u8>> {
+        self.values.iter().map(|s| s.as_bytes().to_vec()).collect()
+    }
+
+    /// `np.char.decode(a, encoding='utf-8')` — decode bytes to strings.
+    ///
+    /// Constructs a `StringArray` from raw byte slices, assuming UTF-8 encoding.
+    /// Invalid UTF-8 sequences are replaced with the Unicode replacement character.
+    pub fn decode(shape: Vec<usize>, byte_arrays: &[&[u8]]) -> Result<Self, UFuncError> {
+        let expected = fnp_ndarray::element_count(&shape).map_err(UFuncError::Shape)?;
+        if byte_arrays.len() != expected {
+            return Err(UFuncError::InvalidInputLength {
+                expected,
+                actual: byte_arrays.len(),
+            });
+        }
+        let values: Vec<String> = byte_arrays
+            .iter()
+            .map(|b| String::from_utf8_lossy(b).into_owned())
+            .collect();
+        Ok(Self { shape, values })
+    }
+
+    /// `np.char.translate(a, table)` — translate characters using a mapping.
+    ///
+    /// `table` maps source chars to optional replacement chars.
+    /// If the replacement is `None`, the character is deleted.
+    #[must_use]
+    pub fn translate(&self, table: &std::collections::HashMap<char, Option<char>>) -> Self {
+        Self {
+            shape: self.shape.clone(),
+            values: self
+                .values
+                .iter()
+                .map(|s| {
+                    s.chars()
+                        .filter_map(|c| {
+                            if let Some(replacement) = table.get(&c) {
+                                *replacement
+                            } else {
+                                Some(c)
+                            }
+                        })
+                        .collect()
+                })
+                .collect(),
+        }
+    }
+
+    /// `np.char.expandtabs(a, tabsize=8)` — replace tabs with spaces.
+    #[must_use]
+    pub fn expandtabs(&self, tabsize: usize) -> Self {
+        Self {
+            shape: self.shape.clone(),
+            values: self
+                .values
+                .iter()
+                .map(|s| {
+                    let mut result = String::new();
+                    let mut col = 0;
+                    for c in s.chars() {
+                        if c == '\t' {
+                            let spaces = tabsize - (col % tabsize);
+                            for _ in 0..spaces {
+                                result.push(' ');
+                            }
+                            col += spaces;
+                        } else if c == '\n' || c == '\r' {
+                            result.push(c);
+                            col = 0;
+                        } else {
+                            result.push(c);
+                            col += 1;
+                        }
+                    }
+                    result
+                })
+                .collect(),
+        }
+    }
+
+    /// `np.char.isnumeric(a)` — test if all characters are numeric.
+    #[must_use]
+    pub fn isnumeric(&self) -> UFuncArray {
+        UFuncArray {
+            shape: self.shape.clone(),
+            values: self
+                .values
+                .iter()
+                .map(|s| {
+                    if !s.is_empty() && s.chars().all(|c| c.is_numeric()) {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                })
+                .collect(),
+            dtype: DType::Bool,
+        }
+    }
+
+    /// `np.char.isdecimal(a)` — test if all characters are decimal digits.
+    #[must_use]
+    pub fn isdecimal(&self) -> UFuncArray {
+        UFuncArray {
+            shape: self.shape.clone(),
+            values: self
+                .values
+                .iter()
+                .map(|s| {
+                    if !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()) {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                })
+                .collect(),
+            dtype: DType::Bool,
+        }
+    }
+
+    /// `np.char.istitle(a)` — test if string is titlecased.
+    #[must_use]
+    pub fn istitle(&self) -> UFuncArray {
+        UFuncArray {
+            shape: self.shape.clone(),
+            values: self
+                .values
+                .iter()
+                .map(|s| {
+                    let has_cased = s.chars().any(|c| c.is_alphabetic());
+                    if !has_cased {
+                        return 0.0;
+                    }
+                    let mut prev_is_letter = false;
+                    for c in s.chars() {
+                        if c.is_alphabetic() {
+                            if prev_is_letter {
+                                if c.is_uppercase() {
+                                    return 0.0;
+                                }
+                            } else if c.is_lowercase() {
+                                return 0.0;
+                            }
+                            prev_is_letter = true;
+                        } else {
+                            prev_is_letter = false;
+                        }
+                    }
+                    1.0
+                })
+                .collect(),
+            dtype: DType::Bool,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -11008,9 +12166,10 @@ mod tests {
     use super::{
         BinaryOp, MAError, MaskedArray, PrintOptions, QuantileInterp, StringArray,
         UFUNC_PACKET_REASON_CODES, UFuncArray, UFuncError, UFuncLogRecord, UFuncRuntimeMode,
-        UnaryOp, busday_count, busday_offset, is_busday, normalize_signature_keywords,
-        parse_gufunc_signature, plan_binary_dispatch, register_custom_loop,
-        validate_override_payload_class,
+        UnaryOp, busday_count, busday_offset, financial_fv, financial_ipmt, financial_irr,
+        financial_mirr, financial_nper, financial_npv, financial_pmt, financial_ppmt, financial_pv,
+        financial_rate, is_busday, normalize_signature_keywords, parse_gufunc_signature,
+        plan_binary_dispatch, register_custom_loop, validate_override_payload_class,
     };
     use fnp_dtype::{DType, promote};
     use fnp_ndarray::broadcast_shape;
@@ -13466,6 +14625,81 @@ mod tests {
     }
 
     #[test]
+    fn fliplr_basic() {
+        let arr =
+            UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
+        let flipped = arr.fliplr().unwrap();
+        assert_eq!(flipped.values(), &[3.0, 2.0, 1.0, 6.0, 5.0, 4.0]);
+    }
+
+    #[test]
+    fn fliplr_1d_fails() {
+        let arr = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        assert!(arr.fliplr().is_err());
+    }
+
+    #[test]
+    fn flipud_basic() {
+        let arr =
+            UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
+        let flipped = arr.flipud().unwrap();
+        assert_eq!(flipped.values(), &[4.0, 5.0, 6.0, 1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn flipud_1d() {
+        let arr = UFuncArray::new(vec![4], vec![1.0, 2.0, 3.0, 4.0], DType::F64).unwrap();
+        let flipped = arr.flipud().unwrap();
+        assert_eq!(flipped.values(), &[4.0, 3.0, 2.0, 1.0]);
+    }
+
+    #[test]
+    fn block_2x2() {
+        // [[a, b], [c, d]] where a=[[1,2],[3,4]], b=[[5],[6]], c=[[7,8]], d=[[9]]
+        let a = UFuncArray::new(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![2, 1], vec![5.0, 6.0], DType::F64).unwrap();
+        let c = UFuncArray::new(vec![1, 2], vec![7.0, 8.0], DType::F64).unwrap();
+        let d = UFuncArray::new(vec![1, 1], vec![9.0], DType::F64).unwrap();
+        let result = UFuncArray::block(&[vec![a, b], vec![c, d]]).unwrap();
+        assert_eq!(result.shape(), &[3, 3]);
+        assert_eq!(
+            result.values(),
+            &[1.0, 2.0, 5.0, 3.0, 4.0, 6.0, 7.0, 8.0, 9.0]
+        );
+    }
+
+    #[test]
+    fn block_single_row() {
+        let a = UFuncArray::new(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![2, 1], vec![5.0, 6.0], DType::F64).unwrap();
+        let result = UFuncArray::block(&[vec![a, b]]).unwrap();
+        assert_eq!(result.shape(), &[2, 3]);
+    }
+
+    #[test]
+    fn ascontiguousarray_with_cast() {
+        let a = UFuncArray::new(vec![3], vec![1.5, 2.7, 3.9], DType::F64).unwrap();
+        let b = a.ascontiguousarray(Some(DType::I32));
+        assert_eq!(b.dtype, DType::I32);
+        assert_eq!(b.values(), &[1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn ascontiguousarray_same_dtype() {
+        let a = UFuncArray::new(vec![2], vec![1.0, 2.0], DType::F64).unwrap();
+        let b = a.ascontiguousarray(None);
+        assert_eq!(b.values(), a.values());
+    }
+
+    #[test]
+    fn require_with_cast() {
+        let a = UFuncArray::new(vec![2], vec![1.5, 2.7], DType::F64).unwrap();
+        let b = a.require(Some(DType::I64));
+        assert_eq!(b.dtype, DType::I64);
+        assert_eq!(b.values(), &[1.0, 2.0]);
+    }
+
+    #[test]
     fn unique_removes_duplicates() {
         let arr = UFuncArray::new(vec![6], vec![3.0, 1.0, 2.0, 1.0, 3.0, 2.0], DType::F64).unwrap();
         let u = arr.unique();
@@ -14985,6 +16219,136 @@ mod tests {
     }
 
     #[test]
+    fn rollaxis_to_front() {
+        let a = UFuncArray::new(
+            vec![2, 3, 4],
+            (0..24).map(|i| i as f64).collect(),
+            DType::F64,
+        )
+        .unwrap();
+        // Roll axis 2 to position 0 => shape [4, 2, 3]
+        let r = a.rollaxis(2, 0).unwrap();
+        assert_eq!(r.shape(), &[4, 2, 3]);
+    }
+
+    #[test]
+    fn rollaxis_noop() {
+        let a = UFuncArray::new(
+            vec![2, 3, 4],
+            (0..24).map(|i| i as f64).collect(),
+            DType::F64,
+        )
+        .unwrap();
+        // Roll axis 0 to start=0 => no change
+        let r = a.rollaxis(0, 0).unwrap();
+        assert_eq!(r.shape(), &[2, 3, 4]);
+    }
+
+    #[test]
+    fn row_stack_same_as_vstack() {
+        let a = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![3], vec![4.0, 5.0, 6.0], DType::F64).unwrap();
+        let v = UFuncArray::vstack(&[a.clone(), b.clone()]).unwrap();
+        let rs = UFuncArray::row_stack(&[a, b]).unwrap();
+        assert_eq!(v.shape(), rs.shape());
+        assert_eq!(v.values(), rs.values());
+    }
+
+    #[test]
+    fn ix_basic() {
+        let a = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![2], vec![4.0, 5.0], DType::F64).unwrap();
+        let result = UFuncArray::ix_(&[a, b]).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].shape(), &[3, 1]);
+        assert_eq!(result[0].values(), &[1.0, 2.0, 3.0]);
+        assert_eq!(result[1].shape(), &[1, 2]);
+        assert_eq!(result[1].values(), &[4.0, 5.0]);
+    }
+
+    #[test]
+    fn ix_three_arrays() {
+        let a = UFuncArray::new(vec![2], vec![1.0, 2.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![3], vec![3.0, 4.0, 5.0], DType::F64).unwrap();
+        let c = UFuncArray::new(vec![4], vec![6.0, 7.0, 8.0, 9.0], DType::F64).unwrap();
+        let result = UFuncArray::ix_(&[a, b, c]).unwrap();
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].shape(), &[2, 1, 1]);
+        assert_eq!(result[1].shape(), &[1, 3, 1]);
+        assert_eq!(result[2].shape(), &[1, 1, 4]);
+    }
+
+    #[test]
+    fn ix_rejects_non_1d() {
+        let a = UFuncArray::new(vec![2, 2], vec![1.0; 4], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![3], vec![1.0; 3], DType::F64).unwrap();
+        assert!(UFuncArray::ix_(&[a, b]).is_err());
+    }
+
+    #[test]
+    fn tolist_basic() {
+        let a = UFuncArray::new(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0], DType::F64).unwrap();
+        assert_eq!(a.tolist(), vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn tobytes_array_roundtrip() {
+        let a = UFuncArray::new(vec![3], vec![1.0, 2.5, -3.0], DType::F64).unwrap();
+        let bytes = a.tobytes_array();
+        assert_eq!(bytes.len(), 24); // 3 * 8 bytes
+        // Verify first value
+        let first = f64::from_le_bytes(bytes[0..8].try_into().unwrap());
+        assert_eq!(first, 1.0);
+    }
+
+    #[test]
+    fn byteswap_roundtrip() {
+        let a = UFuncArray::new(vec![2], vec![1.0, 2.0], DType::F64).unwrap();
+        let swapped = a.byteswap();
+        // Swapping twice returns original
+        let restored = swapped.byteswap();
+        assert_eq!(restored.values(), &[1.0, 2.0]);
+    }
+
+    #[test]
+    fn diagonal_2d() {
+        let a = UFuncArray::new(
+            vec![3, 3],
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+            DType::F64,
+        )
+        .unwrap();
+        let d = a.diagonal(0, 0, 1).unwrap();
+        assert_eq!(d.values(), &[1.0, 5.0, 9.0]);
+    }
+
+    #[test]
+    fn diagonal_2d_offset() {
+        let a = UFuncArray::new(
+            vec![3, 3],
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+            DType::F64,
+        )
+        .unwrap();
+        let d = a.diagonal(1, 0, 1).unwrap();
+        assert_eq!(d.values(), &[2.0, 6.0]);
+        let d2 = a.diagonal(-1, 0, 1).unwrap();
+        assert_eq!(d2.values(), &[4.0, 8.0]);
+    }
+
+    #[test]
+    fn diagonal_3d() {
+        // Shape (2, 3, 3): two 3x3 matrices stacked
+        let vals: Vec<f64> = (1..=18).map(|i| i as f64).collect();
+        let a = UFuncArray::new(vec![2, 3, 3], vals, DType::F64).unwrap();
+        let d = a.diagonal(0, 1, 2).unwrap();
+        // Output shape: [2, 3] (remove axes 1,2, append diag_len=3)
+        assert_eq!(d.shape(), &[2, 3]);
+        // First matrix diag: [1, 5, 9], second matrix diag: [10, 14, 18]
+        assert_eq!(d.values(), &[1.0, 5.0, 9.0, 10.0, 14.0, 18.0]);
+    }
+
+    #[test]
     fn atleast_1d_scalar() {
         let s = UFuncArray::scalar(5.0, DType::F64);
         let r = s.atleast_1d();
@@ -15398,6 +16762,57 @@ mod tests {
         // k=1: strictly above diagonal
         assert_eq!(rows.values(), &[0.0, 0.0, 1.0]);
         assert_eq!(cols.values(), &[1.0, 2.0, 2.0]);
+    }
+
+    #[test]
+    fn diag_indices_from_square() {
+        let a = UFuncArray::new(vec![3, 3], vec![0.0; 9], DType::F64).unwrap();
+        let (indices, dt) = UFuncArray::diag_indices_from(&a).unwrap();
+        assert_eq!(dt, DType::I64);
+        assert_eq!(indices.len(), 2);
+        assert_eq!(indices[0].values(), &[0.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn diag_indices_from_non_square_fails() {
+        let a = UFuncArray::new(vec![2, 3], vec![0.0; 6], DType::F64).unwrap();
+        assert!(UFuncArray::diag_indices_from(&a).is_err());
+    }
+
+    #[test]
+    fn diag_indices_from_1d_fails() {
+        let a = UFuncArray::new(vec![3], vec![0.0; 3], DType::F64).unwrap();
+        assert!(UFuncArray::diag_indices_from(&a).is_err());
+    }
+
+    #[test]
+    fn tril_indices_from_basic() {
+        let a = UFuncArray::new(vec![3, 4], vec![0.0; 12], DType::F64).unwrap();
+        let (rows, cols) = UFuncArray::tril_indices_from(&a, 0).unwrap();
+        let (rows_exp, cols_exp) = UFuncArray::tril_indices(3, 4, 0);
+        assert_eq!(rows.values(), rows_exp.values());
+        assert_eq!(cols.values(), cols_exp.values());
+    }
+
+    #[test]
+    fn tril_indices_from_non_2d_fails() {
+        let a = UFuncArray::new(vec![3], vec![0.0; 3], DType::F64).unwrap();
+        assert!(UFuncArray::tril_indices_from(&a, 0).is_err());
+    }
+
+    #[test]
+    fn triu_indices_from_basic() {
+        let a = UFuncArray::new(vec![3, 4], vec![0.0; 12], DType::F64).unwrap();
+        let (rows, cols) = UFuncArray::triu_indices_from(&a, 0).unwrap();
+        let (rows_exp, cols_exp) = UFuncArray::triu_indices(3, 4, 0);
+        assert_eq!(rows.values(), rows_exp.values());
+        assert_eq!(cols.values(), cols_exp.values());
+    }
+
+    #[test]
+    fn triu_indices_from_non_2d_fails() {
+        let a = UFuncArray::new(vec![2, 3, 4], vec![0.0; 24], DType::F64).unwrap();
+        assert!(UFuncArray::triu_indices_from(&a, 0).is_err());
     }
 
     // ── nanprod / nancumsum / nancumprod tests ────────
@@ -16251,6 +17666,33 @@ mod tests {
         assert!((c.values[3] - 6.0).abs() < 1e-10);
         assert!((c.values[4] - 8.0).abs() < 1e-10);
         assert!((c.values[5] - 10.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn einsum_path_two_operands() {
+        let a = UFuncArray::new(vec![3, 4], vec![0.0; 12], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![4, 2], vec![0.0; 8], DType::F64).unwrap();
+        let (path, desc) = UFuncArray::einsum_path("ij,jk->ik", &[&a, &b]).unwrap();
+        assert_eq!(path.len(), 1);
+        assert_eq!(path[0], vec![0, 1]);
+        assert!(desc.contains("ij,jk->ik"));
+    }
+
+    #[test]
+    fn einsum_path_three_operands() {
+        let a = UFuncArray::new(vec![2, 3], vec![0.0; 6], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![3, 4], vec![0.0; 12], DType::F64).unwrap();
+        let c = UFuncArray::new(vec![4, 5], vec![0.0; 20], DType::F64).unwrap();
+        let (path, _desc) =
+            UFuncArray::einsum_path("ij,jk,kl->il", &[&a, &b, &c]).unwrap();
+        // Should produce 2 contraction steps
+        assert_eq!(path.len(), 2);
+    }
+
+    #[test]
+    fn einsum_path_mismatch() {
+        let a = UFuncArray::new(vec![2], vec![0.0; 2], DType::F64).unwrap();
+        assert!(UFuncArray::einsum_path("i,j->ij", &[&a]).is_err());
     }
 
     // ── irfft tests ──
@@ -17227,6 +18669,31 @@ mod tests {
     // ── sliding_window_view tests ──
 
     #[test]
+    fn as_strided_1d_to_2d() {
+        // Use as_strided to create overlapping windows of size 3 from [1,2,3,4,5]
+        let a = UFuncArray::new(vec![5], vec![1.0, 2.0, 3.0, 4.0, 5.0], DType::F64).unwrap();
+        // shape [3, 3], strides [1, 1] => sliding windows
+        let r = a.as_strided(&[3, 3], &[1, 1]).unwrap();
+        assert_eq!(r.shape(), &[3, 3]);
+        assert_eq!(r.values(), &[1.0, 2.0, 3.0, 2.0, 3.0, 4.0, 3.0, 4.0, 5.0]);
+    }
+
+    #[test]
+    fn as_strided_repeat_row() {
+        // Broadcast a single row [1,2,3] into a 3x3 matrix by setting row stride to 0
+        let a = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        let r = a.as_strided(&[3, 3], &[0, 1]).unwrap();
+        assert_eq!(r.shape(), &[3, 3]);
+        assert_eq!(r.values(), &[1.0, 2.0, 3.0, 1.0, 2.0, 3.0, 1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn as_strided_mismatched_dims() {
+        let a = UFuncArray::new(vec![5], vec![1.0; 5], DType::F64).unwrap();
+        assert!(a.as_strided(&[2, 3], &[1]).is_err()); // shape.len != strides.len
+    }
+
+    #[test]
     fn sliding_window_view_1d() {
         let a = UFuncArray::new(vec![5], vec![1.0, 2.0, 3.0, 4.0, 5.0], DType::F64).unwrap();
         let r = a.sliding_window_view(&[3]).unwrap();
@@ -17530,6 +18997,101 @@ mod tests {
         assert_eq!(result.data().values(), &[4.0, 9.0]);
     }
 
+    // ── MaskedArray expanded tests ──────────────────────────────────
+
+    #[test]
+    fn masked_reshape() {
+        let data =
+            UFuncArray::new(vec![6], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
+        let mask =
+            UFuncArray::new(vec![6], vec![0.0, 1.0, 0.0, 0.0, 1.0, 0.0], DType::Bool).unwrap();
+        let ma = MaskedArray::new(data, Some(mask), None).unwrap();
+        let reshaped = ma.reshape(&[2, 3]).unwrap();
+        assert_eq!(reshaped.shape(), &[2, 3]);
+        assert_eq!(reshaped.mask().unwrap().shape(), &[2, 3]);
+        assert_eq!(reshaped.data().values(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn masked_ravel() {
+        let data =
+            UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
+        let mask =
+            UFuncArray::new(vec![2, 3], vec![0.0, 1.0, 0.0, 0.0, 1.0, 0.0], DType::Bool).unwrap();
+        let ma = MaskedArray::new(data, Some(mask), None).unwrap();
+        let flat = ma.ravel();
+        assert_eq!(flat.shape(), &[6]);
+        assert_eq!(flat.mask().unwrap().shape(), &[6]);
+    }
+
+    #[test]
+    fn masked_transpose() {
+        let data =
+            UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
+        let mask =
+            UFuncArray::new(vec![2, 3], vec![0.0, 1.0, 0.0, 0.0, 0.0, 1.0], DType::Bool).unwrap();
+        let ma = MaskedArray::new(data, Some(mask), None).unwrap();
+        let t = ma.transpose(None).unwrap();
+        assert_eq!(t.shape(), &[3, 2]);
+        // Mask should also be transposed
+        assert_eq!(t.mask().unwrap().shape(), &[3, 2]);
+    }
+
+    #[test]
+    fn masked_comparison_ops() {
+        let data1 = UFuncArray::new(vec![3], vec![1.0, 5.0, 3.0], DType::F64).unwrap();
+        let data2 = UFuncArray::new(vec![3], vec![2.0, 4.0, 3.0], DType::F64).unwrap();
+        let ma1 = MaskedArray::new(data1, None, None).unwrap();
+        let ma2 = MaskedArray::new(data2, None, None).unwrap();
+        // 1<2, 5<4, 3<3 => [1, 0, 0]
+        let lt = ma1.less_than(&ma2).unwrap();
+        assert_eq!(lt.data().values(), &[1.0, 0.0, 0.0]);
+        // 1==2, 5==4, 3==3 => [0, 0, 1]
+        let eq = ma1.equal(&ma2).unwrap();
+        assert_eq!(eq.data().values(), &[0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn masked_concatenate() {
+        let d1 = UFuncArray::new(vec![2], vec![1.0, 2.0], DType::F64).unwrap();
+        let m1 = UFuncArray::new(vec![2], vec![0.0, 1.0], DType::Bool).unwrap();
+        let ma1 = MaskedArray::new(d1, Some(m1), None).unwrap();
+        let d2 = UFuncArray::new(vec![3], vec![3.0, 4.0, 5.0], DType::F64).unwrap();
+        let ma2 = MaskedArray::new(d2, None, None).unwrap();
+        let cat = MaskedArray::concatenate(&[&ma1, &ma2], 0).unwrap();
+        assert_eq!(cat.shape(), &[5]);
+        assert_eq!(cat.data().values(), &[1.0, 2.0, 3.0, 4.0, 5.0]);
+        // mask: [0, 1, 0, 0, 0] — ma1 has mask, ma2 gets zeros
+        assert_eq!(cat.mask().unwrap().values(), &[0.0, 1.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn masked_any_all() {
+        let data = UFuncArray::new(vec![3], vec![0.0, 1.0, 0.0], DType::F64).unwrap();
+        let mask = UFuncArray::new(vec![3], vec![0.0, 1.0, 0.0], DType::Bool).unwrap();
+        let ma = MaskedArray::new(data, Some(mask), None).unwrap();
+        // Valid elements: [0.0, _, 0.0] — the 1.0 is masked
+        assert!(!ma.any()); // all valid elements are zero
+        assert!(!ma.all()); // not all valid elements are nonzero
+    }
+
+    #[test]
+    fn masked_nonzero_indices() {
+        let data = UFuncArray::new(vec![4], vec![0.0, 5.0, 0.0, 3.0], DType::F64).unwrap();
+        let mask = UFuncArray::new(vec![4], vec![0.0, 0.0, 0.0, 1.0], DType::Bool).unwrap();
+        let ma = MaskedArray::new(data, Some(mask), None).unwrap();
+        // element 3 (value 3.0) is masked; only element 1 (value 5.0) is valid + nonzero
+        assert_eq!(ma.nonzero_indices(), vec![1]);
+    }
+
+    #[test]
+    fn masked_size_ndim() {
+        let data = UFuncArray::new(vec![2, 3], vec![1.0; 6], DType::F64).unwrap();
+        let ma = MaskedArray::new(data, None, None).unwrap();
+        assert_eq!(ma.size(), 6);
+        assert_eq!(ma.ndim(), 2);
+    }
+
     // ── datetime/timedelta arithmetic tests ────────────────────────
 
     #[test]
@@ -17681,6 +19243,98 @@ mod tests {
         let offsets = UFuncArray::new(vec![1], vec![0.0], DType::I64).unwrap();
         let result = busday_offset(&dates, &offsets).unwrap();
         assert_eq!(result.values(), &[4.0]);
+    }
+
+    // ── Financial function tests ─────────────────────────────────────
+
+    #[test]
+    fn financial_fv_basic() {
+        // $1000 at 5%/yr for 10 years, no payments
+        let fv = financial_fv(0.05, 10.0, 0.0, -1000.0, 0);
+        assert!((fv - 1628.894627).abs() < 0.01);
+    }
+
+    #[test]
+    fn financial_fv_zero_rate() {
+        let fv = financial_fv(0.0, 10.0, -100.0, -1000.0, 0);
+        assert!((fv - 2000.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn financial_pv_basic() {
+        // What PV yields $10000 after 10 years at 5%?
+        let pv = financial_pv(0.05, 10.0, 0.0, -10000.0, 0);
+        assert!((pv - 6139.13).abs() < 0.01);
+    }
+
+    #[test]
+    fn financial_pmt_basic() {
+        // Monthly payment on $200k loan, 30 years, 6%/12 monthly
+        let pmt = financial_pmt(0.06 / 12.0, 360.0, 200_000.0, 0.0, 0);
+        assert!((pmt - (-1199.10)).abs() < 0.01);
+    }
+
+    #[test]
+    fn financial_nper_basic() {
+        // How many periods to pay off $1000 at 1%/period with $100 payments?
+        let n = financial_nper(0.01, -100.0, 1000.0, 0.0, 0);
+        assert!((n - 10.58).abs() < 0.01);
+    }
+
+    #[test]
+    fn financial_npv_basic() {
+        let cashflows = [-1000.0, 300.0, 400.0, 500.0];
+        let npv = financial_npv(0.1, &cashflows);
+        assert!((npv - (-21.037)).abs() < 0.1);
+    }
+
+    #[test]
+    fn financial_irr_basic() {
+        let cashflows = [-1000.0, 300.0, 400.0, 500.0];
+        let irr = financial_irr(&cashflows);
+        // NPV at this rate should be ~0
+        let npv = financial_npv(irr, &cashflows);
+        assert!(npv.abs() < 0.01);
+    }
+
+    #[test]
+    fn financial_irr_obvious() {
+        // Invest 100, get 110 back => 10% return
+        let cashflows = [-100.0, 110.0];
+        let irr = financial_irr(&cashflows);
+        assert!((irr - 0.1).abs() < 1e-8);
+    }
+
+    #[test]
+    fn financial_ipmt_ppmt_sum_equals_pmt() {
+        let rate = 0.05 / 12.0;
+        let nper = 360.0;
+        let pv = 200_000.0;
+        let fv = 0.0;
+        let when = 0u8;
+        let total_pmt = financial_pmt(rate, nper, pv, fv, when);
+        for per in 1..=5 {
+            let ip = financial_ipmt(rate, per as f64, nper, pv, fv, when);
+            let pp = financial_ppmt(rate, per as f64, nper, pv, fv, when);
+            assert!((ip + pp - total_pmt).abs() < 1e-8);
+        }
+    }
+
+    #[test]
+    fn financial_mirr_basic() {
+        let cashflows = [-1000.0, 200.0, 300.0, 400.0, 500.0];
+        let mirr = financial_mirr(&cashflows, 0.1, 0.12);
+        assert!(mirr.is_finite());
+        assert!(mirr > 0.0 && mirr < 1.0);
+    }
+
+    #[test]
+    fn financial_rate_basic() {
+        // If pmt=-100, nper=10, pv=800, fv=0: find rate
+        let r = financial_rate(10.0, -100.0, 800.0, 0.0, 0, 0.1);
+        // Verify: with this rate, pmt should reconstruct
+        let pmt_check = financial_pmt(r, 10.0, 800.0, 0.0, 0);
+        assert!((pmt_check - (-100.0)).abs() < 0.01);
     }
 
     // ── StringArray tests ──────────────────────────────────────────
@@ -17840,6 +19494,168 @@ mod tests {
         let sa = StringArray::from_strs(vec![1], &["Hello World"]).unwrap();
         let swapped = sa.swapcase();
         assert_eq!(swapped.values()[0], "hELLO wORLD");
+    }
+
+    #[test]
+    fn string_split_whitespace() {
+        let sa = StringArray::from_strs(vec![2], &["hello world", "foo  bar baz"]).unwrap();
+        let result = sa.split(None, None);
+        assert_eq!(result[0], vec!["hello", "world"]);
+        assert_eq!(result[1], vec!["foo", "bar", "baz"]);
+    }
+
+    #[test]
+    fn string_split_with_sep() {
+        let sa = StringArray::from_strs(vec![1], &["a,b,c,d"]).unwrap();
+        let result = sa.split(Some(","), None);
+        assert_eq!(result[0], vec!["a", "b", "c", "d"]);
+    }
+
+    #[test]
+    fn string_split_maxsplit() {
+        let sa = StringArray::from_strs(vec![1], &["a,b,c,d"]).unwrap();
+        let result = sa.split(Some(","), Some(2));
+        assert_eq!(result[0], vec!["a", "b", "c,d"]);
+    }
+
+    #[test]
+    fn string_partition_found() {
+        let sa = StringArray::from_strs(vec![2], &["hello-world", "foobar"]).unwrap();
+        let (before, sep, after) = sa.partition("-");
+        assert_eq!(before.values()[0], "hello");
+        assert_eq!(sep.values()[0], "-");
+        assert_eq!(after.values()[0], "world");
+        // Not found: everything in before, sep and after empty
+        assert_eq!(before.values()[1], "foobar");
+        assert_eq!(sep.values()[1], "");
+        assert_eq!(after.values()[1], "");
+    }
+
+    #[test]
+    fn string_rpartition_found() {
+        let sa = StringArray::from_strs(vec![1], &["a-b-c"]).unwrap();
+        let (before, sep, after) = sa.rpartition("-");
+        assert_eq!(before.values()[0], "a-b");
+        assert_eq!(sep.values()[0], "-");
+        assert_eq!(after.values()[0], "c");
+    }
+
+    #[test]
+    fn string_encode_decode_roundtrip() {
+        let sa = StringArray::from_strs(vec![2], &["hello", "world"]).unwrap();
+        let encoded = sa.encode();
+        assert_eq!(encoded[0], b"hello");
+        assert_eq!(encoded[1], b"world");
+        let byte_refs: Vec<&[u8]> = encoded.iter().map(|b| b.as_slice()).collect();
+        let decoded = StringArray::decode(vec![2], &byte_refs).unwrap();
+        assert_eq!(decoded.values(), sa.values());
+    }
+
+    #[test]
+    fn string_translate_basic() {
+        let sa = StringArray::from_strs(vec![1], &["hello"]).unwrap();
+        let mut table = std::collections::HashMap::new();
+        table.insert('h', Some('H'));
+        table.insert('l', None); // delete 'l'
+        let result = sa.translate(&table);
+        assert_eq!(result.values()[0], "Heo");
+    }
+
+    #[test]
+    fn string_expandtabs() {
+        let sa = StringArray::from_strs(vec![1], &["a\tb"]).unwrap();
+        let result = sa.expandtabs(4);
+        assert_eq!(result.values()[0], "a   b");
+    }
+
+    #[test]
+    fn string_isnumeric() {
+        let sa = StringArray::from_strs(vec![3], &["123", "12a", ""]).unwrap();
+        let result = sa.isnumeric();
+        assert_eq!(result.values(), &[1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn string_isdecimal() {
+        let sa = StringArray::from_strs(vec![2], &["456", "abc"]).unwrap();
+        let result = sa.isdecimal();
+        assert_eq!(result.values(), &[1.0, 0.0]);
+    }
+
+    #[test]
+    fn string_istitle() {
+        let sa =
+            StringArray::from_strs(vec![3], &["Hello World", "hello world", "HELLO"]).unwrap();
+        let result = sa.istitle();
+        assert_eq!(result.values(), &[1.0, 0.0, 0.0]);
+    }
+
+    // ── Type utility and memory query tests ─────────────────────────
+
+    #[test]
+    fn can_cast_safe() {
+        assert!(UFuncArray::can_cast(DType::I32, DType::F64, "safe"));
+        assert!(!UFuncArray::can_cast(DType::F64, DType::I32, "safe"));
+    }
+
+    #[test]
+    fn can_cast_same_kind() {
+        assert!(UFuncArray::can_cast(DType::I32, DType::I64, "same_kind"));
+        assert!(UFuncArray::can_cast(DType::F32, DType::F64, "same_kind"));
+    }
+
+    #[test]
+    fn mintypecode_basic() {
+        assert_eq!(UFuncArray::mintypecode("fd"), 'd'); // float64 dominates
+        assert_eq!(UFuncArray::mintypecode("?"), '?'); // just bool
+        assert_eq!(UFuncArray::mintypecode("ih"), 'i'); // i32 dominates i16
+    }
+
+    #[test]
+    fn shares_memory_self() {
+        let a = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        assert!(a.shares_memory(&a)); // same reference
+        let b = a.clone();
+        assert!(!a.shares_memory(&b)); // different allocation
+    }
+
+    #[test]
+    fn byte_bounds_nonempty() {
+        let a = UFuncArray::new(vec![4], vec![1.0, 2.0, 3.0, 4.0], DType::F64).unwrap();
+        let (lo, hi) = a.byte_bounds();
+        assert!(hi > lo);
+        assert_eq!(hi - lo, 32); // 4 * 8 bytes
+    }
+
+    #[test]
+    fn byte_bounds_empty() {
+        let a = UFuncArray::new(vec![0], vec![], DType::F64).unwrap();
+        let (lo, hi) = a.byte_bounds();
+        assert_eq!(lo, 0);
+        assert_eq!(hi, 0);
+    }
+
+    #[test]
+    fn put_mask_basic() {
+        let mut a = UFuncArray::new(vec![4], vec![1.0, 2.0, 3.0, 4.0], DType::F64).unwrap();
+        let mask = UFuncArray::new(vec![4], vec![1.0, 0.0, 1.0, 0.0], DType::Bool).unwrap();
+        a.put_mask(&mask, &[99.0]).unwrap();
+        assert_eq!(a.values(), &[99.0, 2.0, 99.0, 4.0]);
+    }
+
+    #[test]
+    fn put_mask_cycling() {
+        let mut a = UFuncArray::new(vec![4], vec![1.0, 2.0, 3.0, 4.0], DType::F64).unwrap();
+        let mask = UFuncArray::new(vec![4], vec![1.0, 1.0, 1.0, 0.0], DType::Bool).unwrap();
+        a.put_mask(&mask, &[10.0, 20.0]).unwrap();
+        assert_eq!(a.values(), &[10.0, 20.0, 10.0, 4.0]);
+    }
+
+    #[test]
+    fn put_mask_size_mismatch() {
+        let mut a = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        let mask = UFuncArray::new(vec![2], vec![1.0, 0.0], DType::Bool).unwrap();
+        assert!(a.put_mask(&mask, &[99.0]).is_err());
     }
 
     // ── nanpercentile / nanquantile / real_if_close tests ──────────

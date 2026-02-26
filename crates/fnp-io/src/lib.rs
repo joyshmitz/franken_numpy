@@ -1688,9 +1688,10 @@ pub fn tobytes(values: &[f64], dtype: IOSupportedDType) -> Result<Vec<u8>, IOErr
     tofile(values, dtype)
 }
 
-/// Serialize array values to a text string (np.ndarray.tostring equivalent).
+/// Serialize array values to a text string with a separator.
 ///
-/// Returns a text representation of the values with the given separator.
+/// Note: NumPy's `ndarray.tostring()` is a deprecated alias for `tobytes()` (binary).
+/// This function is a text formatter analogous to `np.array2string` / `savetxt`.
 pub fn tostring(values: &[f64], sep: &str) -> String {
     values
         .iter()
