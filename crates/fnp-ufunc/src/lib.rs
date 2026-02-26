@@ -14197,6 +14197,337 @@ pub fn hermint(c: &[f64], m: usize) -> Vec<f64> {
     coeffs
 }
 
+/// Add two physicist's Hermite coefficient arrays.
+pub fn hermadd(c1: &[f64], c2: &[f64]) -> Vec<f64> {
+    let len = c1.len().max(c2.len());
+    let mut result = vec![0.0; len];
+    for (i, &v) in c1.iter().enumerate() {
+        result[i] += v;
+    }
+    for (i, &v) in c2.iter().enumerate() {
+        result[i] += v;
+    }
+    result
+}
+
+/// Subtract two physicist's Hermite coefficient arrays.
+pub fn hermsub(c1: &[f64], c2: &[f64]) -> Vec<f64> {
+    let len = c1.len().max(c2.len());
+    let mut result = vec![0.0; len];
+    for (i, &v) in c1.iter().enumerate() {
+        result[i] += v;
+    }
+    for (i, &v) in c2.iter().enumerate() {
+        result[i] -= v;
+    }
+    result
+}
+
+/// Multiply two physicist's Hermite coefficient arrays via power basis.
+pub fn hermmul(c1: &[f64], c2: &[f64]) -> Vec<f64> {
+    if c1.is_empty() || c2.is_empty() {
+        return Vec::new();
+    }
+    let p1 = herm2poly(c1);
+    let p2 = herm2poly(c2);
+    let len = p1.len() + p2.len() - 1;
+    let mut prod = vec![0.0; len];
+    for (i, &a) in p1.iter().enumerate() {
+        for (j, &b) in p2.iter().enumerate() {
+            prod[i + j] += a * b;
+        }
+    }
+    poly2herm(&prod)
+}
+
+/// Divide physicist's Hermite coefficient arrays. Returns (quotient, remainder).
+pub fn hermdiv(c1: &[f64], c2: &[f64]) -> Result<(Vec<f64>, Vec<f64>), UFuncError> {
+    if c2.is_empty() || c2.iter().all(|&v| v == 0.0) {
+        return Err(UFuncError::Msg(
+            "hermdiv: division by zero polynomial".to_string(),
+        ));
+    }
+    let p1 = herm2poly(c1);
+    let p2 = herm2poly(c2);
+    let (pq, pr) = poly_div(&p1, &p2)?;
+    Ok((poly2herm(&pq), poly2herm(&pr)))
+}
+
+/// Find roots of a physicist's Hermite series.
+pub fn hermroots(c: &[f64]) -> Result<Vec<f64>, UFuncError> {
+    let mut coeffs: Vec<f64> = c.to_vec();
+    while coeffs.len() > 1 && *coeffs.last().unwrap() == 0.0 {
+        coeffs.pop();
+    }
+    let n = coeffs.len();
+    if n <= 1 {
+        return Ok(Vec::new());
+    }
+    if n == 2 {
+        // c[0]*H_0 + c[1]*H_1 = c[0] + c[1]*2x = 0 → x = -c[0]/(2*c[1])
+        return Ok(vec![-coeffs[0] / (2.0 * coeffs[1])]);
+    }
+    let poly_coeffs = herm2poly(&coeffs);
+    let d = poly_coeffs.len() - 1;
+    if d == 0 {
+        return Ok(Vec::new());
+    }
+    let lead = poly_coeffs[d];
+    let mut comp = vec![0.0f64; d * d];
+    for j in 0..d {
+        comp[j] = -poly_coeffs[d - 1 - j] / lead;
+    }
+    for i in 0..d - 1 {
+        comp[(i + 1) * d + i] = 1.0;
+    }
+    let eigenvalues = fnp_linalg::eig_nxn(&comp, d)
+        .map_err(|e| UFuncError::Msg(format!("hermroots eigenvalue error: {e}")))?;
+    let mut roots: Vec<f64> = eigenvalues.chunks_exact(2).map(|pair| pair[0]).collect();
+    roots.sort_by(|a, b| a.total_cmp(b));
+    Ok(roots)
+}
+
+/// Build a physicist's Hermite series from roots.
+pub fn hermfromroots(roots: &[f64]) -> Vec<f64> {
+    if roots.is_empty() {
+        return vec![1.0];
+    }
+    // (x - r) in Hermite basis: H_0 = 1, H_1 = 2x → x = H_1/2
+    // So (x - r) = -r * H_0 + (1/2) * H_1 = [-r, 0.5]
+    let mut result = vec![-roots[0], 0.5];
+    for &r in &roots[1..] {
+        let factor = vec![-r, 0.5];
+        result = hermmul(&result, &factor);
+    }
+    result
+}
+
+/// Convert physicist's Hermite coefficients to power series.
+/// H_0=1, H_1=2x, H_{n+1} = 2x H_n - 2n H_{n-1}
+pub fn herm2poly(c: &[f64]) -> Vec<f64> {
+    if c.is_empty() {
+        return Vec::new();
+    }
+    if c.len() == 1 {
+        return vec![c[0]];
+    }
+    let n = c.len();
+    let mut result = vec![0.0; n];
+    let mut h_prev = vec![0.0; n];
+    let mut h_curr = vec![0.0; n];
+    h_prev[0] = 1.0; // H_0 = 1
+    h_curr[1] = 2.0; // H_1 = 2x
+
+    for j in 0..n {
+        result[j] += c[0] * h_prev[j];
+    }
+    if n > 1 {
+        for j in 0..n {
+            result[j] += c[1] * h_curr[j];
+        }
+    }
+    for k in 2..n {
+        let mut h_next = vec![0.0; n];
+        // H_k = 2x * H_{k-1} - 2(k-1) * H_{k-2}
+        let kf = k as f64;
+        for j in 0..n - 1 {
+            h_next[j + 1] += 2.0 * h_curr[j];
+        }
+        for j in 0..n {
+            h_next[j] -= 2.0 * (kf - 1.0) * h_prev[j];
+        }
+        for j in 0..n {
+            result[j] += c[k] * h_next[j];
+        }
+        h_prev = h_curr;
+        h_curr = h_next;
+    }
+    while result.len() > 1 && result.last().map_or(false, |&v| v.abs() < 1e-15) {
+        result.pop();
+    }
+    result
+}
+
+/// Convert power series to physicist's Hermite coefficients.
+pub fn poly2herm(p: &[f64]) -> Vec<f64> {
+    if p.is_empty() {
+        return Vec::new();
+    }
+    if p.len() == 1 {
+        return vec![p[0]];
+    }
+    let n = p.len();
+    let mut m = vec![0.0; n * n];
+    for j in 0..n {
+        let mut basis = vec![0.0; n];
+        basis[j] = 1.0;
+        let poly = herm2poly(&basis);
+        for (i, &v) in poly.iter().enumerate() {
+            if i < n {
+                m[i * n + j] = v;
+            }
+        }
+    }
+    solve_linear_system(&m, p, n).unwrap_or_else(|_| p.to_vec())
+}
+
+/// Add two probabilist's Hermite coefficient arrays.
+pub fn hermeadd(c1: &[f64], c2: &[f64]) -> Vec<f64> {
+    hermadd(c1, c2)
+}
+
+/// Subtract two probabilist's Hermite coefficient arrays.
+pub fn hermesub(c1: &[f64], c2: &[f64]) -> Vec<f64> {
+    hermsub(c1, c2)
+}
+
+/// Multiply two probabilist's Hermite coefficient arrays via power basis.
+pub fn hermemul(c1: &[f64], c2: &[f64]) -> Vec<f64> {
+    if c1.is_empty() || c2.is_empty() {
+        return Vec::new();
+    }
+    let p1 = herme2poly(c1);
+    let p2 = herme2poly(c2);
+    let len = p1.len() + p2.len() - 1;
+    let mut prod = vec![0.0; len];
+    for (i, &a) in p1.iter().enumerate() {
+        for (j, &b) in p2.iter().enumerate() {
+            prod[i + j] += a * b;
+        }
+    }
+    poly2herme(&prod)
+}
+
+/// Divide probabilist's Hermite coefficient arrays. Returns (quotient, remainder).
+pub fn hermediv(c1: &[f64], c2: &[f64]) -> Result<(Vec<f64>, Vec<f64>), UFuncError> {
+    if c2.is_empty() || c2.iter().all(|&v| v == 0.0) {
+        return Err(UFuncError::Msg(
+            "hermediv: division by zero polynomial".to_string(),
+        ));
+    }
+    let p1 = herme2poly(c1);
+    let p2 = herme2poly(c2);
+    let (pq, pr) = poly_div(&p1, &p2)?;
+    Ok((poly2herme(&pq), poly2herme(&pr)))
+}
+
+/// Find roots of a probabilist's Hermite series.
+pub fn hermeroots(c: &[f64]) -> Result<Vec<f64>, UFuncError> {
+    let mut coeffs: Vec<f64> = c.to_vec();
+    while coeffs.len() > 1 && *coeffs.last().unwrap() == 0.0 {
+        coeffs.pop();
+    }
+    let n = coeffs.len();
+    if n <= 1 {
+        return Ok(Vec::new());
+    }
+    if n == 2 {
+        // c[0]*He_0 + c[1]*He_1 = c[0] + c[1]*x = 0
+        return Ok(vec![-coeffs[0] / coeffs[1]]);
+    }
+    let poly_coeffs = herme2poly(&coeffs);
+    let d = poly_coeffs.len() - 1;
+    if d == 0 {
+        return Ok(Vec::new());
+    }
+    let lead = poly_coeffs[d];
+    let mut comp = vec![0.0f64; d * d];
+    for j in 0..d {
+        comp[j] = -poly_coeffs[d - 1 - j] / lead;
+    }
+    for i in 0..d - 1 {
+        comp[(i + 1) * d + i] = 1.0;
+    }
+    let eigenvalues = fnp_linalg::eig_nxn(&comp, d)
+        .map_err(|e| UFuncError::Msg(format!("hermeroots eigenvalue error: {e}")))?;
+    let mut roots: Vec<f64> = eigenvalues.chunks_exact(2).map(|pair| pair[0]).collect();
+    roots.sort_by(|a, b| a.total_cmp(b));
+    Ok(roots)
+}
+
+/// Build a probabilist's Hermite series from roots.
+pub fn hermefromroots(roots: &[f64]) -> Vec<f64> {
+    if roots.is_empty() {
+        return vec![1.0];
+    }
+    // (x - r) in He basis: He_0 = 1, He_1 = x → [-r, 1]
+    let mut result = vec![-roots[0], 1.0];
+    for &r in &roots[1..] {
+        let factor = vec![-r, 1.0];
+        result = hermemul(&result, &factor);
+    }
+    result
+}
+
+/// Convert probabilist's Hermite coefficients to power series.
+/// He_0=1, He_1=x, He_{n+1} = x He_n - n He_{n-1}
+pub fn herme2poly(c: &[f64]) -> Vec<f64> {
+    if c.is_empty() {
+        return Vec::new();
+    }
+    if c.len() == 1 {
+        return vec![c[0]];
+    }
+    let n = c.len();
+    let mut result = vec![0.0; n];
+    let mut he_prev = vec![0.0; n];
+    let mut he_curr = vec![0.0; n];
+    he_prev[0] = 1.0; // He_0 = 1
+    he_curr[1] = 1.0; // He_1 = x
+
+    for j in 0..n {
+        result[j] += c[0] * he_prev[j];
+    }
+    if n > 1 {
+        for j in 0..n {
+            result[j] += c[1] * he_curr[j];
+        }
+    }
+    for k in 2..n {
+        let mut he_next = vec![0.0; n];
+        // He_k = x * He_{k-1} - (k-1) * He_{k-2}
+        let kf = k as f64;
+        for j in 0..n - 1 {
+            he_next[j + 1] += he_curr[j];
+        }
+        for j in 0..n {
+            he_next[j] -= (kf - 1.0) * he_prev[j];
+        }
+        for j in 0..n {
+            result[j] += c[k] * he_next[j];
+        }
+        he_prev = he_curr;
+        he_curr = he_next;
+    }
+    while result.len() > 1 && result.last().map_or(false, |&v| v.abs() < 1e-15) {
+        result.pop();
+    }
+    result
+}
+
+/// Convert power series to probabilist's Hermite coefficients.
+pub fn poly2herme(p: &[f64]) -> Vec<f64> {
+    if p.is_empty() {
+        return Vec::new();
+    }
+    if p.len() == 1 {
+        return vec![p[0]];
+    }
+    let n = p.len();
+    let mut m = vec![0.0; n * n];
+    for j in 0..n {
+        let mut basis = vec![0.0; n];
+        basis[j] = 1.0;
+        let poly = herme2poly(&basis);
+        for (i, &v) in poly.iter().enumerate() {
+            if i < n {
+                m[i * n + j] = v;
+            }
+        }
+    }
+    solve_linear_system(&m, p, n).unwrap_or_else(|_| p.to_vec())
+}
+
 // ── Laguerre polynomial module ──────────────────────────────────────────
 
 /// Evaluate a Laguerre series at points `x`.
@@ -14269,6 +14600,187 @@ pub fn lagint(c: &[f64], m: usize) -> Vec<f64> {
         coeffs = int;
     }
     coeffs
+}
+
+/// Add two Laguerre coefficient arrays.
+pub fn lagadd(c1: &[f64], c2: &[f64]) -> Vec<f64> {
+    let len = c1.len().max(c2.len());
+    let mut result = vec![0.0; len];
+    for (i, &v) in c1.iter().enumerate() {
+        result[i] += v;
+    }
+    for (i, &v) in c2.iter().enumerate() {
+        result[i] += v;
+    }
+    result
+}
+
+/// Subtract two Laguerre coefficient arrays.
+pub fn lagsub(c1: &[f64], c2: &[f64]) -> Vec<f64> {
+    let len = c1.len().max(c2.len());
+    let mut result = vec![0.0; len];
+    for (i, &v) in c1.iter().enumerate() {
+        result[i] += v;
+    }
+    for (i, &v) in c2.iter().enumerate() {
+        result[i] -= v;
+    }
+    result
+}
+
+/// Multiply two Laguerre coefficient arrays via power basis.
+pub fn lagmul(c1: &[f64], c2: &[f64]) -> Vec<f64> {
+    if c1.is_empty() || c2.is_empty() {
+        return Vec::new();
+    }
+    let p1 = lag2poly(c1);
+    let p2 = lag2poly(c2);
+    let len = p1.len() + p2.len() - 1;
+    let mut prod = vec![0.0; len];
+    for (i, &a) in p1.iter().enumerate() {
+        for (j, &b) in p2.iter().enumerate() {
+            prod[i + j] += a * b;
+        }
+    }
+    poly2lag(&prod)
+}
+
+/// Divide Laguerre coefficient arrays. Returns (quotient, remainder).
+pub fn lagdiv(c1: &[f64], c2: &[f64]) -> Result<(Vec<f64>, Vec<f64>), UFuncError> {
+    if c2.is_empty() || c2.iter().all(|&v| v == 0.0) {
+        return Err(UFuncError::Msg(
+            "lagdiv: division by zero polynomial".to_string(),
+        ));
+    }
+    let p1 = lag2poly(c1);
+    let p2 = lag2poly(c2);
+    let (pq, pr) = poly_div(&p1, &p2)?;
+    Ok((poly2lag(&pq), poly2lag(&pr)))
+}
+
+/// Find roots of a Laguerre series.
+pub fn lagroots(c: &[f64]) -> Result<Vec<f64>, UFuncError> {
+    let mut coeffs: Vec<f64> = c.to_vec();
+    while coeffs.len() > 1 && *coeffs.last().unwrap() == 0.0 {
+        coeffs.pop();
+    }
+    let n = coeffs.len();
+    if n <= 1 {
+        return Ok(Vec::new());
+    }
+    if n == 2 {
+        // c[0]*L_0 + c[1]*L_1 = c[0] + c[1]*(1-x) = (c[0]+c[1]) - c[1]*x = 0
+        return Ok(vec![(coeffs[0] + coeffs[1]) / coeffs[1]]);
+    }
+    let poly_coeffs = lag2poly(&coeffs);
+    let d = poly_coeffs.len() - 1;
+    if d == 0 {
+        return Ok(Vec::new());
+    }
+    let lead = poly_coeffs[d];
+    let mut comp = vec![0.0f64; d * d];
+    for j in 0..d {
+        comp[j] = -poly_coeffs[d - 1 - j] / lead;
+    }
+    for i in 0..d - 1 {
+        comp[(i + 1) * d + i] = 1.0;
+    }
+    let eigenvalues = fnp_linalg::eig_nxn(&comp, d)
+        .map_err(|e| UFuncError::Msg(format!("lagroots eigenvalue error: {e}")))?;
+    let mut roots: Vec<f64> = eigenvalues.chunks_exact(2).map(|pair| pair[0]).collect();
+    roots.sort_by(|a, b| a.total_cmp(b));
+    Ok(roots)
+}
+
+/// Build a Laguerre series from roots.
+pub fn lagfromroots(roots: &[f64]) -> Vec<f64> {
+    if roots.is_empty() {
+        return vec![1.0];
+    }
+    // (x - r) in Laguerre basis: L_0=1, L_1=1-x → x = L_0 - L_1
+    // So (x - r) = (1-r)*L_0 + (-1)*L_1 = [1.0 - r, -1.0]
+    let mut result = vec![1.0 - roots[0], -1.0];
+    for &r in &roots[1..] {
+        let factor = vec![1.0 - r, -1.0];
+        result = lagmul(&result, &factor);
+    }
+    result
+}
+
+/// Convert Laguerre coefficients to power series.
+/// L_0=1, L_1=1-x, L_{n+1} = ((2n+1-x)L_n - nL_{n-1}) / (n+1)
+pub fn lag2poly(c: &[f64]) -> Vec<f64> {
+    if c.is_empty() {
+        return Vec::new();
+    }
+    if c.len() == 1 {
+        return vec![c[0]];
+    }
+    let n = c.len();
+    let mut result = vec![0.0; n];
+    let mut l_prev = vec![0.0; n];
+    let mut l_curr = vec![0.0; n];
+    l_prev[0] = 1.0; // L_0 = 1
+    l_curr[0] = 1.0;
+    l_curr[1] = -1.0; // L_1 = 1 - x
+
+    for j in 0..n {
+        result[j] += c[0] * l_prev[j];
+    }
+    if n > 1 {
+        for j in 0..n {
+            result[j] += c[1] * l_curr[j];
+        }
+    }
+    for k in 2..n {
+        let mut l_next = vec![0.0; n];
+        // L_k = ((2k-1-x)*L_{k-1} - (k-1)*L_{k-2}) / k
+        let kf = k as f64;
+        // (2k-1)*L_{k-1}/k
+        for j in 0..n {
+            l_next[j] += (2.0 * kf - 1.0) * l_curr[j] / kf;
+        }
+        // -x*L_{k-1}/k
+        for j in 0..n - 1 {
+            l_next[j + 1] -= l_curr[j] / kf;
+        }
+        // -(k-1)*L_{k-2}/k
+        for j in 0..n {
+            l_next[j] -= (kf - 1.0) * l_prev[j] / kf;
+        }
+        for j in 0..n {
+            result[j] += c[k] * l_next[j];
+        }
+        l_prev = l_curr;
+        l_curr = l_next;
+    }
+    while result.len() > 1 && result.last().map_or(false, |&v| v.abs() < 1e-15) {
+        result.pop();
+    }
+    result
+}
+
+/// Convert power series to Laguerre coefficients.
+pub fn poly2lag(p: &[f64]) -> Vec<f64> {
+    if p.is_empty() {
+        return Vec::new();
+    }
+    if p.len() == 1 {
+        return vec![p[0]];
+    }
+    let n = p.len();
+    let mut m = vec![0.0; n * n];
+    for j in 0..n {
+        let mut basis = vec![0.0; n];
+        basis[j] = 1.0;
+        let poly = lag2poly(&basis);
+        for (i, &v) in poly.iter().enumerate() {
+            if i < n {
+                m[i * n + j] = v;
+            }
+        }
+    }
+    solve_linear_system(&m, p, n).unwrap_or_else(|_| p.to_vec())
 }
 
 // ── scimath — complex-aware math functions ──────────────────────────────
@@ -15858,11 +16370,15 @@ mod tests {
         chebint, chebmul, chebsub, chebval, divmod_arrays, financial_fv, financial_ipmt,
         financial_irr, financial_mirr, financial_nper, financial_npv, financial_pmt,
         financial_ppmt, financial_pv, financial_rate, frexp, gcd_arrays, hermder, hermeval,
-        hermint, hermval, is_busday, isneginf, isposinf, lagder, lagval, lcm_arrays,
+        herm2poly, hermadd, hermdiv, herme2poly, hermeadd, hermediv, hermefromroots, hermemul,
+        hermeroots, hermesub, hermfromroots, hermint, hermmul, hermroots, hermsub, hermval,
+        is_busday, isneginf, isposinf, lag2poly, lagadd, lagder, lagdiv, lagfromroots, lagmul,
+        lagroots, lagsub, lagval, lcm_arrays,
         leg2poly, legadd, legder, legdiv, legfit, legfromroots, legint, legmul, legroots, legsub,
         legval, ma_is_mask, ma_is_masked, ma_make_mask, ma_mask_or, modf,
         normalize_signature_keywords, pad_empty, pad_linear_ramp, pad_stat, parse_gufunc_signature,
-        plan_binary_dispatch, poly2cheb, poly2leg, register_custom_loop, scimath_arccos, scimath_arcsin,
+        plan_binary_dispatch, poly2cheb, poly2herm, poly2herme, poly2lag, poly2leg,
+        register_custom_loop, scimath_arccos, scimath_arcsin,
         scimath_arctanh, scimath_log, scimath_log2, scimath_log10, scimath_power, scimath_sqrt,
         sort_complex, unique_all, unique_counts, unique_inverse, unique_values,
         validate_override_payload_class, where_nonzero,
@@ -26090,6 +26606,103 @@ mod tests {
         }
     }
 
+    #[test]
+    fn hermadd_basic() {
+        let r = hermadd(&[1.0, 2.0], &[3.0, 4.0, 5.0]);
+        assert_eq!(r, vec![4.0, 6.0, 5.0]);
+    }
+
+    #[test]
+    fn hermsub_basic() {
+        let r = hermsub(&[5.0, 3.0], &[1.0, 2.0]);
+        assert_eq!(r, vec![4.0, 1.0]);
+    }
+
+    #[test]
+    fn hermmul_h1_times_h1() {
+        // H_1 = 2x. H_1 * H_1 = 4x^2. In Hermite: 4x^2 = 2H_0 + H_2
+        // So hermmul([0,1], [0,1]) should give [2, 0, 1] (or similar with leading term)
+        // Actually: H_0=1, H_1=2x, H_2=4x^2-2 → 4x^2 = H_2 + 2 = H_2 + 2*H_0
+        // In Hermite coefficients: [2, 0, 1]
+        let r = hermmul(&[0.0, 1.0], &[0.0, 1.0]);
+        assert_eq!(r.len(), 3);
+        assert!((r[0] - 2.0).abs() < 1e-10, "r[0] = {}", r[0]);
+        assert!(r[1].abs() < 1e-10, "r[1] = {}", r[1]);
+        assert!((r[2] - 1.0).abs() < 1e-10, "r[2] = {}", r[2]);
+    }
+
+    #[test]
+    fn herm2poly_h2() {
+        // H_2 = 4x^2 - 2, in Hermite basis [0,0,1]
+        let p = herm2poly(&[0.0, 0.0, 1.0]);
+        assert!(p.len() >= 3);
+        assert!((p[0] - (-2.0)).abs() < 1e-12, "p[0] = {}", p[0]);
+        assert!(p[1].abs() < 1e-12, "p[1] = {}", p[1]);
+        assert!((p[2] - 4.0).abs() < 1e-12, "p[2] = {}", p[2]);
+    }
+
+    #[test]
+    fn poly2herm_roundtrip() {
+        let orig = vec![1.0, 2.0, 3.0];
+        let poly = herm2poly(&orig);
+        let back = poly2herm(&poly);
+        for i in 0..orig.len() {
+            assert!((back[i] - orig[i]).abs() < 1e-8, "c[{i}]: {} vs {}", back[i], orig[i]);
+        }
+    }
+
+    #[test]
+    fn hermroots_linear() {
+        // c[0]*H_0 + c[1]*H_1 = 1 + 2*2x = 0 → x = -1/4
+        let roots = hermroots(&[1.0, 2.0]).unwrap();
+        assert_eq!(roots.len(), 1);
+        assert!((roots[0] - (-0.25)).abs() < 1e-12, "root = {}", roots[0]);
+    }
+
+    #[test]
+    fn hermfromroots_roundtrip() {
+        let c = hermfromroots(&[0.5, -0.5]);
+        let roots = hermroots(&c).unwrap();
+        assert_eq!(roots.len(), 2);
+        assert!((roots[0] - (-0.5)).abs() < 1e-10, "root0 = {}", roots[0]);
+        assert!((roots[1] - 0.5).abs() < 1e-10, "root1 = {}", roots[1]);
+    }
+
+    // Probabilist's Hermite tests
+    #[test]
+    fn hermeadd_basic() {
+        let r = hermeadd(&[1.0, 2.0], &[3.0]);
+        assert_eq!(r, vec![4.0, 2.0]);
+    }
+
+    #[test]
+    fn hermemul_he1_times_he1() {
+        // He_1 = x. He_1 * He_1 = x^2 = He_2 + He_0 (since He_2 = x^2 - 1)
+        let r = hermemul(&[0.0, 1.0], &[0.0, 1.0]);
+        assert_eq!(r.len(), 3);
+        assert!((r[0] - 1.0).abs() < 1e-10, "r[0] = {}", r[0]);
+        assert!(r[1].abs() < 1e-10, "r[1] = {}", r[1]);
+        assert!((r[2] - 1.0).abs() < 1e-10, "r[2] = {}", r[2]);
+    }
+
+    #[test]
+    fn herme2poly_he2() {
+        // He_2 = x^2 - 1
+        let p = herme2poly(&[0.0, 0.0, 1.0]);
+        assert!(p.len() >= 3);
+        assert!((p[0] - (-1.0)).abs() < 1e-12, "p[0] = {}", p[0]);
+        assert!(p[1].abs() < 1e-12, "p[1] = {}", p[1]);
+        assert!((p[2] - 1.0).abs() < 1e-12, "p[2] = {}", p[2]);
+    }
+
+    #[test]
+    fn hermeroots_linear() {
+        // c[0] + c[1]*x = 2 + 3x = 0 → x = -2/3
+        let roots = hermeroots(&[2.0, 3.0]).unwrap();
+        assert_eq!(roots.len(), 1);
+        assert!((roots[0] - (-2.0 / 3.0)).abs() < 1e-12);
+    }
+
     // ── Laguerre polynomial tests ───────────────────────────────────────
 
     #[test]
@@ -26128,6 +26741,72 @@ mod tests {
         let dc = lagder(&[0.0, 1.0], 1);
         assert_eq!(dc.len(), 1);
         assert!((dc[0] - (-1.0)).abs() < 1e-14);
+    }
+
+    #[test]
+    fn lagadd_basic() {
+        let r = lagadd(&[1.0, 2.0], &[3.0, 4.0, 5.0]);
+        assert_eq!(r, vec![4.0, 6.0, 5.0]);
+    }
+
+    #[test]
+    fn lagsub_basic() {
+        let r = lagsub(&[5.0, 3.0], &[1.0, 2.0]);
+        assert_eq!(r, vec![4.0, 1.0]);
+    }
+
+    #[test]
+    fn lagmul_l1_times_l1() {
+        // L_1 = 1-x. L_1*L_1 = (1-x)^2 = 1 - 2x + x^2
+        // In Laguerre: x = L_0 - L_1, x^2 = 2L_0 - 4L_1 + 2L_2
+        // So 1 - 2x + x^2 = 1 - 2(L_0-L_1) + (2L_0-4L_1+2L_2)
+        // = 1 - 2L_0 + 2L_1 + 2L_0 - 4L_1 + 2L_2
+        // = 1 - 2L_1 + 2L_2  → But L_0=1, so adjust...
+        // Actually verify by evaluating at some points
+        let r = lagmul(&[0.0, 1.0], &[0.0, 1.0]);
+        // Check by evaluating: lagval at x=0 should give L_1(0)^2 = 1
+        let val0 = lagval(&[0.0], &r);
+        assert!((val0[0] - 1.0).abs() < 1e-10, "lagmul at x=0: {}", val0[0]);
+        // x=1: L_1(1) = 0, so product should be 0
+        let val1 = lagval(&[1.0], &r);
+        assert!(val1[0].abs() < 1e-10, "lagmul at x=1: {}", val1[0]);
+    }
+
+    #[test]
+    fn lag2poly_l2() {
+        // L_2 = (x^2 - 4x + 2) / 2
+        let p = lag2poly(&[0.0, 0.0, 1.0]);
+        assert!(p.len() >= 3);
+        assert!((p[0] - 1.0).abs() < 1e-12, "p[0] = {}", p[0]);
+        assert!((p[1] - (-2.0)).abs() < 1e-12, "p[1] = {}", p[1]);
+        assert!((p[2] - 0.5).abs() < 1e-12, "p[2] = {}", p[2]);
+    }
+
+    #[test]
+    fn poly2lag_roundtrip() {
+        let orig = vec![1.0, 2.0, 3.0];
+        let poly = lag2poly(&orig);
+        let back = poly2lag(&poly);
+        for i in 0..orig.len() {
+            assert!((back[i] - orig[i]).abs() < 1e-8, "c[{i}]: {} vs {}", back[i], orig[i]);
+        }
+    }
+
+    #[test]
+    fn lagroots_linear() {
+        // c[0]*L_0 + c[1]*L_1 = 1 + 2*(1-x) = 3 - 2x = 0 → x = 1.5
+        let roots = lagroots(&[1.0, 2.0]).unwrap();
+        assert_eq!(roots.len(), 1);
+        assert!((roots[0] - 1.5).abs() < 1e-12, "root = {}", roots[0]);
+    }
+
+    #[test]
+    fn lagfromroots_roundtrip() {
+        let c = lagfromroots(&[1.0, 2.0]);
+        let roots = lagroots(&c).unwrap();
+        assert_eq!(roots.len(), 2);
+        assert!((roots[0] - 1.0).abs() < 1e-10, "root0 = {}", roots[0]);
+        assert!((roots[1] - 2.0).abs() < 1e-10, "root1 = {}", roots[1]);
     }
 
     // ── scimath tests ───────────────────────────────────────────────────
