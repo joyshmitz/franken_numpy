@@ -2288,11 +2288,7 @@ pub fn logm_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
 /// real diagonal entries (i.e., all eigenvalues are real).
 ///
 /// Equivalent to `scipy.linalg.funm(A, func)`.
-pub fn funm_nxn(
-    a: &[f64],
-    n: usize,
-    f: impl Fn(f64) -> f64,
-) -> Result<Vec<f64>, LinAlgError> {
+pub fn funm_nxn(a: &[f64], n: usize, f: impl Fn(f64) -> f64) -> Result<Vec<f64>, LinAlgError> {
     if a.len() != n * n || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
             "funm_nxn: input must be n*n with n > 0",

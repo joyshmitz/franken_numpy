@@ -1712,11 +1712,7 @@ pub fn tostring(values: &[f64], sep: &str) -> String {
 ///
 /// Combines header construction and writing into a single call.
 /// `shape` and `dtype` describe the array, `values` is the flat row-major data.
-pub fn save(
-    shape: &[usize],
-    values: &[f64],
-    dtype: IOSupportedDType,
-) -> Result<Vec<u8>, IOError> {
+pub fn save(shape: &[usize], values: &[f64], dtype: IOSupportedDType) -> Result<Vec<u8>, IOError> {
     let header = NpyHeader {
         shape: shape.to_vec(),
         fortran_order: false,
@@ -1758,9 +1754,7 @@ pub fn load_npz(data: &[u8]) -> Result<Vec<NpzLoadedEntry>, IOError> {
 /// High-level savez: serialize multiple named arrays to an uncompressed NPZ archive (np.savez).
 ///
 /// Each entry is (name, shape, values, dtype).
-pub fn savez(
-    entries: &[(&str, &[usize], &[f64], IOSupportedDType)],
-) -> Result<Vec<u8>, IOError> {
+pub fn savez(entries: &[(&str, &[usize], &[f64], IOSupportedDType)]) -> Result<Vec<u8>, IOError> {
     let mut payloads = Vec::with_capacity(entries.len());
     let mut headers = Vec::with_capacity(entries.len());
 
@@ -1819,13 +1813,14 @@ mod tests {
         IOSupportedDType, LoadDispatch, MAX_ARCHIVE_MEMBERS, MAX_DISPATCH_RETRIES,
         MAX_HEADER_BYTES, MAX_MEMMAP_VALIDATION_RETRIES, MemmapMode, NPY_MAGIC_PREFIX,
         NPZ_MAGIC_PREFIX, NpyHeader, NpzCompression, SaveTxtConfig, classify_load_dispatch,
-        encode_npy_header_bytes, enforce_pickle_policy, fromfile, fromstring, genfromtxt, loadtxt,
-        loadtxt_usecols, read_npy_bytes, read_npz_bytes, savetxt, synthesize_npz_member_names,
-        tobytes, tofile, tostring, validate_descriptor_roundtrip, validate_header_schema,
-        validate_io_policy_metadata, validate_magic_version, validate_memmap_contract,
-        validate_npz_archive_budget, validate_read_payload, validate_write_contract,
-        write_npy_bytes, write_npy_bytes_with_version, write_npy_preamble, write_npz_bytes,
-        write_npz_bytes_with_compression, save, load, load_npz, savez, savez_compressed,
+        encode_npy_header_bytes, enforce_pickle_policy, fromfile, fromstring, genfromtxt, load,
+        load_npz, loadtxt, loadtxt_usecols, read_npy_bytes, read_npz_bytes, save, savetxt, savez,
+        savez_compressed, synthesize_npz_member_names, tobytes, tofile, tostring,
+        validate_descriptor_roundtrip, validate_header_schema, validate_io_policy_metadata,
+        validate_magic_version, validate_memmap_contract, validate_npz_archive_budget,
+        validate_read_payload, validate_write_contract, write_npy_bytes,
+        write_npy_bytes_with_version, write_npy_preamble, write_npz_bytes,
+        write_npz_bytes_with_compression,
     };
 
     fn packet009_artifacts() -> Vec<String> {
@@ -2902,9 +2897,12 @@ mod tests {
 
     #[test]
     fn savez_compressed_roundtrip() {
-        let entries: Vec<(&str, &[usize], &[f64], IOSupportedDType)> = vec![
-            ("arr", &[4], &[10.0, 20.0, 30.0, 40.0], IOSupportedDType::F64),
-        ];
+        let entries: Vec<(&str, &[usize], &[f64], IOSupportedDType)> = vec![(
+            "arr",
+            &[4],
+            &[10.0, 20.0, 30.0, 40.0],
+            IOSupportedDType::F64,
+        )];
         let bytes = savez_compressed(&entries).unwrap();
         let loaded = load_npz(&bytes).unwrap();
         assert_eq!(loaded.len(), 1);

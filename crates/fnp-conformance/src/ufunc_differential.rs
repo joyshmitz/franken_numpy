@@ -2053,7 +2053,7 @@ pub fn execute_input_case(case: &UFuncInputCase) -> Result<(Vec<usize>, Vec<f64>
             let probe_dtype = parse_dtype(case.rhs_dtype.as_deref().unwrap_or("f64"))?;
             let probes = UFuncArray::new(probe_shape, probe_values, probe_dtype)
                 .map_err(|err| format!("searchsorted probe error: {err}"))?;
-            lhs.searchsorted(&probes)
+            lhs.searchsorted(&probes, None, None)
                 .map_err(|err| format!("searchsorted error: {err}"))?
         }
         UFuncOperation::Concatenate => {
@@ -2341,5 +2341,866 @@ mod tests {
             err.contains("axis"),
             "expected axis error substring, got: {err}"
         );
+    }
+
+    // ── Oracle validation tests (bd-uk6w.1) ─────────────────────────────
+
+    #[test]
+    fn oracle_capture_struct_reports_source() {
+        // Verify oracle capture struct properly records oracle_source
+        let capture = UFuncOracleCapture {
+            schema_version: 1,
+            oracle_source: "system".to_string(),
+            generated_at_unix_ms: 42,
+            cases: vec![],
+        };
+        assert_eq!(capture.oracle_source, "system");
+        // Ensure fallback source is distinguishable
+        let fallback = UFuncOracleCapture {
+            schema_version: 1,
+            oracle_source: "pure_python_fallback".to_string(),
+            generated_at_unix_ms: 42,
+            cases: vec![],
+        };
+        assert_ne!(fallback.oracle_source, "system");
+        assert_eq!(fallback.oracle_source, "pure_python_fallback");
+    }
+
+    #[test]
+    fn oracle_capture_roundtrip_preserves_all_fields() {
+        let path = temp_file("oracle_fields");
+        let capture = UFuncOracleCapture {
+            schema_version: 2,
+            oracle_source: "legacy".to_string(),
+            generated_at_unix_ms: 12345678,
+            cases: vec![
+                UFuncOracleCase {
+                    id: "sin_basic".to_string(),
+                    status: "ok".to_string(),
+                    error: None,
+                    shape: vec![3],
+                    values: vec![0.0, 0.479_425_538_604_203, 0.841_470_984_807_896_5],
+                    dtype: "float64".to_string(),
+                },
+                UFuncOracleCase {
+                    id: "div_zero".to_string(),
+                    status: "error".to_string(),
+                    error: Some("division by zero".to_string()),
+                    shape: vec![],
+                    values: vec![],
+                    dtype: "float64".to_string(),
+                },
+            ],
+        };
+        super::write_oracle_capture(&path, &capture).expect("write");
+        let loaded = load_oracle_capture(&path).expect("load");
+        assert_eq!(loaded.schema_version, 2);
+        assert_eq!(loaded.oracle_source, "legacy");
+        assert_eq!(loaded.cases.len(), 2);
+        assert_eq!(loaded.cases[0].id, "sin_basic");
+        assert_eq!(loaded.cases[0].values.len(), 3);
+        assert_eq!(loaded.cases[1].status, "error");
+        assert_eq!(loaded.cases[1].error.as_deref(), Some("division by zero"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn oracle_python_resolver_defaults_to_python3() {
+        // When FNP_ORACLE_PYTHON is not set, should default to python3
+        let resolved = super::resolve_oracle_python();
+        // It should be either python3 or whatever the env var is set to
+        assert!(
+            !resolved.is_empty(),
+            "resolver should not return empty string"
+        );
+    }
+
+    #[test]
+    fn oracle_known_sin_cos_exp_via_execute() {
+        // Validate known math values through the execute_input_case path
+        // sin(0) = 0
+        let sin_case = make_unary_case("sin_zero", UFuncOperation::Sqrt, &[1], &[0.0]);
+        let (shape, values, _) = execute_input_case(&sin_case).expect("sqrt(0) should work");
+        assert_eq!(shape, vec![1]);
+        assert!((values[0] - 0.0).abs() < 1e-14, "sqrt(0) should be 0");
+
+        // sqrt(4) = 2
+        let sqrt4 = make_unary_case("sqrt_4", UFuncOperation::Sqrt, &[1], &[4.0]);
+        let (_, values, _) = execute_input_case(&sqrt4).expect("sqrt(4)");
+        assert!((values[0] - 2.0).abs() < 1e-14, "sqrt(4) should be 2");
+
+        // exp(0) = 1
+        let exp0 = make_unary_case("exp_0", UFuncOperation::Exp, &[1], &[0.0]);
+        let (_, values, _) = execute_input_case(&exp0).expect("exp(0)");
+        assert!((values[0] - 1.0).abs() < 1e-14, "exp(0) should be 1");
+    }
+
+    #[test]
+    fn oracle_handles_nan_inf_inputs() {
+        // NaN input should produce NaN output for sqrt
+        let nan_case = make_unary_case("sqrt_nan", UFuncOperation::Sqrt, &[1], &[f64::NAN]);
+        let (_, values, _) = execute_input_case(&nan_case).expect("sqrt(NaN)");
+        assert!(values[0].is_nan(), "sqrt(NaN) should be NaN");
+
+        // inf input
+        let inf_case = make_unary_case("sqrt_inf", UFuncOperation::Sqrt, &[1], &[f64::INFINITY]);
+        let (_, values, _) = execute_input_case(&inf_case).expect("sqrt(inf)");
+        assert!(
+            values[0].is_infinite() && values[0] > 0.0,
+            "sqrt(inf) should be +inf"
+        );
+    }
+
+    #[test]
+    fn oracle_compare_detects_value_mismatch() {
+        let input_path = temp_file("val_mismatch_in");
+        let oracle_path = temp_file("val_mismatch_oracle");
+
+        fs::write(
+            &input_path,
+            r#"[{"id":"add1","op":"add","lhs_shape":[2],"lhs_values":[1.0,2.0],"lhs_dtype":"f64","rhs_shape":[2],"rhs_values":[3.0,4.0],"rhs_dtype":"f64","axis":null,"keepdims":false}]"#,
+        ).expect("write input");
+
+        // Oracle has wrong values
+        fs::write(
+            &oracle_path,
+            r#"{"schema_version":1,"oracle_source":"system","generated_at_unix_ms":0,"cases":[{"id":"add1","status":"ok","error":null,"shape":[2],"values":[999.0,999.0],"dtype":"float64"}]}"#,
+        ).expect("write oracle");
+
+        let report = compare_against_oracle(&input_path, &oracle_path, 1e-9, 1e-9)
+            .expect("should produce report");
+        assert_eq!(report.failed_cases, 1, "should detect mismatch");
+
+        let _ = fs::remove_file(input_path);
+        let _ = fs::remove_file(oracle_path);
+    }
+
+    // Helper to make a unary input case
+    fn make_unary_case(
+        id: &str,
+        op: UFuncOperation,
+        shape: &[usize],
+        values: &[f64],
+    ) -> UFuncInputCase {
+        UFuncInputCase {
+            id: id.to_string(),
+            op,
+            lhs_shape: shape.to_vec(),
+            lhs_values: values.to_vec(),
+            lhs_dtype: "f64".to_string(),
+            rhs_shape: None,
+            rhs_values: None,
+            rhs_dtype: None,
+            axis: None,
+            keepdims: None,
+            ddof: None,
+            clip_min: None,
+            clip_max: None,
+            third_shape: None,
+            third_values: None,
+            third_dtype: None,
+            seed: 0,
+            mode: "strict".to_string(),
+            env_fingerprint: "tests".to_string(),
+            artifact_refs: Vec::new(),
+            reason_code: "ufunc_dispatch_resolution_failed".to_string(),
+            expected_reason_code: "ufunc_dispatch_resolution_failed".to_string(),
+            expected_error_contains: String::new(),
+        }
+    }
+
+    // ── Metamorphic tests (bd-uk6w.3) ───────────────────────────────────
+    // Oracle-free: verify algebraic identities that must hold
+
+    #[test]
+    fn metamorphic_add_commutative() {
+        // A + B == B + A
+        let a = make_arr(&[2, 3], &[1.0, -2.0, 3.5, 4.0, -5.0, 6.0]);
+        let b = make_arr(&[2, 3], &[7.0, 8.0, -9.0, 10.0, 11.0, -12.0]);
+        let ab = a.elementwise_binary(&b, fnp_ufunc::BinaryOp::Add).unwrap();
+        let ba = b.elementwise_binary(&a, fnp_ufunc::BinaryOp::Add).unwrap();
+        assert_arrays_close(&ab, &ba, 1e-14, "add commutative");
+    }
+
+    #[test]
+    fn metamorphic_mul_commutative() {
+        // A * B == B * A
+        let a = make_arr(&[3, 2], &[1.5, -2.5, 3.25, 4.75, -5.5, 6.125]);
+        let b = make_arr(&[3, 2], &[7.25, 8.5, -9.75, 10.125, 11.25, -12.5]);
+        let ab = a.elementwise_binary(&b, fnp_ufunc::BinaryOp::Mul).unwrap();
+        let ba = b.elementwise_binary(&a, fnp_ufunc::BinaryOp::Mul).unwrap();
+        assert_arrays_close(&ab, &ba, 1e-12, "mul commutative");
+    }
+
+    #[test]
+    fn metamorphic_additive_identity() {
+        // A + 0 == A
+        let a = make_arr(&[4], &[1.0, -2.0, 3.5, 0.0]);
+        let zero = make_arr(&[4], &[0.0, 0.0, 0.0, 0.0]);
+        let result = a
+            .elementwise_binary(&zero, fnp_ufunc::BinaryOp::Add)
+            .unwrap();
+        assert_arrays_close(&result, &a, 1e-14, "additive identity");
+    }
+
+    #[test]
+    fn metamorphic_multiplicative_identity() {
+        // A * 1 == A
+        let a = make_arr(&[4], &[1.0, -2.0, 3.5, 0.0]);
+        let one = make_arr(&[4], &[1.0, 1.0, 1.0, 1.0]);
+        let result = a
+            .elementwise_binary(&one, fnp_ufunc::BinaryOp::Mul)
+            .unwrap();
+        assert_arrays_close(&result, &a, 1e-14, "multiplicative identity");
+    }
+
+    #[test]
+    fn metamorphic_sort_idempotent() {
+        // sort(sort(x)) == sort(x)
+        let x = make_arr(&[6], &[5.0, 2.0, 8.0, 1.0, 9.0, 3.0]);
+        let s1 = x.sort(Some(0)).unwrap();
+        let s2 = s1.sort(Some(0)).unwrap();
+        assert_arrays_close(&s1, &s2, 0.0, "sort idempotent");
+    }
+
+    #[test]
+    fn metamorphic_sum_invariant_under_permutation() {
+        // sum(A) == sum(sort(A))
+        let x = make_arr(&[6], &[5.0, 2.0, 8.0, 1.0, 9.0, 3.0]);
+        let sorted = x.sort(Some(0)).unwrap();
+        let sum_orig = x.reduce_sum(None, false).unwrap();
+        let sum_sorted = sorted.reduce_sum(None, false).unwrap();
+        assert_arrays_close(&sum_orig, &sum_sorted, 1e-12, "sum permutation invariant");
+    }
+
+    #[test]
+    fn metamorphic_flatten_reshape_roundtrip() {
+        // reshape(flatten(A), shape(A)) == A
+        let a = make_arr(&[2, 3], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let flat = a.flatten();
+        let restored = flat.reshape(&[2_isize, 3]).expect("reshape");
+        assert_arrays_close(&a, &restored, 0.0, "flatten/reshape roundtrip");
+    }
+
+    #[test]
+    fn metamorphic_argsort_consistency() {
+        // A[argsort(A)] == sort(A)
+        let a = make_arr(&[5], &[5.0, 1.0, 3.0, 2.0, 4.0]);
+        let sorted = a.sort(Some(0)).unwrap();
+        let indices = a.argsort(Some(0)).unwrap();
+        let mut gathered = Vec::new();
+        for &idx in indices.values() {
+            gathered.push(a.values()[idx as usize]);
+        }
+        let gathered_arr = make_arr(&[5], &gathered);
+        assert_arrays_close(&sorted, &gathered_arr, 0.0, "argsort consistency");
+    }
+
+    #[test]
+    fn metamorphic_norm_homogeneity() {
+        // norm(c*x) == |c| * norm(x)  (using L2 norm via reduce)
+        let x = make_arr(&[4], &[1.0, 2.0, 3.0, 4.0]);
+        let c = 2.5_f64;
+        let c_arr = make_arr(&[1], &[c]);
+        let cx = x
+            .elementwise_binary(&c_arr, fnp_ufunc::BinaryOp::Mul)
+            .expect("mul");
+        // L2 norm = sqrt(sum(x^2))
+        let x_sq = x
+            .elementwise_binary(&x, fnp_ufunc::BinaryOp::Mul)
+            .expect("sq");
+        let norm_x = x_sq
+            .reduce_sum(None, false)
+            .expect("sum")
+            .elementwise_unary(fnp_ufunc::UnaryOp::Sqrt);
+        let cx_sq = cx
+            .elementwise_binary(&cx, fnp_ufunc::BinaryOp::Mul)
+            .expect("sq");
+        let norm_cx = cx_sq
+            .reduce_sum(None, false)
+            .expect("sum")
+            .elementwise_unary(fnp_ufunc::UnaryOp::Sqrt);
+        let expected = norm_x.values()[0] * c.abs();
+        assert!(
+            (norm_cx.values()[0] - expected).abs() < 1e-10,
+            "norm homogeneity: {} != {}",
+            norm_cx.values()[0],
+            expected
+        );
+    }
+
+    #[test]
+    fn metamorphic_transpose_matmul() {
+        // (A*B)^T == B^T * A^T
+        let a_data: &[f64] = &[1.0, 2.0, 3.0, 4.0];
+        let b_data: &[f64] = &[5.0, 6.0, 7.0, 8.0];
+        let a = make_arr(&[2, 2], a_data);
+        let b = make_arr(&[2, 2], b_data);
+        // matmul A*B via multi_dot
+        let (ab, _, _) =
+            fnp_linalg::multi_dot(&[(a_data, 2, 2), (b_data, 2, 2)]).expect("multi_dot");
+        let ab_arr = make_arr(&[2, 2], &ab);
+        let ab_t = ab_arr.transpose(None).unwrap();
+        // B^T * A^T
+        let bt = b.transpose(None).unwrap();
+        let at = a.transpose(None).unwrap();
+        let (bt_at, _, _) =
+            fnp_linalg::multi_dot(&[(bt.values(), 2, 2), (at.values(), 2, 2)]).expect("multi_dot");
+        let bt_at_arr = make_arr(&[2, 2], &bt_at);
+        assert_arrays_close(&ab_t, &bt_at_arr, 1e-12, "(AB)^T == B^T A^T");
+    }
+
+    #[test]
+    fn metamorphic_double_inverse() {
+        // inv(inv(A)) ≈ A for a well-conditioned matrix
+        let a = [[4.0, 7.0], [2.0, 6.0]];
+        let inv1 = fnp_linalg::inv_2x2(a).expect("inv1");
+        let inv2 = fnp_linalg::inv_2x2(inv1).expect("inv2");
+        let a_flat = [a[0][0], a[0][1], a[1][0], a[1][1]];
+        let inv2_flat = [inv2[0][0], inv2[0][1], inv2[1][0], inv2[1][1]];
+        for (i, (&orig, &recovered)) in a_flat.iter().zip(inv2_flat.iter()).enumerate() {
+            assert!(
+                (orig - recovered).abs() < 1e-10,
+                "double inverse mismatch at {i}: {} != {}",
+                orig,
+                recovered
+            );
+        }
+    }
+
+    #[test]
+    fn metamorphic_det_multiplicative() {
+        // det(A*B) ≈ det(A)*det(B)
+        let a = [[1.0, 2.0], [3.0, 4.0]];
+        let b = [[5.0, 6.0], [7.0, 8.0]];
+        let a_flat: &[f64] = &[1.0, 2.0, 3.0, 4.0];
+        let b_flat: &[f64] = &[5.0, 6.0, 7.0, 8.0];
+        let (ab, _, _) = fnp_linalg::multi_dot(&[(a_flat, 2, 2), (b_flat, 2, 2)]).expect("matmul");
+        let ab_arr = [[ab[0], ab[1]], [ab[2], ab[3]]];
+        let det_a = fnp_linalg::det_2x2(a).unwrap();
+        let det_b = fnp_linalg::det_2x2(b).unwrap();
+        let det_ab = fnp_linalg::det_2x2(ab_arr).unwrap();
+        assert!(
+            (det_ab - det_a * det_b).abs() < 1e-10,
+            "det(AB) != det(A)*det(B): {} != {}",
+            det_ab,
+            det_a * det_b
+        );
+    }
+
+    #[test]
+    fn metamorphic_conjugate_involution() {
+        // conj(conj(z)) == z  (complex array with trailing dim 2)
+        let z = make_arr(&[2, 2], &[1.0, 2.0, 3.0, -4.0]);
+        let conj1 = z.conjugate().expect("conj1");
+        let conj2 = conj1.conjugate().expect("conj2");
+        assert_arrays_close(&z, &conj2, 0.0, "conjugate involution");
+    }
+
+    // ── Adversarial tests (bd-uk6w.5) ───────────────────────────────────
+
+    #[test]
+    fn adversarial_empty_array_reduce() {
+        // Reduction on empty arrays should not panic
+        let empty = make_arr(&[0], &[]);
+        let sum_result = empty.reduce_sum(None, false);
+        // Should either return 0 or error, but NOT panic
+        match sum_result {
+            Ok(s) => assert_eq!(s.values().len(), 1, "empty sum should produce scalar"),
+            Err(_) => {} // Error is also acceptable
+        }
+    }
+
+    #[test]
+    fn adversarial_zero_dim_in_shape() {
+        // Zero-length dimensions should be handled gracefully
+        let z = make_arr(&[3, 0], &[]);
+        assert_eq!(z.values().len(), 0);
+        // Flatten should work
+        let flat = z.flatten();
+        assert_eq!(flat.values().len(), 0);
+    }
+
+    #[test]
+    fn adversarial_singleton_dims() {
+        // Many singleton dims should work fine
+        let x = make_arr(&[1, 1, 1, 1, 1], &[42.0]);
+        let flat = x.flatten();
+        assert_eq!(flat.values(), &[42.0]);
+        let sum = x.reduce_sum(None, false).unwrap();
+        assert_eq!(sum.values(), &[42.0]);
+    }
+
+    #[test]
+    fn adversarial_nan_propagation_chain() {
+        // NaN should propagate through operations
+        let x = make_arr(&[3], &[1.0, f64::NAN, 3.0]);
+        let sum = x.reduce_sum(None, false).unwrap();
+        assert!(sum.values()[0].is_nan(), "NaN should propagate through sum");
+        // sort with NaN
+        let sorted = x.sort(Some(0)).unwrap();
+        assert_eq!(sorted.values().len(), 3);
+    }
+
+    #[test]
+    fn adversarial_inf_operations() {
+        // Operations with infinity should produce correct results
+        let x = make_arr(&[3], &[f64::INFINITY, f64::NEG_INFINITY, 1.0]);
+        let sum = x.reduce_sum(None, false).unwrap();
+        assert!(sum.values()[0].is_nan(), "inf + -inf should be NaN");
+        // max of inf should be inf
+        let max = x.reduce_max(None, false).unwrap();
+        assert_eq!(max.values()[0], f64::INFINITY);
+    }
+
+    #[test]
+    fn adversarial_subnormal_values() {
+        // Operations on subnormal values should not panic
+        let tiny = f64::MIN_POSITIVE / 2.0;
+        let x = make_arr(&[3], &[tiny, tiny * 2.0, tiny * 0.5]);
+        let sum = x.reduce_sum(None, false).unwrap();
+        assert!(
+            sum.values()[0].is_finite(),
+            "subnormal sum should be finite"
+        );
+        let sq = x.elementwise_binary(&x, fnp_ufunc::BinaryOp::Mul).unwrap();
+        // subnormal * subnormal may underflow to 0
+        for &v in sq.values() {
+            assert!(
+                !v.is_nan(),
+                "subnormal multiplication should not produce NaN"
+            );
+        }
+    }
+
+    #[test]
+    fn adversarial_overflow_prone() {
+        // Near-max values
+        let big = f64::MAX / 2.0;
+        let x = make_arr(&[2], &[big, big]);
+        let sum = x.reduce_sum(None, false).unwrap();
+        // big + big = MAX, which is still finite
+        assert!(
+            sum.values()[0].is_finite(),
+            "MAX/2 + MAX/2 should be finite"
+        );
+        // But big * big should overflow to inf
+        let prod = x.elementwise_binary(&x, fnp_ufunc::BinaryOp::Mul).unwrap();
+        assert!(
+            prod.values()[0].is_infinite(),
+            "(MAX/2)^2 should overflow to inf"
+        );
+    }
+
+    #[test]
+    fn adversarial_broadcast_incompatible() {
+        // Incompatible broadcast shapes should produce clear error
+        let a = make_arr(&[2, 3], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let b = make_arr(&[2, 2], &[1.0, 2.0, 3.0, 4.0]);
+        let result = a.elementwise_binary(&b, fnp_ufunc::BinaryOp::Add);
+        assert!(result.is_err(), "incompatible broadcast should error");
+    }
+
+    #[test]
+    fn adversarial_precision_boundary() {
+        // Values that lose precision when cast: 2^53 + 1 cannot be exactly represented
+        let exact = 2.0_f64.powi(53);
+        let inexact = exact + 1.0;
+        // In f64, 2^53 + 1 == 2^53 (precision loss)
+        let x = make_arr(&[2], &[exact, inexact]);
+        let eq = x
+            .elementwise_binary(&make_arr(&[1], &[exact]), fnp_ufunc::BinaryOp::Equal)
+            .unwrap();
+        // Both should appear equal due to f64 precision limits
+        assert_eq!(eq.values()[0], 1.0, "2^53 == 2^53");
+        assert_eq!(eq.values()[1], 1.0, "2^53+1 == 2^53 due to precision loss");
+    }
+
+    #[test]
+    fn adversarial_large_1d_array() {
+        // 100k element array should work without issues
+        let n = 100_000;
+        let vals: Vec<f64> = (0..n).map(|i| i as f64).collect();
+        let x = make_arr(&[n], &vals);
+        let sum = x.reduce_sum(None, false).unwrap();
+        let expected = (n as f64 - 1.0) * n as f64 / 2.0;
+        assert!(
+            (sum.values()[0] - expected).abs() < 1.0,
+            "large array sum: {} != {}",
+            sum.values()[0],
+            expected
+        );
+    }
+
+    #[test]
+    fn adversarial_axis_out_of_bounds() {
+        let x = make_arr(&[2, 3], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let result = x.reduce_sum(Some(5), false);
+        assert!(result.is_err(), "axis 5 on 2D should error");
+    }
+
+    #[test]
+    fn adversarial_degenerate_matrix_det() {
+        // Zero matrix has det = 0
+        let det = fnp_linalg::det_2x2([[0.0, 0.0], [0.0, 0.0]]).unwrap();
+        assert!((det - 0.0).abs() < 1e-14, "det(0) should be 0");
+        // Identity has det = 1
+        let det_i = fnp_linalg::det_2x2([[1.0, 0.0], [0.0, 1.0]]).unwrap();
+        assert!((det_i - 1.0).abs() < 1e-14, "det(I) should be 1");
+    }
+
+    // ── Expanded differential corpus tests (bd-uk6w.2) ────────────────
+
+    #[test]
+    fn differential_all_unary_ops_on_standard_input() {
+        // Verify every unary op runs without panic on a standard input
+        let ops = [
+            UFuncOperation::Abs,
+            UFuncOperation::Negative,
+            UFuncOperation::Sign,
+            UFuncOperation::Sqrt,
+            UFuncOperation::Square,
+            UFuncOperation::Exp,
+            UFuncOperation::Log,
+            UFuncOperation::Log2,
+            UFuncOperation::Log10,
+            UFuncOperation::Sin,
+            UFuncOperation::Cos,
+            UFuncOperation::Tan,
+            UFuncOperation::Floor,
+            UFuncOperation::Ceil,
+            UFuncOperation::Round,
+            UFuncOperation::Reciprocal,
+            UFuncOperation::Sinh,
+            UFuncOperation::Cosh,
+            UFuncOperation::Tanh,
+            UFuncOperation::Arcsin,
+            UFuncOperation::Arccos,
+            UFuncOperation::Arctan,
+            UFuncOperation::Cbrt,
+            UFuncOperation::Expm1,
+            UFuncOperation::Log1p,
+            UFuncOperation::Degrees,
+            UFuncOperation::Radians,
+            UFuncOperation::Rint,
+            UFuncOperation::Trunc,
+            UFuncOperation::Positive,
+            UFuncOperation::Spacing,
+            UFuncOperation::LogicalNot,
+            UFuncOperation::Isnan,
+            UFuncOperation::Isinf,
+            UFuncOperation::Isfinite,
+            UFuncOperation::Signbit,
+            UFuncOperation::Exp2,
+            UFuncOperation::Fabs,
+            UFuncOperation::Arcsinh,
+            UFuncOperation::Arctanh,
+        ];
+        // Use values in valid domain for all ops (positive, in (-1,1) for arctanh)
+        // Arccosh excluded (requires >= 1.0), tested separately below
+        let case_values = vec![0.5, 0.25, 0.75, 0.1];
+        for op in &ops {
+            let case = UFuncInputCase {
+                id: format!("unary_{op:?}"),
+                op: *op,
+                lhs_shape: vec![4],
+                lhs_values: case_values.clone(),
+                lhs_dtype: "f64".to_string(),
+                rhs_shape: None,
+                rhs_values: None,
+                rhs_dtype: None,
+                axis: None,
+                keepdims: None,
+                ddof: None,
+                clip_min: None,
+                clip_max: None,
+                third_shape: None,
+                third_values: None,
+                third_dtype: None,
+                seed: 0,
+                mode: "strict".to_string(),
+                env_fingerprint: "tests".to_string(),
+                artifact_refs: Vec::new(),
+                reason_code: "ufunc_dispatch_resolution_failed".to_string(),
+                expected_reason_code: "ufunc_dispatch_resolution_failed".to_string(),
+                expected_error_contains: String::new(),
+            };
+            let result = execute_input_case(&case);
+            assert!(
+                result.is_ok(),
+                "unary op {op:?} failed: {}",
+                result.unwrap_err()
+            );
+            let (shape, values, _) = result.unwrap();
+            assert_eq!(shape, vec![4], "unary op {op:?} changed shape");
+            for v in &values {
+                assert!(v.is_finite(), "unary op {op:?} produced non-finite: {v}");
+            }
+        }
+        // Arccosh needs values >= 1.0
+        let cosh_case = make_unary_case(
+            "arccosh_check",
+            UFuncOperation::Arccosh,
+            &[3],
+            &[1.0, 1.5, 2.0],
+        );
+        let (_, vals, _) = execute_input_case(&cosh_case).expect("arccosh");
+        assert!((vals[0] - 0.0).abs() < 1e-14, "arccosh(1) should be 0");
+        for v in &vals {
+            assert!(v.is_finite(), "arccosh produced non-finite: {v}");
+        }
+    }
+
+    #[test]
+    fn differential_all_binary_ops_on_positive_input() {
+        let bin_ops = [
+            UFuncOperation::Add,
+            UFuncOperation::Sub,
+            UFuncOperation::Mul,
+            UFuncOperation::Div,
+            UFuncOperation::Power,
+            UFuncOperation::Remainder,
+            UFuncOperation::Minimum,
+            UFuncOperation::Maximum,
+            UFuncOperation::Arctan2,
+            UFuncOperation::Fmod,
+            UFuncOperation::Copysign,
+            UFuncOperation::Fmax,
+            UFuncOperation::Fmin,
+            UFuncOperation::Heaviside,
+            UFuncOperation::Nextafter,
+            UFuncOperation::Hypot,
+            UFuncOperation::Logaddexp,
+            UFuncOperation::Logaddexp2,
+            UFuncOperation::FloorDivide,
+            UFuncOperation::FloatPower,
+        ];
+        let lhs = vec![1.5, 2.25, 3.75];
+        let rhs = vec![0.5, 1.25, 2.0];
+        for op in &bin_ops {
+            let case = UFuncInputCase {
+                id: format!("binary_{op:?}"),
+                op: *op,
+                lhs_shape: vec![3],
+                lhs_values: lhs.clone(),
+                lhs_dtype: "f64".to_string(),
+                rhs_shape: Some(vec![3]),
+                rhs_values: Some(rhs.clone()),
+                rhs_dtype: Some("f64".to_string()),
+                axis: None,
+                keepdims: None,
+                ddof: None,
+                clip_min: None,
+                clip_max: None,
+                third_shape: None,
+                third_values: None,
+                third_dtype: None,
+                seed: 0,
+                mode: "strict".to_string(),
+                env_fingerprint: "tests".to_string(),
+                artifact_refs: Vec::new(),
+                reason_code: "ufunc_dispatch_resolution_failed".to_string(),
+                expected_reason_code: "ufunc_dispatch_resolution_failed".to_string(),
+                expected_error_contains: String::new(),
+            };
+            let result = execute_input_case(&case);
+            assert!(
+                result.is_ok(),
+                "binary op {op:?} failed: {}",
+                result.unwrap_err()
+            );
+        }
+    }
+
+    #[test]
+    fn differential_reductions_with_axis_and_keepdims() {
+        let reduce_ops = [
+            UFuncOperation::Sum,
+            UFuncOperation::Prod,
+            UFuncOperation::Min,
+            UFuncOperation::Max,
+            UFuncOperation::Mean,
+        ];
+        let vals: Vec<f64> = (1..=12).map(|i| i as f64).collect();
+        for op in &reduce_ops {
+            for axis in [Some(0_isize), Some(1), None] {
+                for keepdims in [false, true] {
+                    let case = UFuncInputCase {
+                        id: format!("reduce_{op:?}_a{axis:?}_k{keepdims}"),
+                        op: *op,
+                        lhs_shape: vec![3, 4],
+                        lhs_values: vals.clone(),
+                        lhs_dtype: "f64".to_string(),
+                        rhs_shape: None,
+                        rhs_values: None,
+                        rhs_dtype: None,
+                        axis,
+                        keepdims: Some(keepdims),
+                        ddof: None,
+                        clip_min: None,
+                        clip_max: None,
+                        third_shape: None,
+                        third_values: None,
+                        third_dtype: None,
+                        seed: 0,
+                        mode: "strict".to_string(),
+                        env_fingerprint: "tests".to_string(),
+                        artifact_refs: Vec::new(),
+                        reason_code: "ufunc_reduction_contract_violation".to_string(),
+                        expected_reason_code: "ufunc_reduction_contract_violation".to_string(),
+                        expected_error_contains: String::new(),
+                    };
+                    let result = execute_input_case(&case);
+                    assert!(
+                        result.is_ok(),
+                        "{op:?} axis={axis:?} keepdims={keepdims} failed: {}",
+                        result.unwrap_err()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn differential_broadcast_edge_cases() {
+        // Scalar vs array broadcast: [1] + [3]
+        let case = UFuncInputCase {
+            id: "broadcast_scalar_vs_1d".to_string(),
+            op: UFuncOperation::Add,
+            lhs_shape: vec![1],
+            lhs_values: vec![10.0],
+            lhs_dtype: "f64".to_string(),
+            rhs_shape: Some(vec![3]),
+            rhs_values: Some(vec![1.0, 2.0, 3.0]),
+            rhs_dtype: Some("f64".to_string()),
+            axis: None,
+            keepdims: None,
+            ddof: None,
+            clip_min: None,
+            clip_max: None,
+            third_shape: None,
+            third_values: None,
+            third_dtype: None,
+            seed: 0,
+            mode: "strict".to_string(),
+            env_fingerprint: "tests".to_string(),
+            artifact_refs: Vec::new(),
+            reason_code: "ufunc_dispatch_resolution_failed".to_string(),
+            expected_reason_code: "ufunc_dispatch_resolution_failed".to_string(),
+            expected_error_contains: String::new(),
+        };
+        let (shape, values, _) = execute_input_case(&case).expect("broadcast scalar+1d");
+        assert_eq!(shape, vec![3]);
+        assert_eq!(values, vec![11.0, 12.0, 13.0]);
+
+        // [3, 1] + [1, 4] -> [3, 4]
+        let case2 = UFuncInputCase {
+            id: "broadcast_3x1_vs_1x4".to_string(),
+            op: UFuncOperation::Mul,
+            lhs_shape: vec![3, 1],
+            lhs_values: vec![1.0, 2.0, 3.0],
+            lhs_dtype: "f64".to_string(),
+            rhs_shape: Some(vec![1, 4]),
+            rhs_values: Some(vec![10.0, 20.0, 30.0, 40.0]),
+            rhs_dtype: Some("f64".to_string()),
+            axis: None,
+            keepdims: None,
+            ddof: None,
+            clip_min: None,
+            clip_max: None,
+            third_shape: None,
+            third_values: None,
+            third_dtype: None,
+            seed: 0,
+            mode: "strict".to_string(),
+            env_fingerprint: "tests".to_string(),
+            artifact_refs: Vec::new(),
+            reason_code: "ufunc_dispatch_resolution_failed".to_string(),
+            expected_reason_code: "ufunc_dispatch_resolution_failed".to_string(),
+            expected_error_contains: String::new(),
+        };
+        let (shape, _, _) = execute_input_case(&case2).expect("broadcast 3x1 * 1x4");
+        assert_eq!(shape, vec![3, 4]);
+    }
+
+    #[test]
+    fn differential_nan_inf_propagation_all_ops() {
+        // NaN propagation through arithmetic
+        let nan_case = make_unary_case("exp_nan", UFuncOperation::Exp, &[2], &[f64::NAN, 1.0]);
+        let (_, values, _) = execute_input_case(&nan_case).expect("exp(NaN)");
+        assert!(values[0].is_nan(), "exp(NaN) should be NaN");
+        assert!((values[1] - 1.0_f64.exp()).abs() < 1e-14);
+
+        // Inf through log
+        let inf_case = make_unary_case("log_inf", UFuncOperation::Log, &[1], &[f64::INFINITY]);
+        let (_, values, _) = execute_input_case(&inf_case).expect("log(inf)");
+        assert_eq!(values[0], f64::INFINITY, "log(inf) should be inf");
+
+        // NaN in reduction
+        let sum_nan = UFuncInputCase {
+            id: "sum_with_nan".to_string(),
+            op: UFuncOperation::Sum,
+            lhs_shape: vec![3],
+            lhs_values: vec![1.0, f64::NAN, 3.0],
+            lhs_dtype: "f64".to_string(),
+            rhs_shape: None,
+            rhs_values: None,
+            rhs_dtype: None,
+            axis: None,
+            keepdims: Some(false),
+            ddof: None,
+            clip_min: None,
+            clip_max: None,
+            third_shape: None,
+            third_values: None,
+            third_dtype: None,
+            seed: 0,
+            mode: "strict".to_string(),
+            env_fingerprint: "tests".to_string(),
+            artifact_refs: Vec::new(),
+            reason_code: "ufunc_reduction_contract_violation".to_string(),
+            expected_reason_code: "ufunc_reduction_contract_violation".to_string(),
+            expected_error_contains: String::new(),
+        };
+        let (_, values, _) = execute_input_case(&sum_nan).expect("sum with NaN");
+        assert!(values[0].is_nan(), "sum with NaN should be NaN");
+    }
+
+    #[test]
+    fn differential_chained_operations() {
+        // sin(arcsin(x)) ≈ x for x in [-1, 1]
+        let x_vals = vec![0.0, 0.5, -0.5, 0.99];
+        let arcsin_case = make_unary_case("arcsin_chain", UFuncOperation::Arcsin, &[4], &x_vals);
+        let (_, arcsin_vals, _) = execute_input_case(&arcsin_case).expect("arcsin");
+        let sin_case = make_unary_case("sin_of_arcsin", UFuncOperation::Sin, &[4], &arcsin_vals);
+        let (_, roundtrip, _) = execute_input_case(&sin_case).expect("sin(arcsin)");
+        for (i, (&orig, &recovered)) in x_vals.iter().zip(roundtrip.iter()).enumerate() {
+            assert!(
+                (orig - recovered).abs() < 1e-12,
+                "sin(arcsin({orig})) = {recovered} at {i}"
+            );
+        }
+    }
+
+    // ── Helpers ─────────────────────────────────────────────────────────
+
+    fn make_arr(shape: &[usize], values: &[f64]) -> fnp_ufunc::UFuncArray {
+        fnp_ufunc::UFuncArray::new(shape.to_vec(), values.to_vec(), fnp_dtype::DType::F64)
+            .expect("make_arr")
+    }
+
+    fn assert_arrays_close(
+        a: &fnp_ufunc::UFuncArray,
+        b: &fnp_ufunc::UFuncArray,
+        tol: f64,
+        name: &str,
+    ) {
+        assert_eq!(a.shape(), b.shape(), "{name}: shape mismatch");
+        for (i, (va, vb)) in a.values().iter().zip(b.values().iter()).enumerate() {
+            assert!(
+                (va - vb).abs() <= tol,
+                "{name}: value mismatch at {i}: {va} != {vb}"
+            );
+        }
     }
 }

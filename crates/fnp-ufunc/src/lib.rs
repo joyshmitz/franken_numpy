@@ -2675,29 +2675,80 @@ impl UFuncArray {
     }
 
     /// Find insertion indices that preserve sort order (left side), like
-    /// `numpy.searchsorted(a, v, side="left")`.
+    /// `numpy.searchsorted(a, v, side="left"|"right", sorter=None)`.
     ///
     /// Contract: `self` must be one-dimensional; `values` may be scalar or any shape.
+    /// `side` controls insertion point: `"left"` (default) or `"right"`.
+    /// `sorter` optionally provides an argsort permutation for unsorted arrays.
     /// The output shape matches `values.shape` and dtype is `I64`.
-    pub fn searchsorted(&self, values: &Self) -> Result<Self, UFuncError> {
+    pub fn searchsorted(
+        &self,
+        values: &Self,
+        side: Option<&str>,
+        sorter: Option<&[usize]>,
+    ) -> Result<Self, UFuncError> {
         if self.shape.len() != 1 {
             return Err(UFuncError::Shape(ShapeError::RankMismatch {
                 expected: 1,
                 actual: self.shape.len(),
             }));
         }
+        let side = side.unwrap_or("left");
+        if side != "left" && side != "right" {
+            return Err(UFuncError::Msg(format!(
+                "searchsorted: side must be 'left' or 'right', got '{side}'"
+            )));
+        }
+        if let Some(s) = sorter {
+            if s.len() != self.values.len() {
+                return Err(UFuncError::Msg(format!(
+                    "searchsorted: sorter length {} != array length {}",
+                    s.len(),
+                    self.values.len()
+                )));
+            }
+            for &idx in s {
+                if idx >= self.values.len() {
+                    return Err(UFuncError::Msg(format!(
+                        "searchsorted: sorter index {idx} out of bounds for length {}",
+                        self.values.len()
+                    )));
+                }
+            }
+        }
+        let use_right = side == "right";
+        let data = &self.values;
+        let n = data.len();
 
-        let sorted = self.values.as_slice();
         let out_values = values
             .values
             .iter()
             .map(|needle| {
-                let idx = sorted.partition_point(|candidate| {
-                    candidate
-                        .partial_cmp(needle)
-                        .is_some_and(|ord| ord == std::cmp::Ordering::Less)
-                });
-                idx as f64
+                let mut lo = 0usize;
+                let mut hi = n;
+                while lo < hi {
+                    let mid = lo + (hi - lo) / 2;
+                    let mid_val = if let Some(s) = sorter {
+                        data[s[mid]]
+                    } else {
+                        data[mid]
+                    };
+                    let go_right = if use_right {
+                        mid_val
+                            .partial_cmp(needle)
+                            .is_some_and(|ord| ord != std::cmp::Ordering::Greater)
+                    } else {
+                        mid_val
+                            .partial_cmp(needle)
+                            .is_some_and(|ord| ord == std::cmp::Ordering::Less)
+                    };
+                    if go_right {
+                        lo = mid + 1;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                lo as f64
             })
             .collect();
 
@@ -3680,8 +3731,8 @@ impl UFuncArray {
             ));
         }
         let n = self.shape[0];
-        let result = fnp_linalg::inv_nxn(&self.values, n)
-            .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+        let result =
+            fnp_linalg::inv_nxn(&self.values, n).map_err(|e| UFuncError::Msg(format!("{e}")))?;
         Ok(Self {
             shape: vec![n, n],
             values: result,
@@ -3789,8 +3840,8 @@ impl UFuncArray {
             ));
         }
         let n = self.shape[0];
-        let vals = fnp_linalg::eig_nxn(&self.values, n)
-            .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+        let vals =
+            fnp_linalg::eig_nxn(&self.values, n).map_err(|e| UFuncError::Msg(format!("{e}")))?;
         Ok(Self {
             shape: vec![vals.len()],
             values: vals,
@@ -3807,8 +3858,8 @@ impl UFuncArray {
             ));
         }
         let n = self.shape[0];
-        let (eigenvalues, eigenvectors) = fnp_linalg::eigh_nxn(&self.values, n)
-            .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+        let (eigenvalues, eigenvectors) =
+            fnp_linalg::eigh_nxn(&self.values, n).map_err(|e| UFuncError::Msg(format!("{e}")))?;
         Ok((
             Self {
                 shape: vec![n],
@@ -3872,14 +3923,12 @@ impl UFuncArray {
     /// Singular values only (np.linalg.svdvals).
     pub fn svdvals(&self) -> Result<Self, UFuncError> {
         if self.shape.len() != 2 {
-            return Err(UFuncError::Msg(
-                "svdvals: input must be a 2-D array".into(),
-            ));
+            return Err(UFuncError::Msg("svdvals: input must be a 2-D array".into()));
         }
         let m = self.shape[0];
         let n = self.shape[1];
-        let s = fnp_linalg::svd_mxn(&self.values, m, n)
-            .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+        let s =
+            fnp_linalg::svd_mxn(&self.values, m, n).map_err(|e| UFuncError::Msg(format!("{e}")))?;
         Ok(Self {
             shape: vec![s.len()],
             values: s,
@@ -3895,8 +3944,8 @@ impl UFuncArray {
         }
         let m = self.shape[0];
         let n = self.shape[1];
-        let (q, r) = fnp_linalg::qr_mxn(&self.values, m, n)
-            .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+        let (q, r) =
+            fnp_linalg::qr_mxn(&self.values, m, n).map_err(|e| UFuncError::Msg(format!("{e}")))?;
         let k = m.min(n);
         Ok((
             Self {
@@ -3975,8 +4024,8 @@ impl UFuncArray {
             ));
         }
         let n = self.shape[0];
-        let result = fnp_linalg::expm_nxn(&self.values, n)
-            .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+        let result =
+            fnp_linalg::expm_nxn(&self.values, n).map_err(|e| UFuncError::Msg(format!("{e}")))?;
         Ok(Self {
             shape: vec![n, n],
             values: result,
@@ -3992,8 +4041,8 @@ impl UFuncArray {
             ));
         }
         let n = self.shape[0];
-        let result = fnp_linalg::sqrtm_nxn(&self.values, n)
-            .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+        let result =
+            fnp_linalg::sqrtm_nxn(&self.values, n).map_err(|e| UFuncError::Msg(format!("{e}")))?;
         Ok(Self {
             shape: vec![n, n],
             values: result,
@@ -4009,8 +4058,8 @@ impl UFuncArray {
             ));
         }
         let n = self.shape[0];
-        let result = fnp_linalg::logm_nxn(&self.values, n)
-            .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+        let result =
+            fnp_linalg::logm_nxn(&self.values, n).map_err(|e| UFuncError::Msg(format!("{e}")))?;
         Ok(Self {
             shape: vec![n, n],
             values: result,
@@ -4027,8 +4076,8 @@ impl UFuncArray {
             ));
         }
         let n = self.shape[0];
-        let (t, z) = fnp_linalg::schur_nxn(&self.values, n)
-            .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+        let (t, z) =
+            fnp_linalg::schur_nxn(&self.values, n).map_err(|e| UFuncError::Msg(format!("{e}")))?;
         Ok((
             Self {
                 shape: vec![n, n],
@@ -4052,8 +4101,8 @@ impl UFuncArray {
             ));
         }
         let n = self.shape[0];
-        let (u, p) = fnp_linalg::polar_nxn(&self.values, n)
-            .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+        let (u, p) =
+            fnp_linalg::polar_nxn(&self.values, n).map_err(|e| UFuncError::Msg(format!("{e}")))?;
         Ok((
             Self {
                 shape: vec![n, n],
@@ -8039,9 +8088,15 @@ impl UFuncArray {
 
     /// Test whether each element of `self` is in `test_elements`. Returns a boolean array.
     ///
-    /// Alias matching `np.isin(element, test_elements)` — same as `in1d` but preserves shape.
-    pub fn isin(&self, test_elements: &Self) -> Self {
-        self.in1d(test_elements)
+    /// When `invert` is true, returns True where element is NOT in `test_elements`.
+    pub fn isin(&self, test_elements: &Self, invert: bool) -> Self {
+        let mut result = self.in1d(test_elements);
+        if invert {
+            for v in &mut result.values {
+                *v = 1.0 - *v;
+            }
+        }
+        result
     }
 
     /// Return the sorted union of two 1-D arrays.
@@ -9325,8 +9380,54 @@ impl UFuncArray {
     }
 
     /// Count the number of non-zero elements (np.count_nonzero).
-    pub fn count_nonzero(&self) -> usize {
-        self.values.iter().filter(|&&v| v != 0.0).count()
+    ///
+    /// With `axis=None`, returns a scalar. With an axis, reduces along that axis.
+    pub fn count_nonzero(&self, axis: Option<isize>, keepdims: bool) -> Result<Self, UFuncError> {
+        match axis {
+            None => {
+                let count = self.values.iter().filter(|&&v| v != 0.0).count() as f64;
+                let shape = if keepdims {
+                    vec![1; self.shape.len()]
+                } else {
+                    Vec::new()
+                };
+                Ok(Self {
+                    shape,
+                    values: vec![count],
+                    dtype: DType::I64,
+                })
+            }
+            Some(ax) => {
+                let axis = normalize_axis(ax, self.shape.len())?;
+                let out_shape = reduced_shape(&self.shape, axis, keepdims);
+                let out_count = element_count(&out_shape).map_err(UFuncError::Shape)?;
+                let mut out_values = vec![0.0f64; out_count];
+                let axis_len = self.shape[axis];
+                let inner: usize = self.shape[axis + 1..].iter().copied().product();
+                let outer: usize = self.shape[..axis].iter().copied().product();
+                let mut out_flat = 0usize;
+                for outer_idx in 0..outer {
+                    let base = outer_idx * axis_len * inner;
+                    for inner_idx in 0..inner {
+                        let mut count = 0.0_f64;
+                        let mut offset = base + inner_idx;
+                        for _ in 0..axis_len {
+                            if self.values[offset] != 0.0 {
+                                count += 1.0;
+                            }
+                            offset += inner;
+                        }
+                        out_values[out_flat] = count;
+                        out_flat += 1;
+                    }
+                }
+                Ok(Self {
+                    shape: out_shape,
+                    values: out_values,
+                    dtype: DType::I64,
+                })
+            }
+        }
     }
 
     /// Pack the elements of a binary-valued array into bits (np.packbits).
@@ -9386,7 +9487,11 @@ impl UFuncArray {
     /// Unpack elements of a uint8 array into a binary array (np.unpackbits).
     /// When `axis` is `None`, flattens and unpacks. When specified, unpacks along that axis.
     /// `count` limits the number of unpacked bits along the axis (default: axis_len * 8).
-    pub fn unpackbits(&self, axis: Option<isize>, count: Option<usize>) -> Result<Self, UFuncError> {
+    pub fn unpackbits(
+        &self,
+        axis: Option<isize>,
+        count: Option<usize>,
+    ) -> Result<Self, UFuncError> {
         match axis {
             None => {
                 let mut bits = Vec::with_capacity(self.values.len() * 8);
@@ -9421,8 +9526,7 @@ impl UFuncArray {
                     for i in 0..inner {
                         let mut bit_pos = 0usize;
                         for k in 0..axis_len {
-                            let byte =
-                                self.values[o * axis_len * inner + k * inner + i] as u8;
+                            let byte = self.values[o * axis_len * inner + k * inner + i] as u8;
                             for b in (0..8).rev() {
                                 if bit_pos >= out_bits {
                                     break;
@@ -9790,7 +9894,11 @@ impl UFuncArray {
         let mut split_indices = Vec::with_capacity(sections - 1);
         let mut pos = 0;
         for s in 0..sections - 1 {
-            pos += if s < remainder { base_size + 1 } else { base_size };
+            pos += if s < remainder {
+                base_size + 1
+            } else {
+                base_size
+            };
             split_indices.push(pos);
         }
         self.array_split_at_indices(&split_indices, axis)
@@ -12226,7 +12334,11 @@ impl MaskedArray {
             .map(|&v| if v == f64::MAX { 1.0 } else { 0.0 })
             .collect();
         let mask = if mask_vals.contains(&1.0) {
-            Some(UFuncArray::new(sorted.shape().to_vec(), mask_vals, DType::Bool)?)
+            Some(UFuncArray::new(
+                sorted.shape().to_vec(),
+                mask_vals,
+                DType::Bool,
+            )?)
         } else {
             None
         };
@@ -12404,10 +12516,7 @@ impl MaskedArray {
                 let mut wsum = 0.0;
                 let mut vsum = 0.0;
                 for i in 0..n {
-                    let masked = self
-                        .mask
-                        .as_ref()
-                        .is_some_and(|m| m.values()[i] != 0.0);
+                    let masked = self.mask.as_ref().is_some_and(|m| m.values()[i] != 0.0);
                     if !masked {
                         let wi = w.data.values()[i];
                         wsum += wi;
@@ -12444,10 +12553,7 @@ impl MaskedArray {
         let mut start: Option<usize> = None;
         let n = self.data.values().len();
         for i in 0..n {
-            let masked = self
-                .mask
-                .as_ref()
-                .is_some_and(|m| m.values()[i] != 0.0);
+            let masked = self.mask.as_ref().is_some_and(|m| m.values()[i] != 0.0);
             if masked {
                 if let Some(s) = start {
                     runs.push((s, i));
@@ -12470,10 +12576,7 @@ impl MaskedArray {
         let mut start: Option<usize> = None;
         let n = self.data.values().len();
         for i in 0..n {
-            let masked = self
-                .mask
-                .as_ref()
-                .is_some_and(|m| m.values()[i] != 0.0);
+            let masked = self.mask.as_ref().is_some_and(|m| m.values()[i] != 0.0);
             if !masked {
                 if let Some(s) = start {
                     runs.push((s, i));
@@ -12510,10 +12613,7 @@ impl MaskedArray {
         let mean: f64 = compressed.values().iter().sum::<f64>() / compressed.values().len() as f64;
         let mut new_vals = self.data.values().to_vec();
         for (i, val) in new_vals.iter_mut().enumerate() {
-            let masked = self
-                .mask
-                .as_ref()
-                .is_some_and(|m| m.values()[i] != 0.0);
+            let masked = self.mask.as_ref().is_some_and(|m| m.values()[i] != 0.0);
             if !masked {
                 *val -= mean;
             }
@@ -12577,10 +12677,7 @@ pub fn ma_make_mask(arr: &UFuncArray) -> UFuncArray {
 
 /// Combine two masks with logical OR (np.ma.mask_or).
 /// Returns None if both inputs are None.
-pub fn ma_mask_or(
-    m1: Option<&UFuncArray>,
-    m2: Option<&UFuncArray>,
-) -> Option<UFuncArray> {
+pub fn ma_mask_or(m1: Option<&UFuncArray>, m2: Option<&UFuncArray>) -> Option<UFuncArray> {
     match (m1, m2) {
         (None, None) => None,
         (Some(m), None) | (None, Some(m)) => Some(m.clone()),
@@ -12752,6 +12849,1346 @@ pub fn financial_rate(nper: f64, pmt: f64, pv: f64, fv: f64, when: u8, guess: f6
         rate = new_rate;
     }
     rate
+}
+
+// ── where_nonzero / unique variants ─────────────────────────────────────
+
+/// `numpy.where(condition)` single-argument form: returns indices of nonzero elements.
+///
+/// Returns one `UFuncArray` per input dimension, each containing the indices
+/// along that dimension where the condition is nonzero.
+pub fn where_nonzero(condition: &UFuncArray) -> Result<Vec<UFuncArray>, UFuncError> {
+    let ndim = condition.shape.len();
+    let strides = contiguous_strides_elems(&condition.shape);
+    let mut nd_indices: Vec<Vec<f64>> = vec![Vec::new(); ndim.max(1)];
+
+    for (flat, &v) in condition.values.iter().enumerate() {
+        if v != 0.0 {
+            if ndim == 0 {
+                // scalar
+                nd_indices[0].push(0.0);
+            } else {
+                let mut remaining = flat;
+                for d in 0..ndim {
+                    let idx = remaining / strides[d];
+                    remaining %= strides[d];
+                    nd_indices[d].push(idx as f64);
+                }
+            }
+        }
+    }
+
+    let result: Vec<UFuncArray> = nd_indices
+        .into_iter()
+        .map(|indices| {
+            let n = indices.len();
+            UFuncArray {
+                shape: vec![n],
+                values: indices,
+                dtype: DType::I64,
+            }
+        })
+        .collect();
+    Ok(result)
+}
+
+/// `numpy.unique_values(x)` — sorted unique values only.
+pub fn unique_values(x: &UFuncArray) -> UFuncArray {
+    x.unique()
+}
+
+/// `numpy.unique_counts(x)` — sorted unique values and their counts.
+pub fn unique_counts(x: &UFuncArray) -> (UFuncArray, UFuncArray) {
+    let (values, _, _, counts) = x.unique_with_info(false, false, true);
+    (values, counts.expect("counts requested"))
+}
+
+/// `numpy.unique_inverse(x)` — sorted unique values and indices to reconstruct.
+pub fn unique_inverse(x: &UFuncArray) -> (UFuncArray, UFuncArray) {
+    let (values, _, inverse, _) = x.unique_with_info(false, true, false);
+    (values, inverse.expect("inverse requested"))
+}
+
+/// `numpy.unique_all(x)` — sorted unique values, first indices, inverse indices, and counts.
+pub fn unique_all(x: &UFuncArray) -> (UFuncArray, UFuncArray, UFuncArray, UFuncArray) {
+    let (values, indices, inverse, counts) = x.unique_with_info(true, true, true);
+    (
+        values,
+        indices.expect("indices requested"),
+        inverse.expect("inverse requested"),
+        counts.expect("counts requested"),
+    )
+}
+
+// ── Chebyshev polynomial module ─────────────────────────────────────────
+
+/// Evaluate a Chebyshev series at points `x` using the Clenshaw algorithm.
+///
+/// `c` is the coefficient vector: polynomial = c[0]*T_0 + c[1]*T_1 + ...
+pub fn chebval(x: &[f64], c: &[f64]) -> Vec<f64> {
+    if c.is_empty() {
+        return vec![0.0; x.len()];
+    }
+    if c.len() == 1 {
+        return vec![c[0]; x.len()];
+    }
+    x.iter()
+        .map(|&xi| {
+            // Clenshaw recurrence for Chebyshev polynomials
+            let mut b_k1 = 0.0; // b_{k+1}
+            let mut b_k2 = 0.0; // b_{k+2}
+            for k in (1..c.len()).rev() {
+                let b_k = c[k] + 2.0 * xi * b_k1 - b_k2;
+                b_k2 = b_k1;
+                b_k1 = b_k;
+            }
+            c[0] + xi * b_k1 - b_k2
+        })
+        .collect()
+}
+
+/// Add two Chebyshev coefficient arrays.
+pub fn chebadd(c1: &[f64], c2: &[f64]) -> Vec<f64> {
+    let len = c1.len().max(c2.len());
+    let mut result = vec![0.0; len];
+    for (i, &v) in c1.iter().enumerate() {
+        result[i] += v;
+    }
+    for (i, &v) in c2.iter().enumerate() {
+        result[i] += v;
+    }
+    result
+}
+
+/// Subtract two Chebyshev coefficient arrays.
+pub fn chebsub(c1: &[f64], c2: &[f64]) -> Vec<f64> {
+    let len = c1.len().max(c2.len());
+    let mut result = vec![0.0; len];
+    for (i, &v) in c1.iter().enumerate() {
+        result[i] += v;
+    }
+    for (i, &v) in c2.iter().enumerate() {
+        result[i] -= v;
+    }
+    result
+}
+
+/// Multiply two Chebyshev coefficient arrays.
+///
+/// Uses the identity T_m * T_n = (T_{m+n} + T_{|m-n|}) / 2.
+pub fn chebmul(c1: &[f64], c2: &[f64]) -> Vec<f64> {
+    if c1.is_empty() || c2.is_empty() {
+        return Vec::new();
+    }
+    let len = c1.len() + c2.len() - 1;
+    let mut result = vec![0.0; len];
+    for (i, &a) in c1.iter().enumerate() {
+        for (j, &b) in c2.iter().enumerate() {
+            let prod = a * b / 2.0;
+            result[i + j] += prod;
+            result[i.abs_diff(j)] += prod;
+        }
+    }
+    result
+}
+
+/// Divide Chebyshev coefficient arrays. Returns (quotient, remainder).
+pub fn chebdiv(c1: &[f64], c2: &[f64]) -> Result<(Vec<f64>, Vec<f64>), UFuncError> {
+    if c2.is_empty() || c2.iter().all(|&v| v == 0.0) {
+        return Err(UFuncError::Msg(
+            "chebdiv: division by zero polynomial".to_string(),
+        ));
+    }
+    // Convert to power basis, divide, convert back
+    let p1 = cheb2poly(c1);
+    let p2 = cheb2poly(c2);
+    let (pq, pr) = poly_div(&p1, &p2)?;
+    Ok((poly2cheb(&pq), poly2cheb(&pr)))
+}
+
+/// Differentiate a Chebyshev series `m` times.
+pub fn chebder(c: &[f64], m: usize) -> Vec<f64> {
+    if m == 0 {
+        return c.to_vec();
+    }
+    let mut coeffs = c.to_vec();
+    for _ in 0..m {
+        let n = coeffs.len();
+        if n <= 1 {
+            return vec![0.0];
+        }
+        let mut der = vec![0.0; n - 1];
+        // Chebyshev derivative recurrence:
+        // c'[n-2] = 2*(n-1)*c[n-1]  (starting from top)
+        // c'[k] = c'[k+2] + 2*(k+1)*c[k+1]  for k = n-3..0
+        // but c'[0] needs halving of the "2*" factor
+        if n >= 2 {
+            der[n - 2] = 2.0 * (n as f64 - 1.0) * coeffs[n - 1];
+        }
+        for k in (0..n.saturating_sub(2)).rev() {
+            let next = if k + 2 < der.len() { der[k + 2] } else { 0.0 };
+            der[k] = next + 2.0 * (k as f64 + 1.0) * coeffs[k + 1];
+        }
+        // The k=0 coefficient accumulates with factor 2, but T_0 derivative
+        // contributions use factor 1 (not 2), so halve der[0]
+        der[0] /= 2.0;
+        coeffs = der;
+    }
+    coeffs
+}
+
+/// Integrate a Chebyshev series `m` times with integration constant 0.
+pub fn chebint(c: &[f64], m: usize) -> Vec<f64> {
+    if m == 0 {
+        return c.to_vec();
+    }
+    let mut coeffs = c.to_vec();
+    for _ in 0..m {
+        let n = coeffs.len();
+        let mut int = vec![0.0; n + 1];
+        // Integration recurrence:
+        // For n>=2: I[n] = c[n-1]/(2*n)
+        // I[1] = c[0] - c[2]/2 (already handled by the loop)
+        // I[0] = integration constant (we use 0)
+        // Actually: int[k] = (c[k-1] - c[k+1]) / (2*k) for k >= 2
+        // int[1] = c[0] - c[2]/2 ... simpler to use the standard formula:
+        // int[k] = (c[k-1])/(2*k) for k >= 2, but accounting for the c[k+1] term
+        // NumPy's formula: int[k] = (c[k-1] - c[k+1])/(2*k) for k >= 1
+        // where c[k+1] = 0 if k+1 >= n
+        for k in 1..=n {
+            let ck_minus_1 = coeffs[k - 1];
+            let ck_plus_1 = if k + 1 < n { coeffs[k + 1] } else { 0.0 };
+            if k == 1 {
+                // Special: factor is 1 not 2 for T_0 contribution
+                int[k] = ck_minus_1 - ck_plus_1 / 2.0;
+            } else {
+                int[k] = (ck_minus_1 - ck_plus_1) / (2.0 * k as f64);
+            }
+        }
+        // Integration constant: int[0] = 0
+        coeffs = int;
+    }
+    coeffs
+}
+
+/// Find roots of a Chebyshev series via companion matrix eigenvalues.
+pub fn chebroots(c: &[f64]) -> Result<Vec<f64>, UFuncError> {
+    // Remove trailing zeros
+    let mut coeffs: Vec<f64> = c.to_vec();
+    while coeffs.len() > 1 && *coeffs.last().unwrap() == 0.0 {
+        coeffs.pop();
+    }
+    let n = coeffs.len();
+    if n <= 1 {
+        return Ok(Vec::new());
+    }
+    if n == 2 {
+        // Linear: c[0] + c[1]*T_1(x) = c[0] + c[1]*x = 0 → x = -c[0]/c[1]
+        return Ok(vec![-coeffs[0] / coeffs[1]]);
+    }
+
+    // Build Chebyshev companion matrix (n-1 x n-1)
+    let deg = n - 1;
+    let mut mat = vec![0.0; deg * deg];
+    // First row: special
+    mat[1] = 1.0; // mat[0][1] = 1
+    // Middle rows: T_{k+1} = 2x*T_k - T_{k-1} → x*T_k = (T_{k+1} + T_{k-1})/2
+    for k in 1..deg - 1 {
+        mat[k * deg + k - 1] = 0.5;
+        mat[k * deg + k + 1] = 0.5;
+    }
+    // Last row: from the equation sum c_k T_k = 0, express T_{n-1} in terms of lower T_k
+    // x*T_{n-2} = T_{n-1}/2 + T_{n-3}/2 (or similar)
+    // Standard companion: last row adjusts for c[k]/c[n-1]
+    let cn = coeffs[deg];
+    for k in 0..deg {
+        mat[(deg - 1) * deg + k] -= coeffs[k] / (2.0 * cn);
+    }
+    // Adjust the [n-2][n-1] -> add 0.5 for the standard recurrence
+    if deg >= 2 {
+        mat[(deg - 1) * deg + deg - 2] += 0.5;
+    }
+
+    // Find eigenvalues using fnp-linalg
+    let eigenvalues = fnp_linalg::eig_nxn(&mat, deg)
+        .map_err(|e| UFuncError::Msg(format!("chebroots eigenvalue error: {e}")))?;
+    // Extract real parts (eigenvalues are interleaved [real, imag, ...])
+    let roots: Vec<f64> = eigenvalues.chunks_exact(2).map(|pair| pair[0]).collect();
+    let mut sorted = roots;
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    Ok(sorted)
+}
+
+/// Build a Chebyshev series from its roots.
+pub fn chebfromroots(roots: &[f64]) -> Vec<f64> {
+    if roots.is_empty() {
+        return vec![1.0];
+    }
+    // Start with (x - r[0]) in Chebyshev basis: [-r[0], 1]
+    let mut result = vec![-roots[0], 1.0];
+    for &r in &roots[1..] {
+        // Multiply current polynomial by (x - r) in Chebyshev basis
+        // (x - r) has Chebyshev coefficients [-r, 1]
+        let factor = vec![-r, 1.0];
+        result = chebmul(&result, &factor);
+    }
+    result
+}
+
+/// Least-squares fit to data in Chebyshev basis.
+///
+/// Fits `y = sum c_k T_k(x)` for k = 0..deg.
+pub fn chebfit(x: &[f64], y: &[f64], deg: usize) -> Result<Vec<f64>, UFuncError> {
+    if x.len() != y.len() {
+        return Err(UFuncError::Msg(
+            "chebfit: x and y must have same length".into(),
+        ));
+    }
+    if x.len() <= deg {
+        return Err(UFuncError::Msg(
+            "chebfit: more data points needed than degree".into(),
+        ));
+    }
+    let n = x.len();
+    let ncols = deg + 1;
+    // Build Vandermonde matrix in Chebyshev basis
+    let mut vander = vec![0.0; n * ncols];
+    for i in 0..n {
+        vander[i * ncols] = 1.0; // T_0 = 1
+        if ncols > 1 {
+            vander[i * ncols + 1] = x[i]; // T_1 = x
+        }
+        for j in 2..ncols {
+            // T_j = 2*x*T_{j-1} - T_{j-2}
+            vander[i * ncols + j] =
+                2.0 * x[i] * vander[i * ncols + j - 1] - vander[i * ncols + j - 2];
+        }
+    }
+    // Solve V^T V c = V^T y  (normal equations)
+    let mut vtv = vec![0.0; ncols * ncols];
+    let mut vty = vec![0.0; ncols];
+    for i in 0..ncols {
+        for j in 0..ncols {
+            let mut sum = 0.0;
+            for k in 0..n {
+                sum += vander[k * ncols + i] * vander[k * ncols + j];
+            }
+            vtv[i * ncols + j] = sum;
+        }
+        let mut sum = 0.0;
+        for k in 0..n {
+            sum += vander[k * ncols + i] * y[k];
+        }
+        vty[i] = sum;
+    }
+    // Solve via Gaussian elimination
+    let coeffs = solve_linear_system(&vtv, &vty, ncols)?;
+    Ok(coeffs)
+}
+
+/// Convert Chebyshev coefficients to power series (standard polynomial) coefficients.
+pub fn cheb2poly(c: &[f64]) -> Vec<f64> {
+    if c.is_empty() {
+        return Vec::new();
+    }
+    if c.len() == 1 {
+        return vec![c[0]];
+    }
+    let n = c.len();
+    // Build T_k(x) as power series, accumulate
+    let mut result = vec![0.0; n];
+    // t_prev = T_0 = [1, 0, 0, ...], t_curr = T_1 = [0, 1, 0, ...]
+    let mut t_prev = vec![0.0; n];
+    let mut t_curr = vec![0.0; n];
+    t_prev[0] = 1.0;
+    t_curr[1] = 1.0;
+
+    // Add c[0]*T_0 and c[1]*T_1
+    for j in 0..n {
+        result[j] += c[0] * t_prev[j];
+    }
+    if n > 1 {
+        for j in 0..n {
+            result[j] += c[1] * t_curr[j];
+        }
+    }
+
+    for (k, &ck) in c.iter().enumerate().skip(2) {
+        // T_k = 2*x*T_{k-1} - T_{k-2}
+        let mut t_next = vec![0.0; n];
+        // 2*x*T_{k-1}: shift coefficients up by 1 and multiply by 2
+        for j in 0..n - 1 {
+            t_next[j + 1] += 2.0 * t_curr[j];
+        }
+        // - T_{k-2}
+        for j in 0..n {
+            t_next[j] -= t_prev[j];
+        }
+        // Add c[k]*T_k
+        for j in 0..n {
+            result[j] += ck * t_next[j];
+        }
+        t_prev = t_curr;
+        t_curr = t_next;
+        let _ = k; // suppress unused warning
+    }
+    result
+}
+
+/// Convert power series coefficients to Chebyshev coefficients.
+pub fn poly2cheb(p: &[f64]) -> Vec<f64> {
+    if p.is_empty() {
+        return Vec::new();
+    }
+    let n = p.len();
+    // Evaluate at Chebyshev nodes and use discrete Chebyshev transform
+    // Simpler approach: build the conversion matrix and solve
+    // T_k in power basis form a matrix; invert it
+    // For small degrees, use the identity matrix approach
+    let mut cheb_matrix = vec![0.0; n * n];
+    let mut t_prev = vec![0.0; n];
+    let mut t_curr = vec![0.0; n];
+    t_prev[0] = 1.0;
+    if n > 1 {
+        t_curr[1] = 1.0;
+    }
+    // Column 0 = T_0 in power basis
+    for j in 0..n {
+        cheb_matrix[j * n] = t_prev[j];
+    }
+    if n > 1 {
+        for j in 0..n {
+            cheb_matrix[j * n + 1] = t_curr[j];
+        }
+    }
+    for k in 2..n {
+        let mut t_next = vec![0.0; n];
+        for j in 0..n - 1 {
+            t_next[j + 1] += 2.0 * t_curr[j];
+        }
+        for j in 0..n {
+            t_next[j] -= t_prev[j];
+        }
+        for j in 0..n {
+            cheb_matrix[j * n + k] = t_next[j];
+        }
+        t_prev = t_curr;
+        t_curr = t_next;
+    }
+    // Solve: cheb_matrix * c = p → c = cheb_matrix^{-1} * p
+    solve_linear_system(&cheb_matrix, p, n).unwrap_or_else(|_| p.to_vec())
+}
+
+/// Helper: solve a linear system Ax = b via Gaussian elimination with partial pivoting.
+fn solve_linear_system(a: &[f64], b: &[f64], n: usize) -> Result<Vec<f64>, UFuncError> {
+    let mut aug = vec![0.0; n * (n + 1)];
+    for i in 0..n {
+        for j in 0..n {
+            aug[i * (n + 1) + j] = a[i * n + j];
+        }
+        aug[i * (n + 1) + n] = b[i];
+    }
+    // Forward elimination with partial pivoting
+    for col in 0..n {
+        let mut max_row = col;
+        let mut max_val = aug[col * (n + 1) + col].abs();
+        for row in col + 1..n {
+            let v = aug[row * (n + 1) + col].abs();
+            if v > max_val {
+                max_val = v;
+                max_row = row;
+            }
+        }
+        if max_val < 1e-14 {
+            return Err(UFuncError::Msg(
+                "solve_linear_system: singular matrix".to_string(),
+            ));
+        }
+        if max_row != col {
+            for j in 0..=n {
+                aug.swap(col * (n + 1) + j, max_row * (n + 1) + j);
+            }
+        }
+        let pivot = aug[col * (n + 1) + col];
+        for row in col + 1..n {
+            let factor = aug[row * (n + 1) + col] / pivot;
+            for j in col..=n {
+                let above = aug[col * (n + 1) + j];
+                aug[row * (n + 1) + j] -= factor * above;
+            }
+        }
+    }
+    // Back substitution
+    let mut x = vec![0.0; n];
+    for i in (0..n).rev() {
+        let mut sum = aug[i * (n + 1) + n];
+        for j in i + 1..n {
+            sum -= aug[i * (n + 1) + j] * x[j];
+        }
+        x[i] = sum / aug[i * (n + 1) + i];
+    }
+    Ok(x)
+}
+
+/// Helper: polynomial division in power basis. Returns (quotient, remainder).
+fn poly_div(num: &[f64], den: &[f64]) -> Result<(Vec<f64>, Vec<f64>), UFuncError> {
+    let mut num = num.to_vec();
+    // Trim trailing zeros from denominator
+    let mut d = den.to_vec();
+    while d.len() > 1 && *d.last().unwrap() == 0.0 {
+        d.pop();
+    }
+    if d.is_empty() || (d.len() == 1 && d[0] == 0.0) {
+        return Err(UFuncError::Msg("poly_div: division by zero".to_string()));
+    }
+    while num.len() > 1 && *num.last().unwrap() == 0.0 {
+        num.pop();
+    }
+    if num.len() < d.len() {
+        return Ok((vec![0.0], num));
+    }
+    let q_len = num.len() - d.len() + 1;
+    let mut q = vec![0.0; q_len];
+    for i in (0..q_len).rev() {
+        q[i] = num[i + d.len() - 1] / d[d.len() - 1];
+        for j in 0..d.len() {
+            num[i + j] -= q[i] * d[j];
+        }
+    }
+    // Remainder
+    let mut rem = num[..d.len() - 1].to_vec();
+    while rem.len() > 1 && rem.last().unwrap().abs() < 1e-14 {
+        rem.pop();
+    }
+    if rem.is_empty() {
+        rem.push(0.0);
+    }
+    Ok((q, rem))
+}
+
+// ── Legendre polynomial module ──────────────────────────────────────────
+
+/// Evaluate a Legendre series at points `x` using the Clenshaw algorithm.
+///
+/// Recurrence: P_0=1, P_1=x, (n+1)P_{n+1} = (2n+1)x P_n - n P_{n-1}
+pub fn legval(x: &[f64], c: &[f64]) -> Vec<f64> {
+    if c.is_empty() {
+        return vec![0.0; x.len()];
+    }
+    if c.len() == 1 {
+        return vec![c[0]; x.len()];
+    }
+    x.iter()
+        .map(|&xi| {
+            let nd = c.len();
+            let mut c0 = c[nd - 2];
+            let mut c1 = c[nd - 1];
+            for i in (0..nd - 2).rev() {
+                let k = i + 1;
+                let tmp = c0;
+                c0 = c[i] - c1 * (k as f64 / (k as f64 + 1.0));
+                c1 = tmp + c1 * ((2.0 * k as f64 + 1.0) / (k as f64 + 1.0)) * xi;
+            }
+            c0 + c1 * xi
+        })
+        .collect()
+}
+
+/// Differentiate a Legendre series `m` times.
+pub fn legder(c: &[f64], m: usize) -> Vec<f64> {
+    if m == 0 {
+        return c.to_vec();
+    }
+    let mut coeffs = c.to_vec();
+    for _ in 0..m {
+        let n = coeffs.len();
+        if n <= 1 {
+            return vec![0.0];
+        }
+        let mut der = vec![0.0; n - 1];
+        for j in (0..n - 1).rev() {
+            der[j] = (2.0 * j as f64 + 1.0) * coeffs[j + 1];
+            if j + 2 < n - 1 {
+                der[j] += der[j + 2];
+            }
+        }
+        coeffs = der;
+    }
+    coeffs
+}
+
+/// Integrate a Legendre series `m` times (constant=0).
+pub fn legint(c: &[f64], m: usize) -> Vec<f64> {
+    if m == 0 {
+        return c.to_vec();
+    }
+    let mut coeffs = c.to_vec();
+    for _ in 0..m {
+        let n = coeffs.len();
+        let mut int = vec![0.0; n + 1];
+        // ∫P_j dx = (P_{j+1} - P_{j-1}) / (2j+1)
+        for j in 0..n {
+            let scale = coeffs[j] / (2.0 * j as f64 + 1.0);
+            int[j + 1] += scale;
+            if j >= 1 {
+                int[j - 1] -= scale;
+            }
+        }
+        // int[0] is the integration constant (left as accumulated)
+        coeffs = int;
+    }
+    coeffs
+}
+
+/// Least-squares fit in Legendre basis.
+pub fn legfit(x: &[f64], y: &[f64], deg: usize) -> Result<Vec<f64>, UFuncError> {
+    if x.len() != y.len() {
+        return Err(UFuncError::Msg(
+            "legfit: x and y must have same length".into(),
+        ));
+    }
+    let n = x.len();
+    let ncols = deg + 1;
+    let mut vander = vec![0.0; n * ncols];
+    for i in 0..n {
+        vander[i * ncols] = 1.0;
+        if ncols > 1 {
+            vander[i * ncols + 1] = x[i];
+        }
+        for j in 2..ncols {
+            vander[i * ncols + j] = ((2.0 * j as f64 - 1.0) * x[i] * vander[i * ncols + j - 1]
+                - (j as f64 - 1.0) * vander[i * ncols + j - 2])
+                / j as f64;
+        }
+    }
+    let mut vtv = vec![0.0; ncols * ncols];
+    let mut vty = vec![0.0; ncols];
+    for i in 0..ncols {
+        for j in 0..ncols {
+            let mut sum = 0.0;
+            for k in 0..n {
+                sum += vander[k * ncols + i] * vander[k * ncols + j];
+            }
+            vtv[i * ncols + j] = sum;
+        }
+        let mut sum = 0.0;
+        for k in 0..n {
+            sum += vander[k * ncols + i] * y[k];
+        }
+        vty[i] = sum;
+    }
+    solve_linear_system(&vtv, &vty, ncols)
+}
+
+// ── Hermite polynomial modules ──────────────────────────────────────────
+
+/// Evaluate a physicist's Hermite series (H_n) at points `x`.
+///
+/// Recurrence: H_0=1, H_1=2x, H_{n+1} = 2x H_n - 2n H_{n-1}
+pub fn hermval(x: &[f64], c: &[f64]) -> Vec<f64> {
+    if c.is_empty() {
+        return vec![0.0; x.len()];
+    }
+    if c.len() == 1 {
+        return vec![c[0]; x.len()];
+    }
+    x.iter()
+        .map(|&xi| {
+            let mut p_prev = 1.0;
+            let mut p_curr = 2.0 * xi;
+            let mut result = c[0] * p_prev + c[1] * p_curr;
+            for (k, &ck) in c.iter().enumerate().skip(2) {
+                let p_next = 2.0 * xi * p_curr - 2.0 * (k as f64 - 1.0) * p_prev;
+                result += ck * p_next;
+                p_prev = p_curr;
+                p_curr = p_next;
+            }
+            result
+        })
+        .collect()
+}
+
+/// Evaluate a probabilist's Hermite series (He_n) at points `x`.
+///
+/// Recurrence: He_0=1, He_1=x, He_{n+1} = x He_n - n He_{n-1}
+pub fn hermeval(x: &[f64], c: &[f64]) -> Vec<f64> {
+    if c.is_empty() {
+        return vec![0.0; x.len()];
+    }
+    if c.len() == 1 {
+        return vec![c[0]; x.len()];
+    }
+    x.iter()
+        .map(|&xi| {
+            let mut p_prev = 1.0;
+            let mut p_curr = xi;
+            let mut result = c[0] * p_prev + c[1] * p_curr;
+            for (k, &ck) in c.iter().enumerate().skip(2) {
+                let p_next = xi * p_curr - (k as f64 - 1.0) * p_prev;
+                result += ck * p_next;
+                p_prev = p_curr;
+                p_curr = p_next;
+            }
+            result
+        })
+        .collect()
+}
+
+/// Differentiate a physicist's Hermite series `m` times.
+pub fn hermder(c: &[f64], m: usize) -> Vec<f64> {
+    if m == 0 {
+        return c.to_vec();
+    }
+    let mut coeffs = c.to_vec();
+    for _ in 0..m {
+        let n = coeffs.len();
+        if n <= 1 {
+            return vec![0.0];
+        }
+        let mut der = vec![0.0; n - 1];
+        for k in 0..n - 1 {
+            der[k] = 2.0 * (k as f64 + 1.0) * coeffs[k + 1];
+        }
+        coeffs = der;
+    }
+    coeffs
+}
+
+/// Integrate a physicist's Hermite series `m` times (constant=0).
+pub fn hermint(c: &[f64], m: usize) -> Vec<f64> {
+    if m == 0 {
+        return c.to_vec();
+    }
+    let mut coeffs = c.to_vec();
+    for _ in 0..m {
+        let n = coeffs.len();
+        let mut int = vec![0.0; n + 1];
+        for k in 0..n {
+            int[k + 1] = coeffs[k] / (2.0 * (k as f64 + 1.0));
+        }
+        coeffs = int;
+    }
+    coeffs
+}
+
+// ── Laguerre polynomial module ──────────────────────────────────────────
+
+/// Evaluate a Laguerre series at points `x`.
+///
+/// Recurrence: L_0=1, L_1=1-x, (n+1)L_{n+1} = (2n+1-x)L_n - n L_{n-1}
+pub fn lagval(x: &[f64], c: &[f64]) -> Vec<f64> {
+    if c.is_empty() {
+        return vec![0.0; x.len()];
+    }
+    if c.len() == 1 {
+        return vec![c[0]; x.len()];
+    }
+    x.iter()
+        .map(|&xi| {
+            let mut p_prev = 1.0;
+            let mut p_curr = 1.0 - xi;
+            let mut result = c[0] * p_prev + c[1] * p_curr;
+            for (k, &ck) in c.iter().enumerate().skip(2) {
+                let n = k as f64 - 1.0;
+                let p_next = ((2.0 * n + 1.0 - xi) * p_curr - n * p_prev) / (n + 1.0);
+                result += ck * p_next;
+                p_prev = p_curr;
+                p_curr = p_next;
+            }
+            result
+        })
+        .collect()
+}
+
+/// Differentiate a Laguerre series `m` times.
+pub fn lagder(c: &[f64], m: usize) -> Vec<f64> {
+    if m == 0 {
+        return c.to_vec();
+    }
+    let mut coeffs = c.to_vec();
+    for _ in 0..m {
+        let n = coeffs.len();
+        if n <= 1 {
+            return vec![0.0];
+        }
+        let mut der = vec![0.0; n - 1];
+        // L_n' = -sum_{k=0}^{n-1} L_k  for standard Laguerre
+        // In coefficient form: der[k] = -sum_{j=k+1}^{n-1} coeffs[j]
+        for k in (0..n - 1).rev() {
+            der[k] = -coeffs[k + 1];
+            if k + 1 < n - 1 {
+                der[k] += der[k + 1];
+            }
+        }
+        coeffs = der;
+    }
+    coeffs
+}
+
+/// Integrate a Laguerre series `m` times (constant=0).
+pub fn lagint(c: &[f64], m: usize) -> Vec<f64> {
+    if m == 0 {
+        return c.to_vec();
+    }
+    let mut coeffs = c.to_vec();
+    for _ in 0..m {
+        let n = coeffs.len();
+        let mut int = vec![0.0; n + 1];
+        // Integration of Laguerre series: cumulative sum with alternating signs
+        for k in 0..n {
+            int[k] += coeffs[k];
+            int[k + 1] -= coeffs[k];
+        }
+        // Integration constant = 0 → adjust
+        coeffs = int;
+    }
+    coeffs
+}
+
+// ── scimath — complex-aware math functions ──────────────────────────────
+
+/// Apply a function that maps real f64 values to complex (real, imag) pairs.
+///
+/// Returns a UFuncArray with shape [..., 2] (interleaved real/imag).
+fn scimath_unary(x: &UFuncArray, f: impl Fn(f64) -> (f64, f64)) -> Result<UFuncArray, UFuncError> {
+    let mut values = Vec::with_capacity(x.values.len() * 2);
+    for &v in &x.values {
+        let (re, im) = f(v);
+        values.push(re);
+        values.push(im);
+    }
+    let mut shape = x.shape.clone();
+    shape.push(2);
+    Ok(UFuncArray {
+        shape,
+        values,
+        dtype: DType::Complex128,
+    })
+}
+
+/// Complex-aware sqrt: returns complex result for negative inputs.
+pub fn scimath_sqrt(x: &UFuncArray) -> Result<UFuncArray, UFuncError> {
+    scimath_unary(x, |v| {
+        if v >= 0.0 {
+            (v.sqrt(), 0.0)
+        } else {
+            (0.0, (-v).sqrt())
+        }
+    })
+}
+
+/// Complex-aware log: returns complex result for negative inputs.
+pub fn scimath_log(x: &UFuncArray) -> Result<UFuncArray, UFuncError> {
+    scimath_unary(x, |v| {
+        if v > 0.0 {
+            (v.ln(), 0.0)
+        } else if v == 0.0 {
+            (f64::NEG_INFINITY, 0.0)
+        } else {
+            ((-v).ln(), std::f64::consts::PI)
+        }
+    })
+}
+
+/// Complex-aware log2: returns complex result for negative inputs.
+pub fn scimath_log2(x: &UFuncArray) -> Result<UFuncArray, UFuncError> {
+    scimath_unary(x, |v| {
+        if v > 0.0 {
+            (v.log2(), 0.0)
+        } else if v == 0.0 {
+            (f64::NEG_INFINITY, 0.0)
+        } else {
+            let ln2 = std::f64::consts::LN_2;
+            ((-v).ln() / ln2, std::f64::consts::PI / ln2)
+        }
+    })
+}
+
+/// Complex-aware log10: returns complex result for negative inputs.
+pub fn scimath_log10(x: &UFuncArray) -> Result<UFuncArray, UFuncError> {
+    scimath_unary(x, |v| {
+        if v > 0.0 {
+            (v.log10(), 0.0)
+        } else if v == 0.0 {
+            (f64::NEG_INFINITY, 0.0)
+        } else {
+            let ln10 = std::f64::consts::LN_10;
+            ((-v).ln() / ln10, std::f64::consts::PI / ln10)
+        }
+    })
+}
+
+/// Complex-aware power: x^p with complex result for negative x with fractional p.
+pub fn scimath_power(x: &UFuncArray, p: f64) -> Result<UFuncArray, UFuncError> {
+    scimath_unary(x, |v| {
+        if v >= 0.0 {
+            (v.powf(p), 0.0)
+        } else {
+            // (-v)^p = v^p * e^{i*pi*p} = v^p * (cos(pi*p) + i*sin(pi*p))
+            let r = (-v).powf(p);
+            let theta = std::f64::consts::PI * p;
+            (r * theta.cos(), r * theta.sin())
+        }
+    })
+}
+
+/// Complex-aware arccos: returns complex result for |x| > 1.
+pub fn scimath_arccos(x: &UFuncArray) -> Result<UFuncArray, UFuncError> {
+    scimath_unary(x, |v| {
+        if v.abs() <= 1.0 {
+            (v.acos(), 0.0)
+        } else {
+            // arccos(x) = -i * ln(x + i*sqrt(1 - x^2))
+            // For |x| > 1: 1-x^2 < 0, so sqrt is imaginary
+            let x2m1 = v * v - 1.0;
+            let sqrt_part = x2m1.sqrt();
+            if v > 1.0 {
+                (0.0, -(v + sqrt_part).ln())
+            } else {
+                // v < -1
+                (std::f64::consts::PI, (sqrt_part - v).ln())
+            }
+        }
+    })
+}
+
+/// Complex-aware arcsin: returns complex result for |x| > 1.
+pub fn scimath_arcsin(x: &UFuncArray) -> Result<UFuncArray, UFuncError> {
+    scimath_unary(x, |v| {
+        if v.abs() <= 1.0 {
+            (v.asin(), 0.0)
+        } else {
+            // arcsin(x) = pi/2 - arccos(x)
+            let x2m1 = v * v - 1.0;
+            let sqrt_part = x2m1.sqrt();
+            if v > 1.0 {
+                (std::f64::consts::FRAC_PI_2, (v + sqrt_part).ln())
+            } else {
+                (-std::f64::consts::FRAC_PI_2, -(sqrt_part - v).ln())
+            }
+        }
+    })
+}
+
+/// Complex-aware arctanh: returns complex result for |x| > 1.
+pub fn scimath_arctanh(x: &UFuncArray) -> Result<UFuncArray, UFuncError> {
+    scimath_unary(x, |v| {
+        if v.abs() < 1.0 {
+            (v.atanh(), 0.0)
+        } else if v == 1.0 {
+            (f64::INFINITY, 0.0)
+        } else if v == -1.0 {
+            (f64::NEG_INFINITY, 0.0)
+        } else {
+            // arctanh(x) = 0.5 * ln((1+x)/(1-x)) for |x| > 1
+            // (1+x)/(1-x) is negative when |x| > 1, so log gives complex
+            let ratio = (1.0 + v) / (1.0 - v);
+            let half_pi = std::f64::consts::FRAC_PI_2;
+            (
+                0.5 * ratio.abs().ln(),
+                if v > 1.0 { -half_pi } else { half_pi },
+            )
+        }
+    })
+}
+
+// ── pad mode: linear_ramp ───────────────────────────────────────────────
+
+/// Pad an array using linear ramp from edge values to specified end_values.
+///
+/// `pad_width` is `(before, after)` for 1-D. `end_values` is `(before_val, after_val)`.
+pub fn pad_linear_ramp(
+    arr: &UFuncArray,
+    pad_width: (usize, usize),
+    end_values: (f64, f64),
+) -> Result<UFuncArray, UFuncError> {
+    if arr.shape.len() != 1 {
+        return Err(UFuncError::Msg(
+            "pad_linear_ramp: only 1-D supported".into(),
+        ));
+    }
+    let n = arr.values.len();
+    let (before, after) = pad_width;
+    let (start_val, end_val) = end_values;
+    let total = before + n + after;
+    let mut values = Vec::with_capacity(total);
+
+    // Before padding: linear ramp from start_val to arr[0]
+    let edge_start = if n > 0 { arr.values[0] } else { 0.0 };
+    for i in 0..before {
+        let t = if before > 0 {
+            (i as f64 + 1.0) / (before as f64 + 1.0)
+        } else {
+            1.0
+        };
+        values.push(start_val + t * (edge_start - start_val));
+    }
+
+    // Original data
+    values.extend_from_slice(&arr.values);
+
+    // After padding: linear ramp from arr[n-1] to end_val
+    let edge_end = if n > 0 { arr.values[n - 1] } else { 0.0 };
+    for i in 0..after {
+        let t = (i as f64 + 1.0) / (after as f64 + 1.0);
+        values.push(edge_end + t * (end_val - edge_end));
+    }
+
+    Ok(UFuncArray {
+        shape: vec![total],
+        values,
+        dtype: arr.dtype,
+    })
+}
+
+/// Pad with statistical values (max, min, mean, or median) of the array.
+pub fn pad_stat(
+    arr: &UFuncArray,
+    pad_width: (usize, usize),
+    mode: &str,
+    stat_length: Option<usize>,
+) -> Result<UFuncArray, UFuncError> {
+    if arr.shape.len() != 1 {
+        return Err(UFuncError::Msg("pad_stat: only 1-D supported".into()));
+    }
+    let n = arr.values.len();
+    let (before, after) = pad_width;
+
+    let compute_stat = |values: &[f64], mode: &str| -> f64 {
+        if values.is_empty() {
+            return 0.0;
+        }
+        match mode {
+            "maximum" => values.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+            "minimum" => values.iter().copied().fold(f64::INFINITY, f64::min),
+            "mean" => values.iter().sum::<f64>() / values.len() as f64,
+            "median" => {
+                let mut sorted = values.to_vec();
+                sorted.sort_by(|a, b| a.total_cmp(b));
+                let mid = sorted.len() / 2;
+                if sorted.len().is_multiple_of(2) {
+                    (sorted[mid - 1] + sorted[mid]) / 2.0
+                } else {
+                    sorted[mid]
+                }
+            }
+            _ => 0.0,
+        }
+    };
+
+    let stat_len = stat_length.unwrap_or(n);
+    let before_slice = &arr.values[..stat_len.min(n)];
+    let after_slice = &arr.values[n.saturating_sub(stat_len)..];
+    let before_val = compute_stat(before_slice, mode);
+    let after_val = compute_stat(after_slice, mode);
+
+    let total = before + n + after;
+    let mut values = Vec::with_capacity(total);
+    values.extend(std::iter::repeat_n(before_val, before));
+    values.extend_from_slice(&arr.values);
+    values.extend(std::iter::repeat_n(after_val, after));
+
+    Ok(UFuncArray {
+        shape: vec![total],
+        values,
+        dtype: arr.dtype,
+    })
+}
+
+/// Pad with uninitialized (zero) values.
+pub fn pad_empty(arr: &UFuncArray, pad_width: (usize, usize)) -> Result<UFuncArray, UFuncError> {
+    if arr.shape.len() != 1 {
+        return Err(UFuncError::Msg("pad_empty: only 1-D supported".into()));
+    }
+    let n = arr.values.len();
+    let (before, after) = pad_width;
+    let total = before + n + after;
+    let mut values = Vec::with_capacity(total);
+    values.extend(std::iter::repeat_n(0.0, before));
+    values.extend_from_slice(&arr.values);
+    values.extend(std::iter::repeat_n(0.0, after));
+    Ok(UFuncArray {
+        shape: vec![total],
+        values,
+        dtype: arr.dtype,
+    })
+}
+
+// ── Additional math functions ───────────────────────────────────────────
+
+/// Decompose floating-point numbers into mantissa and exponent.
+///
+/// Returns `(mantissa, exponent)` such that `x = mantissa * 2^exponent`,
+/// where mantissa is in `[0.5, 1.0)` for normal numbers.
+pub fn frexp(x: &UFuncArray) -> Result<(UFuncArray, UFuncArray), UFuncError> {
+    let mut mantissas = Vec::with_capacity(x.values.len());
+    let mut exponents = Vec::with_capacity(x.values.len());
+    for &v in &x.values {
+        if v == 0.0 {
+            mantissas.push(if v.is_sign_negative() { -0.0 } else { 0.0 });
+            exponents.push(0.0);
+        } else if v.is_nan() {
+            mantissas.push(f64::NAN);
+            exponents.push(0.0);
+        } else if v.is_infinite() {
+            mantissas.push(v);
+            exponents.push(0.0);
+        } else {
+            let bits = v.to_bits();
+            let sign = bits >> 63;
+            let biased_exp = ((bits >> 52) & 0x7FF) as i64;
+            let frac_bits = bits & 0x000F_FFFF_FFFF_FFFF;
+            if biased_exp == 0 {
+                // Subnormal: normalize first
+                let normalized = v.abs();
+                let log2 = normalized.log2().floor() as i64;
+                let exp = log2 + 1;
+                let m = v / (2.0_f64).powi(exp as i32);
+                mantissas.push(m);
+                exponents.push(exp as f64);
+            } else {
+                let exp = biased_exp - 1023 + 1;
+                let m_bits = (1022_u64 << 52) | frac_bits;
+                let m = f64::from_bits(m_bits);
+                mantissas.push(if sign == 1 { -m } else { m });
+                exponents.push(exp as f64);
+            }
+        }
+    }
+    let m_arr = UFuncArray {
+        shape: x.shape.clone(),
+        values: mantissas,
+        dtype: DType::F64,
+    };
+    let e_arr = UFuncArray {
+        shape: x.shape.clone(),
+        values: exponents,
+        dtype: DType::F64,
+    };
+    Ok((m_arr, e_arr))
+}
+
+/// Return the fractional and integral parts of each element.
+///
+/// Both outputs have the same sign as the input.
+pub fn modf(x: &UFuncArray) -> Result<(UFuncArray, UFuncArray), UFuncError> {
+    let mut fractionals = Vec::with_capacity(x.values.len());
+    let mut integrals = Vec::with_capacity(x.values.len());
+    for &v in &x.values {
+        if v.is_nan() {
+            fractionals.push(f64::NAN);
+            integrals.push(f64::NAN);
+        } else if v.is_infinite() {
+            fractionals.push(if v.is_sign_negative() { -0.0 } else { 0.0 });
+            integrals.push(v);
+        } else {
+            integrals.push(v.trunc());
+            fractionals.push(v.fract());
+        }
+    }
+    let frac_arr = UFuncArray {
+        shape: x.shape.clone(),
+        values: fractionals,
+        dtype: DType::F64,
+    };
+    let int_arr = UFuncArray {
+        shape: x.shape.clone(),
+        values: integrals,
+        dtype: DType::F64,
+    };
+    Ok((frac_arr, int_arr))
+}
+
+/// Element-wise greatest common divisor.
+///
+/// Values are truncated to integers. The result is always non-negative.
+pub fn gcd_arrays(a: &UFuncArray, b: &UFuncArray) -> Result<UFuncArray, UFuncError> {
+    let bc = UFuncArray::broadcast_arrays(&[a, b])?;
+    let (a_bc, b_bc) = (&bc[0], &bc[1]);
+    let values = a_bc
+        .values
+        .iter()
+        .zip(&b_bc.values)
+        .map(|(&av, &bv)| {
+            let mut x = (av.trunc() as i64).abs();
+            let mut y = (bv.trunc() as i64).abs();
+            while y != 0 {
+                let t = y;
+                y = x % y;
+                x = t;
+            }
+            x as f64
+        })
+        .collect();
+    Ok(UFuncArray {
+        shape: a_bc.shape.clone(),
+        values,
+        dtype: DType::F64,
+    })
+}
+
+/// Element-wise least common multiple.
+///
+/// Values are truncated to integers. The result is always non-negative.
+pub fn lcm_arrays(a: &UFuncArray, b: &UFuncArray) -> Result<UFuncArray, UFuncError> {
+    let bc = UFuncArray::broadcast_arrays(&[a, b])?;
+    let (a_bc, b_bc) = (&bc[0], &bc[1]);
+    let values = a_bc
+        .values
+        .iter()
+        .zip(&b_bc.values)
+        .map(|(&av, &bv)| {
+            let x = (av.trunc() as i64).abs();
+            let y = (bv.trunc() as i64).abs();
+            if x == 0 || y == 0 {
+                return 0.0;
+            }
+            // gcd
+            let (mut gx, mut gy) = (x, y);
+            while gy != 0 {
+                let t = gy;
+                gy = gx % gy;
+                gx = t;
+            }
+            ((x / gx) * y) as f64
+        })
+        .collect();
+    Ok(UFuncArray {
+        shape: a_bc.shape.clone(),
+        values,
+        dtype: DType::F64,
+    })
+}
+
+/// Element-wise divmod: returns `(floor_quotient, remainder)`.
+///
+/// Uses floor division semantics (like Python, not C truncation).
+pub fn divmod_arrays(
+    a: &UFuncArray,
+    b: &UFuncArray,
+) -> Result<(UFuncArray, UFuncArray), UFuncError> {
+    let bc = UFuncArray::broadcast_arrays(&[a, b])?;
+    let (a_bc, b_bc) = (&bc[0], &bc[1]);
+    let mut quotients = Vec::with_capacity(a_bc.values.len());
+    let mut remainders = Vec::with_capacity(a_bc.values.len());
+    for (&av, &bv) in a_bc.values.iter().zip(&b_bc.values) {
+        if bv == 0.0 {
+            if av == 0.0 {
+                quotients.push(f64::NAN);
+            } else {
+                quotients.push(if (av > 0.0) == (bv.is_sign_positive()) {
+                    f64::INFINITY
+                } else {
+                    f64::NEG_INFINITY
+                });
+            }
+            remainders.push(f64::NAN);
+        } else {
+            let q = (av / bv).floor();
+            let r = av - q * bv;
+            quotients.push(q);
+            remainders.push(r);
+        }
+    }
+    let q_arr = UFuncArray {
+        shape: a_bc.shape.clone(),
+        values: quotients,
+        dtype: DType::F64,
+    };
+    let r_arr = UFuncArray {
+        shape: a_bc.shape.clone(),
+        values: remainders,
+        dtype: DType::F64,
+    };
+    Ok((q_arr, r_arr))
+}
+
+/// Test element-wise for positive infinity.
+pub fn isposinf(x: &UFuncArray) -> Result<UFuncArray, UFuncError> {
+    let values = x
+        .values
+        .iter()
+        .map(|&v| if v == f64::INFINITY { 1.0 } else { 0.0 })
+        .collect();
+    Ok(UFuncArray {
+        shape: x.shape.clone(),
+        values,
+        dtype: DType::Bool,
+    })
+}
+
+/// Test element-wise for negative infinity.
+pub fn isneginf(x: &UFuncArray) -> Result<UFuncArray, UFuncError> {
+    let values = x
+        .values
+        .iter()
+        .map(|&v| if v == f64::NEG_INFINITY { 1.0 } else { 0.0 })
+        .collect();
+    Ok(UFuncArray {
+        shape: x.shape.clone(),
+        values,
+        dtype: DType::Bool,
+    })
+}
+
+/// Count the number of 1-bits in the absolute value of each integer element.
+///
+/// Equivalent to `numpy.bitwise_count` (added in NumPy 2.0).
+pub fn bitwise_count(x: &UFuncArray) -> Result<UFuncArray, UFuncError> {
+    let values = x
+        .values
+        .iter()
+        .map(|&v| {
+            let i = (v.trunc() as i64).unsigned_abs();
+            i.count_ones() as f64
+        })
+        .collect();
+    Ok(UFuncArray {
+        shape: x.shape.clone(),
+        values,
+        dtype: DType::F64,
+    })
+}
+
+/// Sort a complex array by real part first, then imaginary part.
+///
+/// The input is flattened, sorted, and returned as a 1-D complex array with
+/// shape `[n, 2]` (interleaved real/imag pairs).
+pub fn sort_complex(a: &UFuncArray) -> Result<UFuncArray, UFuncError> {
+    // Determine if input is complex (trailing dim = 2)
+    let is_complex = a.shape.last() == Some(&2) && a.shape.len() >= 2;
+    let mut pairs: Vec<(f64, f64)> = if is_complex {
+        a.values.chunks_exact(2).map(|c| (c[0], c[1])).collect()
+    } else {
+        // Real input: treat as complex with imag=0
+        a.values.iter().map(|&r| (r, 0.0)).collect()
+    };
+    // Sort by real part first, then imaginary part. NaN sorts to end.
+    pairs.sort_by(|a, b| {
+        let cmp_re = a.0.partial_cmp(&b.0);
+        let cmp_im = a.1.partial_cmp(&b.1);
+        match cmp_re {
+            Some(std::cmp::Ordering::Equal) => cmp_im.unwrap_or(std::cmp::Ordering::Equal),
+            Some(ord) => ord,
+            None => {
+                // NaN handling: NaN sorts to end
+                if a.0.is_nan() && b.0.is_nan() {
+                    cmp_im.unwrap_or(std::cmp::Ordering::Equal)
+                } else if a.0.is_nan() {
+                    std::cmp::Ordering::Greater
+                } else {
+                    std::cmp::Ordering::Less
+                }
+            }
+        }
+    });
+    let n = pairs.len();
+    let values: Vec<f64> = pairs.into_iter().flat_map(|(r, i)| [r, i]).collect();
+    Ok(UFuncArray {
+        shape: vec![n, 2],
+        values,
+        dtype: DType::Complex128,
+    })
 }
 
 // ── numpy.char — String Array Module ────────────────────────────────────
@@ -13791,11 +15228,17 @@ mod tests {
     use super::{
         BinaryOp, MAError, MaskedArray, PrintOptions, QuantileInterp, StringArray,
         UFUNC_PACKET_REASON_CODES, UFuncArray, UFuncError, UFuncLogRecord, UFuncRuntimeMode,
-        UnaryOp, busday_count, busday_offset, financial_fv, financial_ipmt, financial_irr,
-        financial_mirr, financial_nper, financial_npv, financial_pmt, financial_ppmt, financial_pv,
-        financial_rate, is_busday, ma_is_mask, ma_is_masked, ma_make_mask, ma_mask_or,
-        normalize_signature_keywords, parse_gufunc_signature,
-        plan_binary_dispatch, register_custom_loop, validate_override_payload_class,
+        UnaryOp, bitwise_count, busday_count, busday_offset, cheb2poly, chebadd, chebder, chebfit,
+        chebint, chebmul, chebsub, chebval, divmod_arrays, financial_fv, financial_ipmt,
+        financial_irr, financial_mirr, financial_nper, financial_npv, financial_pmt,
+        financial_ppmt, financial_pv, financial_rate, frexp, gcd_arrays, hermder, hermeval,
+        hermint, hermval, is_busday, isneginf, isposinf, lagder, lagint, lagval, lcm_arrays,
+        legder, legfit, legint, legval, ma_is_mask, ma_is_masked, ma_make_mask, ma_mask_or, modf,
+        normalize_signature_keywords, pad_empty, pad_linear_ramp, pad_stat, parse_gufunc_signature,
+        plan_binary_dispatch, poly2cheb, register_custom_loop, scimath_arccos, scimath_arcsin,
+        scimath_arctanh, scimath_log, scimath_log2, scimath_log10, scimath_power, scimath_sqrt,
+        sort_complex, unique_all, unique_counts, unique_inverse, unique_values,
+        validate_override_payload_class, where_nonzero,
     };
     use fnp_dtype::{DType, promote};
     use fnp_ndarray::broadcast_shape;
@@ -15754,7 +17197,9 @@ mod tests {
         let sorted =
             UFuncArray::new(vec![4], vec![1.0, 3.0, 5.0, 7.0], DType::F64).expect("sorted");
         let probe = UFuncArray::scalar(4.0, DType::F64);
-        let out = sorted.searchsorted(&probe).expect("searchsorted");
+        let out = sorted
+            .searchsorted(&probe, None, None)
+            .expect("searchsorted");
         assert_eq!(out.shape(), &[]);
         assert_eq!(out.values(), &[2.0]);
         assert_eq!(out.dtype(), DType::I64);
@@ -15767,7 +17212,9 @@ mod tests {
             UFuncArray::new(vec![5], vec![1.0, 2.0, 2.0, 2.0, 3.0], DType::F64).expect("sorted");
         let probes =
             UFuncArray::new(vec![4], vec![0.0, 2.0, 2.5, 4.0], DType::F64).expect("probes");
-        let out = sorted.searchsorted(&probes).expect("searchsorted");
+        let out = sorted
+            .searchsorted(&probes, None, None)
+            .expect("searchsorted");
         assert_eq!(out.shape(), &[4]);
         assert_eq!(out.values(), &[0.0, 1.0, 4.0, 5.0]);
         assert_eq!(out.dtype(), DType::I64);
@@ -15780,7 +17227,9 @@ mod tests {
             UFuncArray::new(vec![4], vec![1.0, 3.0, 5.0, 7.0], DType::F64).expect("sorted");
         let probes =
             UFuncArray::new(vec![2, 2], vec![0.0, 4.0, 6.0, 8.0], DType::F64).expect("probes");
-        let out = sorted.searchsorted(&probes).expect("searchsorted");
+        let out = sorted
+            .searchsorted(&probes, None, None)
+            .expect("searchsorted");
         assert_eq!(out.shape(), &[2, 2]);
         assert_eq!(out.values(), &[0.0, 2.0, 3.0, 4.0]);
     }
@@ -15790,7 +17239,7 @@ mod tests {
         let not_1d =
             UFuncArray::new(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0], DType::F64).expect("not_1d");
         let probe = UFuncArray::scalar(2.0, DType::F64);
-        assert!(not_1d.searchsorted(&probe).is_err());
+        assert!(not_1d.searchsorted(&probe, None, None).is_err());
     }
 
     #[test]
@@ -16212,7 +17661,12 @@ mod tests {
 
     #[test]
     fn array_split_at_indices_basic() {
-        let a = UFuncArray::new(vec![8], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], DType::F64).unwrap();
+        let a = UFuncArray::new(
+            vec![8],
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+            DType::F64,
+        )
+        .unwrap();
         // Split at indices [2, 5] => sub-arrays [0:2], [2:5], [5:8]
         let parts = a.array_split_at_indices(&[2, 5], 0).unwrap();
         assert_eq!(parts.len(), 3);
@@ -17509,7 +18963,7 @@ mod tests {
     fn isin_preserves_shape() {
         let arr = UFuncArray::new(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0], DType::F64).unwrap();
         let test = UFuncArray::new(vec![2], vec![2.0, 3.0], DType::F64).unwrap();
-        let result = arr.isin(&test);
+        let result = arr.isin(&test, false);
         assert_eq!(result.shape(), &[2, 2]);
         assert_eq!(result.values(), &[0.0, 1.0, 1.0, 0.0]);
     }
@@ -17812,12 +19266,8 @@ mod tests {
     #[test]
     fn argpartition_2d_axis0() {
         // 3x2 array, partition along axis 0 with kth=1
-        let a = UFuncArray::new(
-            vec![3, 2],
-            vec![3.0, 6.0, 1.0, 4.0, 2.0, 5.0],
-            DType::F64,
-        )
-        .unwrap();
+        let a =
+            UFuncArray::new(vec![3, 2], vec![3.0, 6.0, 1.0, 4.0, 2.0, 5.0], DType::F64).unwrap();
         let r = a.argpartition(1, Some(0)).unwrap();
         assert_eq!(r.shape(), &[3, 2]);
         // Column 0 values: [3.0, 1.0, 2.0]. Sorted indices: [1,2,0].
@@ -19227,9 +20677,9 @@ mod tests {
     #[test]
     fn count_nonzero_mixed() {
         let a = UFuncArray::new(vec![5], vec![0.0, 1.0, 0.0, 3.0, -2.0], DType::F64).unwrap();
-        assert_eq!(a.count_nonzero(), 3);
+        assert_eq!(a.count_nonzero(None, false).unwrap().values(), &[3.0]);
         let z = UFuncArray::new(vec![3], vec![0.0, 0.0, 0.0], DType::F64).unwrap();
-        assert_eq!(z.count_nonzero(), 0);
+        assert_eq!(z.count_nonzero(None, false).unwrap().values(), &[0.0]);
     }
 
     #[test]
@@ -21092,12 +22542,8 @@ mod tests {
 
     #[test]
     fn masked_fix_invalid_nans() {
-        let data = UFuncArray::new(
-            vec![4],
-            vec![1.0, f64::NAN, 3.0, f64::INFINITY],
-            DType::F64,
-        )
-        .unwrap();
+        let data =
+            UFuncArray::new(vec![4], vec![1.0, f64::NAN, 3.0, f64::INFINITY], DType::F64).unwrap();
         let mut ma = MaskedArray::new(data, None, None).unwrap();
         ma.fix_invalid();
         // NaN and Inf should now be masked
@@ -22169,12 +23615,8 @@ mod tests {
 
     #[test]
     fn svdvals_rectangular() {
-        let a = UFuncArray::new(
-            vec![2, 3],
-            vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-            DType::F64,
-        )
-        .unwrap();
+        let a =
+            UFuncArray::new(vec![2, 3], vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0], DType::F64).unwrap();
         let s = a.svdvals().unwrap();
         assert_eq!(s.shape(), &[2]); // min(2,3) = 2
     }
@@ -22194,12 +23636,8 @@ mod tests {
 
     #[test]
     fn qr_rectangular() {
-        let a = UFuncArray::new(
-            vec![3, 2],
-            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
-            DType::F64,
-        )
-        .unwrap();
+        let a =
+            UFuncArray::new(vec![3, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
         let (q, r) = a.qr().unwrap();
         assert_eq!(q.shape(), &[3, 2]); // m x min(m,n)
         assert_eq!(r.shape(), &[2, 2]); // min(m,n) x n
@@ -22447,5 +23885,1564 @@ mod tests {
         let result = sa.mod_format(&["world", "42"]);
         assert_eq!(result.values[0], "hello world");
         assert_eq!(result.values[1], "count 42");
+    }
+
+    // ── frexp tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn frexp_basic() {
+        let arr = UFuncArray::new(vec![3], vec![1.0, 2.0, 4.0], DType::F64).unwrap();
+        let (m, e) = frexp(&arr).unwrap();
+        assert_eq!(m.values(), &[0.5, 0.5, 0.5]);
+        assert_eq!(e.values(), &[1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn frexp_negative() {
+        let arr = UFuncArray::new(vec![2], vec![-1.0, -2.0], DType::F64).unwrap();
+        let (m, e) = frexp(&arr).unwrap();
+        assert_eq!(m.values(), &[-0.5, -0.5]);
+        assert_eq!(e.values(), &[1.0, 2.0]);
+    }
+
+    #[test]
+    fn frexp_zero() {
+        let arr = UFuncArray::new(vec![2], vec![0.0, -0.0_f64], DType::F64).unwrap();
+        let (m, e) = frexp(&arr).unwrap();
+        assert_eq!(m.values()[0], 0.0);
+        assert!(m.values()[1].is_sign_negative()); // -0.0
+        assert_eq!(e.values(), &[0.0, 0.0]);
+    }
+
+    #[test]
+    fn frexp_special() {
+        let arr = UFuncArray::new(
+            vec![3],
+            vec![f64::INFINITY, f64::NEG_INFINITY, f64::NAN],
+            DType::F64,
+        )
+        .unwrap();
+        let (m, e) = frexp(&arr).unwrap();
+        assert_eq!(m.values()[0], f64::INFINITY);
+        assert_eq!(m.values()[1], f64::NEG_INFINITY);
+        assert!(m.values()[2].is_nan());
+        assert_eq!(e.values(), &[0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn frexp_roundtrip() {
+        let vals: Vec<f64> = vec![1.5, 3.25, 100.0, 0.125, -7.75, 1e10];
+        let arr = UFuncArray::new(vec![vals.len()], vals.clone(), DType::F64).unwrap();
+        let (m, e) = frexp(&arr).unwrap();
+        for i in 0..vals.len() {
+            let reconstructed = m.values()[i] * (2.0_f64).powi(e.values()[i] as i32);
+            assert!(
+                (reconstructed - vals[i]).abs() < 1e-12,
+                "frexp roundtrip failed for {}",
+                vals[i]
+            );
+        }
+    }
+
+    #[test]
+    fn frexp_subnormal() {
+        let sub = f64::MIN_POSITIVE / 2.0;
+        let arr = UFuncArray::new(vec![1], vec![sub], DType::F64).unwrap();
+        let (m, e) = frexp(&arr).unwrap();
+        let reconstructed = m.values()[0] * (2.0_f64).powi(e.values()[0] as i32);
+        assert!(
+            (reconstructed - sub).abs() / sub < 1e-10,
+            "frexp subnormal failed"
+        );
+    }
+
+    #[test]
+    fn frexp_large_value() {
+        let arr = UFuncArray::new(vec![1], vec![1e300], DType::F64).unwrap();
+        let (m, e) = frexp(&arr).unwrap();
+        assert!(m.values()[0] >= 0.5 && m.values()[0] < 1.0);
+        let reconstructed = m.values()[0] * (2.0_f64).powi(e.values()[0] as i32);
+        assert!((reconstructed - 1e300).abs() / 1e300 < 1e-10);
+    }
+
+    // ── modf tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn modf_positive() {
+        let arr = UFuncArray::new(vec![3], vec![1.5, 2.75, 3.0], DType::F64).unwrap();
+        let (frac, int) = modf(&arr).unwrap();
+        assert_eq!(frac.values(), &[0.5, 0.75, 0.0]);
+        assert_eq!(int.values(), &[1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn modf_negative() {
+        let arr = UFuncArray::new(vec![2], vec![-1.5, -2.75], DType::F64).unwrap();
+        let (frac, int) = modf(&arr).unwrap();
+        assert_eq!(frac.values(), &[-0.5, -0.75]);
+        assert_eq!(int.values(), &[-1.0, -2.0]);
+    }
+
+    #[test]
+    fn modf_zero() {
+        let arr = UFuncArray::new(vec![1], vec![0.0], DType::F64).unwrap();
+        let (frac, int) = modf(&arr).unwrap();
+        assert_eq!(frac.values(), &[0.0]);
+        assert_eq!(int.values(), &[0.0]);
+    }
+
+    #[test]
+    fn modf_infinity() {
+        let arr =
+            UFuncArray::new(vec![2], vec![f64::INFINITY, f64::NEG_INFINITY], DType::F64).unwrap();
+        let (frac, int) = modf(&arr).unwrap();
+        assert_eq!(frac.values()[0], 0.0);
+        assert!(frac.values()[1].is_sign_negative()); // -0.0
+        assert_eq!(int.values()[0], f64::INFINITY);
+        assert_eq!(int.values()[1], f64::NEG_INFINITY);
+    }
+
+    #[test]
+    fn modf_nan() {
+        let arr = UFuncArray::new(vec![1], vec![f64::NAN], DType::F64).unwrap();
+        let (frac, int) = modf(&arr).unwrap();
+        assert!(frac.values()[0].is_nan());
+        assert!(int.values()[0].is_nan());
+    }
+
+    #[test]
+    fn modf_roundtrip() {
+        let vals = vec![1.5, -2.75, 100.125, -0.001, 3.0];
+        let arr = UFuncArray::new(vec![vals.len()], vals.clone(), DType::F64).unwrap();
+        let (frac, int) = modf(&arr).unwrap();
+        for i in 0..vals.len() {
+            let sum = frac.values()[i] + int.values()[i];
+            assert!(
+                (sum - vals[i]).abs() < 1e-15,
+                "modf roundtrip failed for {}",
+                vals[i]
+            );
+        }
+    }
+
+    #[test]
+    fn modf_integer_inputs() {
+        let arr = UFuncArray::new(vec![3], vec![1.0, 2.0, -3.0], DType::F64).unwrap();
+        let (frac, int) = modf(&arr).unwrap();
+        assert_eq!(frac.values()[0], 0.0);
+        assert_eq!(frac.values()[1], 0.0);
+        assert_eq!(int.values(), &[1.0, 2.0, -3.0]);
+    }
+
+    #[test]
+    fn modf_very_small() {
+        let arr = UFuncArray::new(vec![1], vec![1e-300], DType::F64).unwrap();
+        let (frac, int) = modf(&arr).unwrap();
+        assert!((frac.values()[0] - 1e-300).abs() < 1e-310);
+        assert_eq!(int.values()[0], 0.0);
+    }
+
+    // ── gcd / lcm tests ────────────────────────────────────────────────
+
+    #[test]
+    fn gcd_basic() {
+        let a = UFuncArray::new(vec![3], vec![12.0, 15.0, 100.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![3], vec![8.0, 25.0, 75.0], DType::F64).unwrap();
+        let out = gcd_arrays(&a, &b).unwrap();
+        assert_eq!(out.values(), &[4.0, 5.0, 25.0]);
+    }
+
+    #[test]
+    fn lcm_basic() {
+        let a = UFuncArray::new(vec![2], vec![4.0, 6.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![2], vec![6.0, 8.0], DType::F64).unwrap();
+        let out = lcm_arrays(&a, &b).unwrap();
+        assert_eq!(out.values(), &[12.0, 24.0]);
+    }
+
+    #[test]
+    fn gcd_with_zero() {
+        let a = UFuncArray::new(vec![3], vec![0.0, 0.0, 5.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![3], vec![5.0, 0.0, 0.0], DType::F64).unwrap();
+        let out = gcd_arrays(&a, &b).unwrap();
+        assert_eq!(out.values(), &[5.0, 0.0, 5.0]);
+    }
+
+    #[test]
+    fn lcm_with_zero() {
+        let a = UFuncArray::new(vec![2], vec![0.0, 0.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![2], vec![5.0, 0.0], DType::F64).unwrap();
+        let out = lcm_arrays(&a, &b).unwrap();
+        assert_eq!(out.values(), &[0.0, 0.0]);
+    }
+
+    #[test]
+    fn gcd_negative_inputs() {
+        let a = UFuncArray::new(vec![1], vec![-12.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![1], vec![8.0], DType::F64).unwrap();
+        let out = gcd_arrays(&a, &b).unwrap();
+        assert_eq!(out.values(), &[4.0]);
+    }
+
+    #[test]
+    fn lcm_negative_inputs() {
+        let a = UFuncArray::new(vec![1], vec![-4.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![1], vec![6.0], DType::F64).unwrap();
+        let out = lcm_arrays(&a, &b).unwrap();
+        assert_eq!(out.values(), &[12.0]);
+    }
+
+    #[test]
+    fn gcd_coprime() {
+        let a = UFuncArray::new(vec![1], vec![7.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![1], vec![13.0], DType::F64).unwrap();
+        let out = gcd_arrays(&a, &b).unwrap();
+        assert_eq!(out.values(), &[1.0]);
+    }
+
+    #[test]
+    fn gcd_same_number() {
+        let a = UFuncArray::new(vec![1], vec![42.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![1], vec![42.0], DType::F64).unwrap();
+        let out = gcd_arrays(&a, &b).unwrap();
+        assert_eq!(out.values(), &[42.0]);
+    }
+
+    #[test]
+    fn gcd_lcm_invariant() {
+        let vals_a = vec![12.0, 15.0, 7.0, 100.0];
+        let vals_b = vec![8.0, 25.0, 13.0, 75.0];
+        let a = UFuncArray::new(vec![4], vals_a.clone(), DType::F64).unwrap();
+        let b = UFuncArray::new(vec![4], vals_b.clone(), DType::F64).unwrap();
+        let g = gcd_arrays(&a, &b).unwrap();
+        let l = lcm_arrays(&a, &b).unwrap();
+        for i in 0..4 {
+            let product = g.values()[i] * l.values()[i];
+            let expected = vals_a[i].abs() * vals_b[i].abs();
+            assert!(
+                (product - expected).abs() < 1e-10,
+                "gcd*lcm invariant failed for ({}, {})",
+                vals_a[i],
+                vals_b[i]
+            );
+        }
+    }
+
+    #[test]
+    fn gcd_large_primes() {
+        // Two large primes → gcd = 1
+        let a = UFuncArray::new(vec![1], vec![1_000_000_007.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![1], vec![999_999_937.0], DType::F64).unwrap();
+        let out = gcd_arrays(&a, &b).unwrap();
+        assert_eq!(out.values(), &[1.0]);
+    }
+
+    // ── divmod tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn divmod_positive() {
+        let a = UFuncArray::new(vec![3], vec![7.0, 10.0, 100.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![3], vec![3.0, 3.0, 7.0], DType::F64).unwrap();
+        let (q, r) = divmod_arrays(&a, &b).unwrap();
+        assert_eq!(q.values(), &[2.0, 3.0, 14.0]);
+        assert_eq!(r.values(), &[1.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn divmod_negative_dividend() {
+        let a = UFuncArray::new(vec![1], vec![-7.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![1], vec![3.0], DType::F64).unwrap();
+        let (q, r) = divmod_arrays(&a, &b).unwrap();
+        assert_eq!(q.values(), &[-3.0]); // floor division
+        assert_eq!(r.values(), &[2.0]);
+    }
+
+    #[test]
+    fn divmod_negative_divisor() {
+        let a = UFuncArray::new(vec![1], vec![7.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![1], vec![-3.0], DType::F64).unwrap();
+        let (q, r) = divmod_arrays(&a, &b).unwrap();
+        assert_eq!(q.values(), &[-3.0]);
+        assert_eq!(r.values(), &[-2.0]);
+    }
+
+    #[test]
+    fn divmod_both_negative() {
+        let a = UFuncArray::new(vec![1], vec![-7.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![1], vec![-3.0], DType::F64).unwrap();
+        let (q, r) = divmod_arrays(&a, &b).unwrap();
+        assert_eq!(q.values(), &[2.0]);
+        assert_eq!(r.values(), &[-1.0]);
+    }
+
+    #[test]
+    fn divmod_float() {
+        let a = UFuncArray::new(vec![1], vec![7.5], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![1], vec![2.5], DType::F64).unwrap();
+        let (q, r) = divmod_arrays(&a, &b).unwrap();
+        assert_eq!(q.values(), &[3.0]);
+        assert!((r.values()[0]).abs() < 1e-15);
+    }
+
+    #[test]
+    fn divmod_zero_dividend() {
+        let a = UFuncArray::new(vec![1], vec![0.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![1], vec![5.0], DType::F64).unwrap();
+        let (q, r) = divmod_arrays(&a, &b).unwrap();
+        assert_eq!(q.values(), &[0.0]);
+        assert_eq!(r.values(), &[0.0]);
+    }
+
+    #[test]
+    fn divmod_invariant() {
+        let vals_a = vec![7.0, -7.0, 10.5, -3.25, 100.0];
+        let vals_b = vec![3.0, 3.0, 2.5, 1.5, 7.0];
+        let a = UFuncArray::new(vec![5], vals_a.clone(), DType::F64).unwrap();
+        let b = UFuncArray::new(vec![5], vals_b.clone(), DType::F64).unwrap();
+        let (q, r) = divmod_arrays(&a, &b).unwrap();
+        for i in 0..5 {
+            let reconstructed = q.values()[i] * vals_b[i] + r.values()[i];
+            assert!(
+                (reconstructed - vals_a[i]).abs() < 1e-12,
+                "divmod invariant failed for ({}, {})",
+                vals_a[i],
+                vals_b[i]
+            );
+        }
+    }
+
+    #[test]
+    fn divmod_by_zero() {
+        let a = UFuncArray::new(vec![1], vec![5.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![1], vec![0.0], DType::F64).unwrap();
+        let (q, r) = divmod_arrays(&a, &b).unwrap();
+        assert!(q.values()[0].is_infinite());
+        assert!(r.values()[0].is_nan());
+    }
+
+    // ── isposinf / isneginf tests ───────────────────────────────────────
+
+    #[test]
+    fn isposinf_mixed() {
+        let arr = UFuncArray::new(
+            vec![5],
+            vec![1.0, f64::INFINITY, f64::NEG_INFINITY, f64::NAN, 0.0],
+            DType::F64,
+        )
+        .unwrap();
+        let out = isposinf(&arr).unwrap();
+        assert_eq!(out.values(), &[0.0, 1.0, 0.0, 0.0, 0.0]);
+        assert_eq!(out.dtype(), DType::Bool);
+    }
+
+    #[test]
+    fn isneginf_mixed() {
+        let arr = UFuncArray::new(
+            vec![5],
+            vec![1.0, f64::INFINITY, f64::NEG_INFINITY, f64::NAN, 0.0],
+            DType::F64,
+        )
+        .unwrap();
+        let out = isneginf(&arr).unwrap();
+        assert_eq!(out.values(), &[0.0, 0.0, 1.0, 0.0, 0.0]);
+        assert_eq!(out.dtype(), DType::Bool);
+    }
+
+    #[test]
+    fn isposinf_all_finite() {
+        let arr = UFuncArray::new(vec![3], vec![1.0, -2.0, 0.0], DType::F64).unwrap();
+        let out = isposinf(&arr).unwrap();
+        assert_eq!(out.values(), &[0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn isneginf_all_finite() {
+        let arr = UFuncArray::new(vec![3], vec![1.0, -2.0, 0.0], DType::F64).unwrap();
+        let out = isneginf(&arr).unwrap();
+        assert_eq!(out.values(), &[0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn isposinf_multiple_inf() {
+        let arr = UFuncArray::new(
+            vec![3],
+            vec![f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY],
+            DType::F64,
+        )
+        .unwrap();
+        let out = isposinf(&arr).unwrap();
+        assert_eq!(out.values(), &[1.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn isinf_relationship() {
+        // isposinf(x) | isneginf(x) == isinf(x)
+        let arr = UFuncArray::new(
+            vec![5],
+            vec![1.0, f64::INFINITY, f64::NEG_INFINITY, f64::NAN, 0.0],
+            DType::F64,
+        )
+        .unwrap();
+        let pos = isposinf(&arr).unwrap();
+        let neg = isneginf(&arr).unwrap();
+        let inf = arr.elementwise_unary(UnaryOp::Isinf);
+        for i in 0..5 {
+            let combined = if pos.values()[i] == 1.0 || neg.values()[i] == 1.0 {
+                1.0
+            } else {
+                0.0
+            };
+            assert_eq!(
+                combined,
+                inf.values()[i],
+                "isinf relationship failed at {}",
+                i
+            );
+        }
+    }
+
+    // ── bitwise_count tests ─────────────────────────────────────────────
+
+    #[test]
+    fn bitwise_count_powers_of_two() {
+        let arr = UFuncArray::new(vec![5], vec![1.0, 2.0, 4.0, 8.0, 16.0], DType::F64).unwrap();
+        let out = bitwise_count(&arr).unwrap();
+        assert_eq!(out.values(), &[1.0, 1.0, 1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn bitwise_count_known_values() {
+        let arr = UFuncArray::new(vec![4], vec![0.0, 7.0, 255.0, 1023.0], DType::F64).unwrap();
+        let out = bitwise_count(&arr).unwrap();
+        assert_eq!(out.values(), &[0.0, 3.0, 8.0, 10.0]);
+    }
+
+    #[test]
+    fn bitwise_count_specific() {
+        let arr = UFuncArray::new(vec![3], vec![13.0, 100.0, 1024.0], DType::F64).unwrap();
+        let out = bitwise_count(&arr).unwrap();
+        // 13 = 1101 → 3, 100 = 1100100 → 3, 1024 = 10000000000 → 1
+        assert_eq!(out.values(), &[3.0, 3.0, 1.0]);
+    }
+
+    #[test]
+    fn bitwise_count_negative() {
+        let arr = UFuncArray::new(vec![2], vec![-1.0, -7.0], DType::F64).unwrap();
+        let out = bitwise_count(&arr).unwrap();
+        // Uses absolute value: |-1| = 1 → 1, |-7| = 7 → 3
+        assert_eq!(out.values(), &[1.0, 3.0]);
+    }
+
+    #[test]
+    fn bitwise_count_zero() {
+        let arr = UFuncArray::new(vec![1], vec![0.0], DType::F64).unwrap();
+        let out = bitwise_count(&arr).unwrap();
+        assert_eq!(out.values(), &[0.0]);
+    }
+
+    #[test]
+    fn bitwise_count_float_truncation() {
+        let arr = UFuncArray::new(vec![1], vec![7.9], DType::F64).unwrap();
+        let out = bitwise_count(&arr).unwrap();
+        // 7.9 truncates to 7 = 111 → 3
+        assert_eq!(out.values(), &[3.0]);
+    }
+
+    // ── sort_complex tests ──────────────────────────────────────────────
+
+    #[test]
+    fn sort_complex_basic() {
+        // [3+1j, 1+2j, 1+1j] → [1+1j, 1+2j, 3+1j]
+        let arr = UFuncArray::new(
+            vec![3, 2],
+            vec![3.0, 1.0, 1.0, 2.0, 1.0, 1.0],
+            DType::Complex128,
+        )
+        .unwrap();
+        let out = sort_complex(&arr).unwrap();
+        assert_eq!(out.values(), &[1.0, 1.0, 1.0, 2.0, 3.0, 1.0]);
+    }
+
+    #[test]
+    fn sort_complex_equal_real() {
+        // [3+2j, 3+1j, 1+5j] → [1+5j, 3+1j, 3+2j]
+        let arr = UFuncArray::new(
+            vec![3, 2],
+            vec![3.0, 2.0, 3.0, 1.0, 1.0, 5.0],
+            DType::Complex128,
+        )
+        .unwrap();
+        let out = sort_complex(&arr).unwrap();
+        assert_eq!(out.values(), &[1.0, 5.0, 3.0, 1.0, 3.0, 2.0]);
+    }
+
+    #[test]
+    fn sort_complex_real_input() {
+        let arr = UFuncArray::new(vec![3], vec![3.0, 1.0, 2.0], DType::F64).unwrap();
+        let out = sort_complex(&arr).unwrap();
+        // Treated as complex with imag=0: [1+0j, 2+0j, 3+0j]
+        assert_eq!(out.values(), &[1.0, 0.0, 2.0, 0.0, 3.0, 0.0]);
+    }
+
+    #[test]
+    fn sort_complex_already_sorted() {
+        let arr = UFuncArray::new(
+            vec![3, 2],
+            vec![1.0, 0.0, 2.0, 0.0, 3.0, 0.0],
+            DType::Complex128,
+        )
+        .unwrap();
+        let out = sort_complex(&arr).unwrap();
+        assert_eq!(out.values(), &[1.0, 0.0, 2.0, 0.0, 3.0, 0.0]);
+    }
+
+    #[test]
+    fn sort_complex_negative() {
+        // [-1+2j, -3+1j, 2-1j] → [-3+1j, -1+2j, 2-1j]
+        let arr = UFuncArray::new(
+            vec![3, 2],
+            vec![-1.0, 2.0, -3.0, 1.0, 2.0, -1.0],
+            DType::Complex128,
+        )
+        .unwrap();
+        let out = sort_complex(&arr).unwrap();
+        assert_eq!(out.values(), &[-3.0, 1.0, -1.0, 2.0, 2.0, -1.0]);
+    }
+
+    #[test]
+    fn sort_complex_single() {
+        let arr = UFuncArray::new(vec![1, 2], vec![1.0, 2.0], DType::Complex128).unwrap();
+        let out = sort_complex(&arr).unwrap();
+        assert_eq!(out.values(), &[1.0, 2.0]);
+    }
+
+    #[test]
+    fn sort_complex_nan() {
+        // NaN sorts to end
+        let arr = UFuncArray::new(
+            vec![3, 2],
+            vec![f64::NAN, 1.0, 1.0, 0.0, 2.0, 0.0],
+            DType::Complex128,
+        )
+        .unwrap();
+        let out = sort_complex(&arr).unwrap();
+        assert_eq!(out.values()[0], 1.0); // 1+0j first
+        assert_eq!(out.values()[2], 2.0); // 2+0j second
+        assert!(out.values()[4].is_nan()); // NaN last
+    }
+
+    // ── count_nonzero with axis tests ───────────────────────────────────
+
+    #[test]
+    fn count_nonzero_axis_none() {
+        let a =
+            UFuncArray::new(vec![2, 3], vec![0.0, 1.0, 2.0, 3.0, 0.0, 5.0], DType::F64).unwrap();
+        let out = a.count_nonzero(None, false).unwrap();
+        assert_eq!(out.values(), &[4.0]);
+        assert_eq!(out.shape(), &[] as &[usize]);
+    }
+
+    #[test]
+    fn count_nonzero_axis0() {
+        // [[0,1,2],[3,0,5]] → axis=0 → [1,1,2]
+        let a =
+            UFuncArray::new(vec![2, 3], vec![0.0, 1.0, 2.0, 3.0, 0.0, 5.0], DType::F64).unwrap();
+        let out = a.count_nonzero(Some(0), false).unwrap();
+        assert_eq!(out.values(), &[1.0, 1.0, 2.0]);
+        assert_eq!(out.shape(), &[3]);
+    }
+
+    #[test]
+    fn count_nonzero_axis1() {
+        // [[0,1,2],[3,0,5]] → axis=1 → [2,2]
+        let a =
+            UFuncArray::new(vec![2, 3], vec![0.0, 1.0, 2.0, 3.0, 0.0, 5.0], DType::F64).unwrap();
+        let out = a.count_nonzero(Some(1), false).unwrap();
+        assert_eq!(out.values(), &[2.0, 2.0]);
+        assert_eq!(out.shape(), &[2]);
+    }
+
+    #[test]
+    fn count_nonzero_keepdims() {
+        let a =
+            UFuncArray::new(vec![2, 3], vec![0.0, 1.0, 2.0, 3.0, 0.0, 5.0], DType::F64).unwrap();
+        let out = a.count_nonzero(Some(1), true).unwrap();
+        assert_eq!(out.values(), &[2.0, 2.0]);
+        assert_eq!(out.shape(), &[2, 1]);
+    }
+
+    #[test]
+    fn count_nonzero_all_zeros() {
+        let a = UFuncArray::new(vec![2, 3], vec![0.0; 6], DType::F64).unwrap();
+        let out = a.count_nonzero(Some(0), false).unwrap();
+        assert_eq!(out.values(), &[0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn count_nonzero_negative_axis() {
+        let a =
+            UFuncArray::new(vec![2, 3], vec![0.0, 1.0, 2.0, 3.0, 0.0, 5.0], DType::F64).unwrap();
+        let out = a.count_nonzero(Some(-1), false).unwrap();
+        assert_eq!(out.values(), &[2.0, 2.0]); // same as axis=1
+    }
+
+    #[test]
+    fn count_nonzero_axis_oob() {
+        let a = UFuncArray::new(vec![2, 3], vec![0.0; 6], DType::F64).unwrap();
+        assert!(a.count_nonzero(Some(5), false).is_err());
+    }
+
+    // ── isin invert tests ───────────────────────────────────────────────
+
+    #[test]
+    fn isin_invert_false() {
+        let arr = UFuncArray::new(vec![4], vec![1.0, 2.0, 3.0, 4.0], DType::F64).unwrap();
+        let test = UFuncArray::new(vec![2], vec![2.0, 4.0], DType::F64).unwrap();
+        let result = arr.isin(&test, false);
+        assert_eq!(result.values(), &[0.0, 1.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn isin_invert_true() {
+        let arr = UFuncArray::new(vec![4], vec![1.0, 2.0, 3.0, 4.0], DType::F64).unwrap();
+        let test = UFuncArray::new(vec![2], vec![2.0, 4.0], DType::F64).unwrap();
+        let result = arr.isin(&test, true);
+        assert_eq!(result.values(), &[1.0, 0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn isin_complement_property() {
+        let arr = UFuncArray::new(vec![4], vec![1.0, 2.0, 3.0, 4.0], DType::F64).unwrap();
+        let test = UFuncArray::new(vec![2], vec![2.0, 4.0], DType::F64).unwrap();
+        let normal = arr.isin(&test, false);
+        let inverted = arr.isin(&test, true);
+        for i in 0..4 {
+            assert_eq!(
+                normal.values()[i] + inverted.values()[i],
+                1.0,
+                "complement property failed at {}",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn isin_invert_all_matching() {
+        let arr = UFuncArray::new(vec![3], vec![1.0, 1.0, 1.0], DType::F64).unwrap();
+        let test = UFuncArray::new(vec![1], vec![1.0], DType::F64).unwrap();
+        let result = arr.isin(&test, true);
+        assert_eq!(result.values(), &[0.0, 0.0, 0.0]);
+    }
+
+    // ── searchsorted side/sorter tests ──────────────────────────────────
+
+    #[test]
+    fn searchsorted_side_right_duplicates() {
+        let sorted = UFuncArray::new(vec![5], vec![1.0, 2.0, 2.0, 2.0, 3.0], DType::F64).unwrap();
+        let probe = UFuncArray::scalar(2.0, DType::F64);
+        let out = sorted.searchsorted(&probe, Some("right"), None).unwrap();
+        assert_eq!(out.values(), &[4.0]); // after last 2
+    }
+
+    #[test]
+    fn searchsorted_side_left_duplicates() {
+        let sorted = UFuncArray::new(vec![5], vec![1.0, 2.0, 2.0, 2.0, 3.0], DType::F64).unwrap();
+        let probe = UFuncArray::scalar(2.0, DType::F64);
+        let out = sorted.searchsorted(&probe, Some("left"), None).unwrap();
+        assert_eq!(out.values(), &[1.0]); // before first 2
+    }
+
+    #[test]
+    fn searchsorted_right_no_duplicates() {
+        let sorted = UFuncArray::new(vec![4], vec![1.0, 3.0, 5.0, 7.0], DType::F64).unwrap();
+        let probe = UFuncArray::scalar(4.0, DType::F64);
+        let left = sorted.searchsorted(&probe, Some("left"), None).unwrap();
+        let right = sorted.searchsorted(&probe, Some("right"), None).unwrap();
+        assert_eq!(left.values(), right.values()); // same when no duplicates
+    }
+
+    #[test]
+    fn searchsorted_with_sorter() {
+        // Unsorted: [5, 1, 3], sorter = [1, 2, 0] → sorted view = [1, 3, 5]
+        let unsorted = UFuncArray::new(vec![3], vec![5.0, 1.0, 3.0], DType::F64).unwrap();
+        let probe = UFuncArray::scalar(2.0, DType::F64);
+        let out = unsorted
+            .searchsorted(&probe, None, Some(&[1, 2, 0]))
+            .unwrap();
+        assert_eq!(out.values(), &[1.0]); // 2 goes after 1 in sorted order
+    }
+
+    #[test]
+    fn searchsorted_invalid_side() {
+        let sorted = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        let probe = UFuncArray::scalar(2.0, DType::F64);
+        assert!(sorted.searchsorted(&probe, Some("middle"), None).is_err());
+    }
+
+    #[test]
+    fn searchsorted_invalid_sorter_length() {
+        let arr = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        let probe = UFuncArray::scalar(2.0, DType::F64);
+        assert!(arr.searchsorted(&probe, None, Some(&[0, 1])).is_err());
+    }
+
+    // ── where_nonzero tests ─────────────────────────────────────────────
+
+    #[test]
+    fn where_nonzero_1d() {
+        let arr = UFuncArray::new(vec![5], vec![0.0, 1.0, 0.0, 3.0, 0.0], DType::F64).unwrap();
+        let result = where_nonzero(&arr).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].values(), &[1.0, 3.0]);
+    }
+
+    #[test]
+    fn where_nonzero_2d() {
+        let arr = UFuncArray::new(vec![2, 2], vec![1.0, 0.0, 0.0, 3.0], DType::F64).unwrap();
+        let result = where_nonzero(&arr).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].values(), &[0.0, 1.0]); // row indices
+        assert_eq!(result[1].values(), &[0.0, 1.0]); // col indices
+    }
+
+    #[test]
+    fn where_nonzero_all_zero() {
+        let arr = UFuncArray::new(vec![3], vec![0.0, 0.0, 0.0], DType::F64).unwrap();
+        let result = where_nonzero(&arr).unwrap();
+        assert_eq!(result[0].values().len(), 0);
+    }
+
+    #[test]
+    fn where_nonzero_all_nonzero() {
+        let arr = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        let result = where_nonzero(&arr).unwrap();
+        assert_eq!(result[0].values(), &[0.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn where_nonzero_nan_is_nonzero() {
+        let arr = UFuncArray::new(vec![3], vec![0.0, f64::NAN, 1.0], DType::F64).unwrap();
+        let result = where_nonzero(&arr).unwrap();
+        assert_eq!(result[0].values(), &[1.0, 2.0]); // NaN != 0.0
+    }
+
+    #[test]
+    fn where_nonzero_3d() {
+        // shape [2,2,2] with one nonzero at (1,0,1)
+        let mut vals = vec![0.0; 8];
+        vals[5] = 1.0; // index (1,0,1) in C-order
+        let arr = UFuncArray::new(vec![2, 2, 2], vals, DType::F64).unwrap();
+        let result = where_nonzero(&arr).unwrap();
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].values(), &[1.0]); // dim 0
+        assert_eq!(result[1].values(), &[0.0]); // dim 1
+        assert_eq!(result[2].values(), &[1.0]); // dim 2
+    }
+
+    // ── unique variants tests ───────────────────────────────────────────
+
+    #[test]
+    fn unique_values_basic() {
+        let arr = UFuncArray::new(vec![6], vec![3.0, 1.0, 2.0, 1.0, 3.0, 2.0], DType::F64).unwrap();
+        let result = unique_values(&arr);
+        assert_eq!(result.values(), &[1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn unique_counts_basic() {
+        let arr = UFuncArray::new(vec![6], vec![3.0, 1.0, 2.0, 1.0, 3.0, 2.0], DType::F64).unwrap();
+        let (vals, counts) = unique_counts(&arr);
+        assert_eq!(vals.values(), &[1.0, 2.0, 3.0]);
+        assert_eq!(counts.values(), &[2.0, 2.0, 2.0]);
+        // counts should sum to array length
+        let sum: f64 = counts.values().iter().sum();
+        assert_eq!(sum, 6.0);
+    }
+
+    #[test]
+    fn unique_inverse_basic() {
+        let arr = UFuncArray::new(vec![5], vec![3.0, 1.0, 2.0, 1.0, 3.0], DType::F64).unwrap();
+        let (vals, inverse) = unique_inverse(&arr);
+        assert_eq!(vals.values(), &[1.0, 2.0, 3.0]);
+        // Reconstruct: vals[inverse[i]] == original[i]
+        for (i, &inv_idx) in inverse.values().iter().enumerate() {
+            let reconstructed = vals.values()[inv_idx as usize];
+            assert_eq!(reconstructed, arr.values()[i], "inverse failed at {}", i);
+        }
+    }
+
+    #[test]
+    fn unique_all_basic() {
+        let arr = UFuncArray::new(vec![5], vec![3.0, 1.0, 2.0, 1.0, 3.0], DType::F64).unwrap();
+        let (vals, indices, inverse, counts) = unique_all(&arr);
+        assert_eq!(vals.values(), &[1.0, 2.0, 3.0]);
+        // indices: first occurrence of each unique value in original
+        assert_eq!(indices.values(), &[1.0, 2.0, 0.0]);
+        // inverse: index into vals for each original element
+        assert_eq!(inverse.values(), &[2.0, 0.0, 1.0, 0.0, 2.0]);
+        // counts
+        assert_eq!(counts.values(), &[2.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn unique_values_empty() {
+        let arr = UFuncArray::new(vec![0], vec![], DType::F64).unwrap();
+        let result = unique_values(&arr);
+        assert_eq!(result.values().len(), 0);
+    }
+
+    #[test]
+    fn unique_values_single() {
+        let arr = UFuncArray::new(vec![1], vec![42.0], DType::F64).unwrap();
+        let result = unique_values(&arr);
+        assert_eq!(result.values(), &[42.0]);
+    }
+
+    #[test]
+    fn unique_counts_all_same() {
+        let arr = UFuncArray::new(vec![4], vec![5.0, 5.0, 5.0, 5.0], DType::F64).unwrap();
+        let (vals, counts) = unique_counts(&arr);
+        assert_eq!(vals.values(), &[5.0]);
+        assert_eq!(counts.values(), &[4.0]);
+    }
+
+    // ── Chebyshev polynomial tests ──────────────────────────────────────
+
+    #[test]
+    fn chebval_t0_through_t3() {
+        // T_0(x) = 1, T_1(x) = x, T_2(x) = 2x^2-1, T_3(x) = 4x^3-3x
+        let x = vec![0.0, 0.5, 1.0, -1.0];
+        // T_0 = [1]
+        let t0 = chebval(&x, &[1.0]);
+        assert_eq!(t0, vec![1.0, 1.0, 1.0, 1.0]);
+        // T_1 = [0, 1]
+        let t1 = chebval(&x, &[0.0, 1.0]);
+        assert_eq!(t1, vec![0.0, 0.5, 1.0, -1.0]);
+        // T_2 = [0, 0, 1] → 2x^2 - 1
+        let t2 = chebval(&x, &[0.0, 0.0, 1.0]);
+        for (i, &xi) in x.iter().enumerate() {
+            let expected = 2.0 * xi * xi - 1.0;
+            assert!(
+                (t2[i] - expected).abs() < 1e-14,
+                "T_2({}) = {} expected {}",
+                xi,
+                t2[i],
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn chebval_at_chebyshev_nodes() {
+        // T_n(cos(kπ/n)) = cos(kπ) = (-1)^k for k = 0..n
+        let n = 4;
+        let nodes: Vec<f64> = (0..=n)
+            .map(|k| (k as f64 * std::f64::consts::PI / n as f64).cos())
+            .collect();
+        // T_4 = [0, 0, 0, 0, 1]
+        let c = vec![0.0, 0.0, 0.0, 0.0, 1.0];
+        let vals = chebval(&nodes, &c);
+        for (k, &v) in vals.iter().enumerate() {
+            let expected = if k % 2 == 0 { 1.0 } else { -1.0 };
+            assert!(
+                (v - expected).abs() < 1e-12,
+                "T_4(cos({}π/4)) = {} expected {}",
+                k,
+                v,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn chebfit_polynomial() {
+        // Fit x^2 on [-1, 1] — should be exactly (T_0 + T_2)/2 = [0.5, 0, 0.5]
+        let n = 20;
+        let x: Vec<f64> = (0..n)
+            .map(|i| -1.0 + 2.0 * i as f64 / (n - 1) as f64)
+            .collect();
+        let y: Vec<f64> = x.iter().map(|&xi| xi * xi).collect();
+        let c = chebfit(&x, &y, 2).unwrap();
+        assert!((c[0] - 0.5).abs() < 1e-10, "c[0] = {}", c[0]);
+        assert!(c[1].abs() < 1e-10, "c[1] = {}", c[1]);
+        assert!((c[2] - 0.5).abs() < 1e-10, "c[2] = {}", c[2]);
+    }
+
+    #[test]
+    fn chebder_t3() {
+        // T_3 = [0, 0, 0, 1]
+        // T_3'(x) = 3*U_2(x) = 3*(4x^2 - 1) = 12x^2 - 3
+        // In Chebyshev basis: T_3' = [-1.5, 0, 6] → we check numerically
+        let c = vec![0.0, 0.0, 0.0, 1.0];
+        let dc = chebder(&c, 1);
+        // Evaluate derivative at x = 0.5
+        let val = chebval(&[0.5], &dc)[0];
+        let expected = 12.0 * 0.25 - 3.0; // 0.0
+        assert!(
+            (val - expected).abs() < 1e-10,
+            "T_3'(0.5) = {} expected {}",
+            val,
+            expected
+        );
+    }
+
+    #[test]
+    fn chebint_chebder_roundtrip() {
+        let c = vec![1.0, 2.0, 3.0]; // arbitrary polynomial
+        let integrated = chebint(&c, 1);
+        let roundtrip = chebder(&integrated, 1);
+        for i in 0..c.len() {
+            assert!(
+                (roundtrip[i] - c[i]).abs() < 1e-10,
+                "roundtrip failed at {}: {} vs {}",
+                i,
+                roundtrip[i],
+                c[i]
+            );
+        }
+    }
+
+    #[test]
+    fn chebadd_chebsub() {
+        let c1 = vec![1.0, 2.0, 3.0];
+        let c2 = vec![4.0, 5.0];
+        let sum = chebadd(&c1, &c2);
+        assert_eq!(sum, vec![5.0, 7.0, 3.0]);
+        let diff = chebsub(&c1, &c2);
+        assert_eq!(diff, vec![-3.0, -3.0, 3.0]);
+    }
+
+    #[test]
+    fn chebmul_t1_times_t1() {
+        // T_1 * T_1 = (T_0 + T_2)/2
+        let t1 = vec![0.0, 1.0];
+        let result = chebmul(&t1, &t1);
+        // Expected: [0.5, 0, 0.5]
+        assert!((result[0] - 0.5).abs() < 1e-14);
+        assert!(result[1].abs() < 1e-14);
+        assert!((result[2] - 0.5).abs() < 1e-14);
+    }
+
+    #[test]
+    fn cheb2poly_t2() {
+        // T_2 = 2x^2 - 1 → power basis: [-1, 0, 2]
+        let c = vec![0.0, 0.0, 1.0];
+        let p = cheb2poly(&c);
+        assert!((p[0] - (-1.0)).abs() < 1e-14, "p[0] = {}", p[0]);
+        assert!(p[1].abs() < 1e-14, "p[1] = {}", p[1]);
+        assert!((p[2] - 2.0).abs() < 1e-14, "p[2] = {}", p[2]);
+    }
+
+    #[test]
+    fn poly2cheb_x_squared() {
+        // x^2 = (T_0 + T_2)/2 → [0.5, 0, 0.5]
+        let p = vec![0.0, 0.0, 1.0]; // x^2 in power basis
+        let c = poly2cheb(&p);
+        assert!((c[0] - 0.5).abs() < 1e-12, "c[0] = {}", c[0]);
+        assert!(c[1].abs() < 1e-12, "c[1] = {}", c[1]);
+        assert!((c[2] - 0.5).abs() < 1e-12, "c[2] = {}", c[2]);
+    }
+
+    #[test]
+    fn cheb2poly_poly2cheb_roundtrip() {
+        let c = vec![1.0, 2.0, 3.0, 0.5];
+        let p = cheb2poly(&c);
+        let c2 = poly2cheb(&p);
+        for i in 0..c.len() {
+            assert!(
+                (c2[i] - c[i]).abs() < 1e-10,
+                "roundtrip failed at {}: {} vs {}",
+                i,
+                c2[i],
+                c[i]
+            );
+        }
+    }
+
+    #[test]
+    fn chebval_empty_coeffs() {
+        let result = chebval(&[1.0, 2.0], &[]);
+        assert_eq!(result, vec![0.0, 0.0]);
+    }
+
+    // ── Legendre polynomial tests ───────────────────────────────────────
+
+    #[test]
+    fn legval_p0_through_p2() {
+        // P_0=1, P_1=x, P_2=(3x^2-1)/2
+        let x = vec![0.0, 0.5, 1.0, -1.0];
+        let p0 = legval(&x, &[1.0]);
+        assert_eq!(p0, vec![1.0, 1.0, 1.0, 1.0]);
+        let p1 = legval(&x, &[0.0, 1.0]);
+        assert_eq!(p1, vec![0.0, 0.5, 1.0, -1.0]);
+        let p2 = legval(&x, &[0.0, 0.0, 1.0]);
+        for (i, &xi) in x.iter().enumerate() {
+            let expected = (3.0 * xi * xi - 1.0) / 2.0;
+            assert!(
+                (p2[i] - expected).abs() < 1e-14,
+                "P_2({}) = {} expected {}",
+                xi,
+                p2[i],
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn legfit_polynomial() {
+        let n = 20;
+        let x: Vec<f64> = (0..n)
+            .map(|i| -1.0 + 2.0 * i as f64 / (n - 1) as f64)
+            .collect();
+        let y: Vec<f64> = x.iter().map(|&xi| xi * xi).collect();
+        let c = legfit(&x, &y, 2).unwrap();
+        // x^2 = (P_0 + 2*P_2)/3 = [1/3, 0, 2/3]
+        assert!((c[0] - 1.0 / 3.0).abs() < 1e-10, "c[0] = {}", c[0]);
+        assert!(c[1].abs() < 1e-10, "c[1] = {}", c[1]);
+        assert!((c[2] - 2.0 / 3.0).abs() < 1e-10, "c[2] = {}", c[2]);
+    }
+
+    #[test]
+    fn legder_basic() {
+        // d/dx P_1(x) = 1, so legder([0, 1], 1) should give [1]
+        let dc = legder(&[0.0, 1.0], 1);
+        assert_eq!(dc.len(), 1);
+        let val = legval(&[0.5], &dc)[0];
+        assert!((val - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn legint_derivative_numerical() {
+        // Verify that the integral of P_1(x) = x is x^2/2 + C
+        // legint([0, 1]) should give coefficients whose derivative is [0, 1]
+        let c = vec![0.0, 1.0]; // P_1 = x
+        let integrated = legint(&c, 1);
+        // Numerically verify: evaluate integrated at x=0.5 and x=0
+        // ∫x dx from 0 to 0.5 = 0.125
+        let val_half = legval(&[0.5], &integrated)[0];
+        let val_zero = legval(&[0.0], &integrated)[0];
+        let numerical_integral = val_half - val_zero;
+        assert!(
+            (numerical_integral - 0.125).abs() < 1e-12,
+            "∫x dx from 0 to 0.5 = {} expected 0.125",
+            numerical_integral
+        );
+    }
+
+    // ── Hermite polynomial tests ────────────────────────────────────────
+
+    #[test]
+    fn hermval_h0_through_h2() {
+        // H_0=1, H_1=2x, H_2=4x^2-2
+        let x = vec![0.0, 0.5, 1.0];
+        let h0 = hermval(&x, &[1.0]);
+        assert_eq!(h0, vec![1.0, 1.0, 1.0]);
+        let h1 = hermval(&x, &[0.0, 1.0]);
+        assert_eq!(h1, vec![0.0, 1.0, 2.0]); // H_1 = 2x
+        let h2 = hermval(&x, &[0.0, 0.0, 1.0]);
+        for (i, &xi) in x.iter().enumerate() {
+            let expected = 4.0 * xi * xi - 2.0;
+            assert!(
+                (h2[i] - expected).abs() < 1e-14,
+                "H_2({}) = {} expected {}",
+                xi,
+                h2[i],
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn hermeval_he0_through_he2() {
+        // He_0=1, He_1=x, He_2=x^2-1
+        let x = vec![0.0, 1.0, 2.0];
+        let he2 = hermeval(&x, &[0.0, 0.0, 1.0]);
+        for (i, &xi) in x.iter().enumerate() {
+            let expected = xi * xi - 1.0;
+            assert!(
+                (he2[i] - expected).abs() < 1e-14,
+                "He_2({}) = {} expected {}",
+                xi,
+                he2[i],
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn hermder_basic() {
+        // H_1' = 2, so hermder([0, 1], 1) should give [2]
+        let dc = hermder(&[0.0, 1.0], 1);
+        assert_eq!(dc.len(), 1);
+        assert!((dc[0] - 2.0).abs() < 1e-14);
+    }
+
+    #[test]
+    fn hermint_hermder_roundtrip() {
+        let c = vec![1.0, 2.0, 3.0];
+        let integrated = hermint(&c, 1);
+        let roundtrip = hermder(&integrated, 1);
+        for i in 0..c.len() {
+            assert!(
+                (roundtrip[i] - c[i]).abs() < 1e-10,
+                "Hermite roundtrip [{}]: {} vs {}",
+                i,
+                roundtrip[i],
+                c[i]
+            );
+        }
+    }
+
+    // ── Laguerre polynomial tests ───────────────────────────────────────
+
+    #[test]
+    fn lagval_l0_through_l2() {
+        // L_0=1, L_1=1-x, L_2=(x^2-4x+2)/2
+        let x = vec![0.0, 1.0, 2.0];
+        let l0 = lagval(&x, &[1.0]);
+        assert_eq!(l0, vec![1.0, 1.0, 1.0]);
+        let l1 = lagval(&x, &[0.0, 1.0]);
+        for (i, &xi) in x.iter().enumerate() {
+            let expected = 1.0 - xi;
+            assert!(
+                (l1[i] - expected).abs() < 1e-14,
+                "L_1({}) = {} expected {}",
+                xi,
+                l1[i],
+                expected
+            );
+        }
+        let l2 = lagval(&x, &[0.0, 0.0, 1.0]);
+        for (i, &xi) in x.iter().enumerate() {
+            let expected = (xi * xi - 4.0 * xi + 2.0) / 2.0;
+            assert!(
+                (l2[i] - expected).abs() < 1e-14,
+                "L_2({}) = {} expected {}",
+                xi,
+                l2[i],
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn lagder_basic() {
+        // L_1' = -1
+        let dc = lagder(&[0.0, 1.0], 1);
+        assert_eq!(dc.len(), 1);
+        assert!((dc[0] - (-1.0)).abs() < 1e-14);
+    }
+
+    // ── scimath tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn scimath_sqrt_positive() {
+        let arr = UFuncArray::new(vec![2], vec![4.0, 9.0], DType::F64).unwrap();
+        let out = scimath_sqrt(&arr).unwrap();
+        assert_eq!(out.shape(), &[2, 2]);
+        assert!((out.values()[0] - 2.0).abs() < 1e-14); // real
+        assert_eq!(out.values()[1], 0.0); // imag
+        assert!((out.values()[2] - 3.0).abs() < 1e-14);
+        assert_eq!(out.values()[3], 0.0);
+    }
+
+    #[test]
+    fn scimath_sqrt_negative() {
+        let arr = UFuncArray::new(vec![1], vec![-4.0], DType::F64).unwrap();
+        let out = scimath_sqrt(&arr).unwrap();
+        assert_eq!(out.values()[0], 0.0); // real = 0
+        assert!((out.values()[1] - 2.0).abs() < 1e-14); // imag = 2
+    }
+
+    #[test]
+    fn scimath_log_negative() {
+        let arr = UFuncArray::new(vec![1], vec![-1.0], DType::F64).unwrap();
+        let out = scimath_log(&arr).unwrap();
+        assert!(out.values()[0].abs() < 1e-14); // ln(1) = 0
+        assert!((out.values()[1] - std::f64::consts::PI).abs() < 1e-14); // imag = π
+    }
+
+    #[test]
+    fn scimath_log_positive() {
+        let e = std::f64::consts::E;
+        let arr = UFuncArray::new(vec![1], vec![e], DType::F64).unwrap();
+        let out = scimath_log(&arr).unwrap();
+        assert!((out.values()[0] - 1.0).abs() < 1e-14);
+        assert_eq!(out.values()[1], 0.0);
+    }
+
+    #[test]
+    fn scimath_log2_negative() {
+        let arr = UFuncArray::new(vec![1], vec![-1.0], DType::F64).unwrap();
+        let out = scimath_log2(&arr).unwrap();
+        assert!(out.values()[0].abs() < 1e-14); // log2(1) = 0
+        let expected_imag = std::f64::consts::PI / std::f64::consts::LN_2;
+        assert!((out.values()[1] - expected_imag).abs() < 1e-12);
+    }
+
+    #[test]
+    fn scimath_log10_negative() {
+        let arr = UFuncArray::new(vec![1], vec![-10.0], DType::F64).unwrap();
+        let out = scimath_log10(&arr).unwrap();
+        assert!((out.values()[0] - 1.0).abs() < 1e-14); // log10(10) = 1
+        let expected_imag = std::f64::consts::PI / std::f64::consts::LN_10;
+        assert!((out.values()[1] - expected_imag).abs() < 1e-12);
+    }
+
+    #[test]
+    fn scimath_power_negative_base() {
+        let arr = UFuncArray::new(vec![1], vec![-8.0], DType::F64).unwrap();
+        let out = scimath_power(&arr, 1.0 / 3.0).unwrap();
+        // (-8)^(1/3) = 2 * e^{i*π/3} = 2*(cos(π/3) + i*sin(π/3)) = 1 + i*sqrt(3)
+        let r = 2.0; // 8^(1/3) = 2
+        let theta = std::f64::consts::PI / 3.0;
+        assert!((out.values()[0] - r * theta.cos()).abs() < 1e-12);
+        assert!((out.values()[1] - r * theta.sin()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn scimath_arccos_in_range() {
+        let arr = UFuncArray::new(vec![1], vec![0.5], DType::F64).unwrap();
+        let out = scimath_arccos(&arr).unwrap();
+        assert!((out.values()[0] - (0.5_f64).acos()).abs() < 1e-14);
+        assert_eq!(out.values()[1], 0.0);
+    }
+
+    #[test]
+    fn scimath_arccos_out_of_range() {
+        let arr = UFuncArray::new(vec![1], vec![2.0], DType::F64).unwrap();
+        let out = scimath_arccos(&arr).unwrap();
+        // arccos(2.0) → complex with real=0, imag = -ln(2+sqrt(3))
+        assert_eq!(out.values()[0], 0.0);
+        assert!(out.values()[1].is_finite());
+    }
+
+    #[test]
+    fn scimath_arcsin_in_range() {
+        let arr = UFuncArray::new(vec![1], vec![0.5], DType::F64).unwrap();
+        let out = scimath_arcsin(&arr).unwrap();
+        assert!((out.values()[0] - (0.5_f64).asin()).abs() < 1e-14);
+        assert_eq!(out.values()[1], 0.0);
+    }
+
+    #[test]
+    fn scimath_arctanh_in_range() {
+        let arr = UFuncArray::new(vec![1], vec![0.5], DType::F64).unwrap();
+        let out = scimath_arctanh(&arr).unwrap();
+        assert!((out.values()[0] - (0.5_f64).atanh()).abs() < 1e-14);
+        assert_eq!(out.values()[1], 0.0);
+    }
+
+    #[test]
+    fn scimath_arctanh_out_of_range() {
+        let arr = UFuncArray::new(vec![1], vec![2.0], DType::F64).unwrap();
+        let out = scimath_arctanh(&arr).unwrap();
+        assert!(out.values()[0].is_finite()); // real part finite
+        assert!((out.values()[1] - (-std::f64::consts::FRAC_PI_2)).abs() < 1e-12);
+    }
+
+    // ── pad mode tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn pad_linear_ramp_basic() {
+        let arr = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        let out = pad_linear_ramp(&arr, (2, 2), (0.0, 5.0)).unwrap();
+        assert_eq!(out.shape(), &[7]);
+        // Before: ramp from 0 to 1 → [0.333..., 0.666...]
+        // After: ramp from 3 to 5 → [3.666..., 4.333...]
+        assert!(out.values()[0] > 0.0 && out.values()[0] < 1.0);
+        assert!(out.values()[1] > out.values()[0] && out.values()[1] < 1.0);
+        assert_eq!(out.values()[2], 1.0); // original start
+        assert_eq!(out.values()[4], 3.0); // original end
+        assert!(out.values()[5] > 3.0 && out.values()[5] < 5.0);
+        assert!(out.values()[6] > out.values()[5] && out.values()[6] < 5.0);
+    }
+
+    #[test]
+    fn pad_stat_maximum() {
+        let arr = UFuncArray::new(vec![4], vec![1.0, 5.0, 2.0, 4.0], DType::F64).unwrap();
+        let out = pad_stat(&arr, (2, 2), "maximum", None).unwrap();
+        assert_eq!(out.shape(), &[8]);
+        assert_eq!(out.values()[0], 5.0); // max of whole array
+        assert_eq!(out.values()[1], 5.0);
+        assert_eq!(out.values()[6], 5.0);
+        assert_eq!(out.values()[7], 5.0);
+    }
+
+    #[test]
+    fn pad_stat_minimum() {
+        let arr = UFuncArray::new(vec![4], vec![1.0, 5.0, 2.0, 4.0], DType::F64).unwrap();
+        let out = pad_stat(&arr, (1, 1), "minimum", None).unwrap();
+        assert_eq!(out.values()[0], 1.0); // min of whole array
+        assert_eq!(out.values()[5], 1.0);
+    }
+
+    #[test]
+    fn pad_stat_mean() {
+        let arr = UFuncArray::new(vec![4], vec![2.0, 4.0, 6.0, 8.0], DType::F64).unwrap();
+        let out = pad_stat(&arr, (1, 1), "mean", None).unwrap();
+        assert!((out.values()[0] - 5.0).abs() < 1e-14); // mean = 5
+        assert!((out.values()[5] - 5.0).abs() < 1e-14);
+    }
+
+    #[test]
+    fn pad_stat_median() {
+        let arr = UFuncArray::new(vec![4], vec![1.0, 3.0, 5.0, 7.0], DType::F64).unwrap();
+        let out = pad_stat(&arr, (1, 1), "median", None).unwrap();
+        assert!((out.values()[0] - 4.0).abs() < 1e-14); // median = (3+5)/2
+        assert!((out.values()[5] - 4.0).abs() < 1e-14);
+    }
+
+    #[test]
+    fn pad_empty_basic() {
+        let arr = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        let out = pad_empty(&arr, (2, 1)).unwrap();
+        assert_eq!(out.shape(), &[6]);
+        assert_eq!(out.values(), &[0.0, 0.0, 1.0, 2.0, 3.0, 0.0]);
+    }
+
+    #[test]
+    fn pad_stat_with_stat_length() {
+        let arr =
+            UFuncArray::new(vec![6], vec![1.0, 2.0, 10.0, 20.0, 5.0, 6.0], DType::F64).unwrap();
+        let out = pad_stat(&arr, (1, 1), "mean", Some(2)).unwrap();
+        // Before: mean of first 2 elements = (1+2)/2 = 1.5
+        assert!((out.values()[0] - 1.5).abs() < 1e-14);
+        // After: mean of last 2 elements = (5+6)/2 = 5.5
+        assert!((out.values()[7] - 5.5).abs() < 1e-14);
+    }
+
+    // ── E2E pipeline tests ──────────────────────────────────────────────
+
+    #[test]
+    fn e2e_frexp_modf_roundtrip() {
+        // frexp: decompose into mantissa/exponent, reconstruct
+        let x = UFuncArray::new(vec![4], vec![0.5, 2.75, -8.0, 100.0], DType::F64).unwrap();
+        let (m, e) = frexp(&x).unwrap();
+        for i in 0..4 {
+            let reconstructed = m.values()[i] * (2.0_f64).powi(e.values()[i] as i32);
+            assert!(
+                (reconstructed - x.values()[i]).abs() < 1e-14,
+                "frexp roundtrip failed at {i}: {} != {}",
+                reconstructed,
+                x.values()[i]
+            );
+        }
+        // modf: fractional + integral == original
+        let (frac, int) = modf(&x).unwrap();
+        for i in 0..4 {
+            let sum = frac.values()[i] + int.values()[i];
+            assert!(
+                (sum - x.values()[i]).abs() < 1e-14,
+                "modf roundtrip failed at {i}: {} != {}",
+                sum,
+                x.values()[i]
+            );
+        }
+    }
+
+    #[test]
+    fn e2e_gcd_lcm_divmod_invariants() {
+        let a = UFuncArray::new(vec![3], vec![12.0, 35.0, 100.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![3], vec![8.0, 15.0, 75.0], DType::F64).unwrap();
+        let g = gcd_arrays(&a, &b).unwrap();
+        let l = lcm_arrays(&a, &b).unwrap();
+        // gcd(a,b) * lcm(a,b) == a * b
+        for i in 0..3 {
+            let prod = g.values()[i] * l.values()[i];
+            let expected = a.values()[i] * b.values()[i];
+            assert!(
+                (prod - expected).abs() < 1e-10,
+                "gcd*lcm != a*b at {i}: {} != {}",
+                prod,
+                expected
+            );
+        }
+        // divmod: q*b + r == a
+        let (q, r) = divmod_arrays(&a, &b).unwrap();
+        for i in 0..3 {
+            let reconstructed = q.values()[i] * b.values()[i] + r.values()[i];
+            assert!(
+                (reconstructed - a.values()[i]).abs() < 1e-10,
+                "divmod invariant failed at {i}: {} != {}",
+                reconstructed,
+                a.values()[i]
+            );
+        }
+    }
+
+    #[test]
+    fn e2e_unique_pipeline() {
+        let x =
+            UFuncArray::new(vec![7], vec![3.0, 1.0, 2.0, 1.0, 3.0, 2.0, 1.0], DType::F64).unwrap();
+        // unique_all returns (values, indices, inverse, counts)
+        let (vals, _indices, inverse, counts) = unique_all(&x);
+        // sum of counts == original length
+        let total: f64 = counts.values().iter().sum();
+        assert_eq!(total, 7.0);
+        // reconstruction via inverse: vals[inverse[i]] == x[i]
+        for i in 0..7 {
+            let inv_idx = inverse.values()[i] as usize;
+            assert!(
+                (vals.values()[inv_idx] - x.values()[i]).abs() < 1e-14,
+                "unique inverse reconstruction failed at {i}"
+            );
+        }
+        // unique_counts sum must match
+        let (uc_vals, uc_counts) = unique_counts(&x);
+        assert_eq!(uc_vals.values(), vals.values());
+        let uc_total: f64 = uc_counts.values().iter().sum();
+        assert_eq!(uc_total, 7.0);
+    }
+
+    #[test]
+    fn e2e_polynomial_cheb_fit_eval_deriv_roundtrip() {
+        // Fit a cubic with Chebyshev, eval, verify residuals
+        let x: Vec<f64> = (-10..=10).map(|i| i as f64 * 0.1).collect();
+        let y: Vec<f64> = x
+            .iter()
+            .map(|&xi| 2.0 * xi * xi * xi - 3.0 * xi + 1.0)
+            .collect();
+        let c = chebfit(&x, &y, 5).unwrap();
+        let y_fit = chebval(&x, &c);
+        let max_residual = y
+            .iter()
+            .zip(y_fit.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            max_residual < 1e-10,
+            "chebfit residual too large: {max_residual}"
+        );
+        // chebder + chebint roundtrip: integrate derivative == original (up to constant)
+        let dc = chebder(&c, 1);
+        let ic = chebint(&dc, 1);
+        // ic should match c except for constant term
+        for i in 1..c.len().min(ic.len()) {
+            assert!(
+                (ic[i] - c[i]).abs() < 1e-10,
+                "cheb der/int roundtrip mismatch at coeff {i}: {} != {}",
+                ic[i],
+                c[i]
+            );
+        }
+    }
+
+    #[test]
+    fn e2e_cross_family_polynomial_eval() {
+        // Evaluate all polynomial families at the same point, with c = [1, 0, 1] (1 + T_2/P_2/H_2/etc)
+        let x = vec![0.5];
+        let c = vec![1.0, 0.0, 1.0];
+        let cheb_val = chebval(&x, &c)[0];
+        let leg_val = legval(&x, &c)[0];
+        let herm_val = hermval(&x, &c)[0]; // physicist
+        let herme_val = hermeval(&x, &c)[0]; // probabilist
+        let lag_val = lagval(&x, &c)[0];
+        // Just verify they produce finite, distinct values (families differ)
+        assert!(cheb_val.is_finite(), "chebval not finite");
+        assert!(leg_val.is_finite(), "legval not finite");
+        assert!(herm_val.is_finite(), "hermval not finite");
+        assert!(herme_val.is_finite(), "hermeval not finite");
+        assert!(lag_val.is_finite(), "lagval not finite");
+        // Chebyshev and Legendre should be close for low degree
+        assert!(
+            (cheb_val - leg_val).abs() < 2.0,
+            "cheb vs leg too far apart"
+        );
+    }
+
+    #[test]
+    fn e2e_pad_modes_shape_and_values() {
+        let arr = UFuncArray::new(vec![5], vec![10.0, 20.0, 30.0, 40.0, 50.0], DType::F64).unwrap();
+        // linear_ramp: interpolates between end_value (0) and edge
+        let lr = pad_linear_ramp(&arr, (2, 2), (0.0, 0.0)).unwrap();
+        assert_eq!(lr.shape(), &[9]);
+        // Ramp values are between end_value (0) and edge value
+        assert!(lr.values()[0] >= 0.0 && lr.values()[0] <= 10.0);
+        assert!(lr.values()[8] >= 0.0 && lr.values()[8] <= 50.0);
+        // stat mean
+        let sm = pad_stat(&arr, (1, 1), "mean", None).unwrap();
+        assert_eq!(sm.shape(), &[7]);
+        let mean_val = (10.0 + 20.0 + 30.0 + 40.0 + 50.0) / 5.0;
+        assert!((sm.values()[0] - mean_val).abs() < 1e-14);
+        // empty
+        let em = pad_empty(&arr, (3, 3)).unwrap();
+        assert_eq!(em.shape(), &[11]);
+        assert_eq!(em.values()[0], 0.0); // zero-initialized
+    }
+
+    #[test]
+    fn e2e_scimath_sqrt_square_roundtrip() {
+        // scimath_sqrt(-4) should give 2j, squaring should give -4
+        let x = UFuncArray::new(vec![3], vec![-4.0, -9.0, 4.0], DType::F64).unwrap();
+        let sq = scimath_sqrt(&x).unwrap();
+        // result is complex: shape [3, 2]
+        assert_eq!(sq.shape(), &[3, 2]);
+        // sqrt(-4) = 0 + 2j
+        assert!((sq.values()[0] - 0.0).abs() < 1e-14); // real part
+        assert!((sq.values()[1] - 2.0).abs() < 1e-14); // imag part
+        // sqrt(-9) = 0 + 3j
+        assert!((sq.values()[2] - 0.0).abs() < 1e-14);
+        assert!((sq.values()[3] - 3.0).abs() < 1e-14);
+        // sqrt(4) = 2 + 0j
+        assert!((sq.values()[4] - 2.0).abs() < 1e-14);
+        assert!((sq.values()[5] - 0.0).abs() < 1e-14);
+    }
+
+    #[test]
+    fn e2e_parameter_completeness() {
+        // count_nonzero with axis
+        let m =
+            UFuncArray::new(vec![2, 3], vec![0.0, 1.0, 2.0, 3.0, 0.0, 0.0], DType::F64).unwrap();
+        let cnt0 = m.count_nonzero(Some(0), false).unwrap();
+        assert_eq!(cnt0.shape(), &[3]);
+        assert_eq!(cnt0.values(), &[1.0, 1.0, 1.0]);
+        let cnt1 = m.count_nonzero(Some(1), false).unwrap();
+        assert_eq!(cnt1.shape(), &[2]);
+        assert_eq!(cnt1.values(), &[2.0, 1.0]);
+
+        // isin with invert
+        let a = UFuncArray::new(vec![5], vec![1.0, 2.0, 3.0, 4.0, 5.0], DType::F64).unwrap();
+        let test = UFuncArray::new(vec![2], vec![2.0, 4.0], DType::F64).unwrap();
+        let normal = a.isin(&test, false);
+        let inverted = a.isin(&test, true);
+        // normal + inverted should sum to all 1s
+        for i in 0..5 {
+            assert!(
+                (normal.values()[i] + inverted.values()[i] - 1.0).abs() < 1e-14,
+                "isin + isin(invert) != 1 at {i}"
+            );
+        }
+
+        // searchsorted: side='right' >= side='left' for duplicates
+        let sorted = UFuncArray::new(vec![5], vec![1.0, 2.0, 2.0, 3.0, 4.0], DType::F64).unwrap();
+        let vals = UFuncArray::new(vec![1], vec![2.0], DType::F64).unwrap();
+        let left = sorted.searchsorted(&vals, Some("left"), None).unwrap();
+        let right = sorted.searchsorted(&vals, Some("right"), None).unwrap();
+        assert!(
+            right.values()[0] >= left.values()[0],
+            "right side should be >= left side"
+        );
+        assert_eq!(left.values()[0], 1.0); // first occurrence
+        assert_eq!(right.values()[0], 3.0); // past last occurrence
+
+        // where_nonzero
+        let cond =
+            UFuncArray::new(vec![2, 3], vec![0.0, 1.0, 0.0, 1.0, 1.0, 0.0], DType::F64).unwrap();
+        let indices = where_nonzero(&cond).unwrap();
+        assert_eq!(indices.len(), 2); // 2 dimensions
+        assert_eq!(indices[0].values(), &[0.0, 1.0, 1.0]); // row indices
+        assert_eq!(indices[1].values(), &[1.0, 0.0, 1.0]); // col indices
+    }
+
+    #[test]
+    fn e2e_cross_crate_sort_searchsorted() {
+        // Create array, sort it, then searchsorted should find correct positions
+        let x = UFuncArray::new(vec![6], vec![5.0, 2.0, 8.0, 1.0, 9.0, 3.0], DType::F64).unwrap();
+        let sorted = x.sort(Some(0)).unwrap();
+        assert_eq!(sorted.values(), &[1.0, 2.0, 3.0, 5.0, 8.0, 9.0]);
+        let probes = UFuncArray::new(vec![3], vec![2.5, 5.0, 10.0], DType::F64).unwrap();
+        let indices = sorted.searchsorted(&probes, Some("left"), None).unwrap();
+        assert_eq!(indices.values(), &[2.0, 3.0, 6.0]);
     }
 }
