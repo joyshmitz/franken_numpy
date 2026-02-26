@@ -1067,6 +1067,49 @@ impl UFuncArray {
         self.dtype
     }
 
+    /// Number of array dimensions (np.ndarray.ndim).
+    #[must_use]
+    pub fn ndim(&self) -> usize {
+        self.shape.len()
+    }
+
+    /// Number of elements in the array (np.ndarray.size).
+    #[must_use]
+    pub fn size(&self) -> usize {
+        self.values.len()
+    }
+
+    /// Total bytes consumed by the elements of the array (np.ndarray.nbytes).
+    #[must_use]
+    pub fn nbytes(&self) -> usize {
+        self.values.len() * self.dtype.item_size()
+    }
+
+    /// Length of one element in bytes (np.ndarray.itemsize).
+    #[must_use]
+    pub fn itemsize(&self) -> usize {
+        self.dtype.item_size()
+    }
+
+    /// Return the strides of the array in elements (np.ndarray.strides / itemsize).
+    ///
+    /// For C-contiguous layout, stride[i] = product of shape[i+1..].
+    #[must_use]
+    pub fn strides(&self) -> Vec<usize> {
+        c_strides_elems(&self.shape)
+    }
+
+    /// Transpose shortcut property (np.ndarray.T).
+    ///
+    /// Equivalent to `self.transpose(None)` for arrays with 2+ dimensions.
+    /// For 0-D and 1-D arrays, returns a copy (same as NumPy).
+    pub fn t(&self) -> Result<Self, UFuncError> {
+        if self.shape.len() <= 1 {
+            return Ok(self.clone());
+        }
+        self.transpose(None)
+    }
+
     pub fn elementwise_binary(&self, rhs: &Self, op: BinaryOp) -> Result<Self, UFuncError> {
         let plan = plan_binary_dispatch(self, rhs)?;
         let out_shape = plan.out_shape;
@@ -1599,6 +1642,80 @@ impl UFuncArray {
                 )
             }
         }
+    }
+
+    /// General accumulate: applies a binary function cumulatively along axis=0 of the
+    /// flattened array (np.ufunc.accumulate).
+    /// `op` maps `(accumulator, element) -> new_accumulator`.
+    /// `identity` is the starting value (e.g. 0.0 for add, 1.0 for multiply).
+    pub fn accumulate<F: Fn(f64, f64) -> f64>(&self, op: F, identity: f64) -> Self {
+        if self.values.is_empty() {
+            return Self {
+                shape: vec![0],
+                values: vec![],
+                dtype: self.dtype,
+            };
+        }
+        let mut acc = identity;
+        let values: Vec<f64> = self
+            .values
+            .iter()
+            .map(|&v| {
+                acc = op(acc, v);
+                acc
+            })
+            .collect();
+        Self {
+            shape: vec![values.len()],
+            values,
+            dtype: self.dtype,
+        }
+    }
+
+    /// General reduceat: applies a binary reduction over sub-intervals of the flattened
+    /// array defined by `indices` (np.ufunc.reduceat).
+    /// For each pair `(indices[i], indices[i+1])`, reduces `values[indices[i]..indices[i+1]]`.
+    /// The last interval runs from `indices[last]` to the end.
+    /// `identity` is the identity element for empty intervals.
+    pub fn reduceat<F: Fn(f64, f64) -> f64>(
+        &self,
+        op: F,
+        indices: &[usize],
+        identity: f64,
+    ) -> Result<Self, UFuncError> {
+        if indices.is_empty() {
+            return Ok(Self {
+                shape: vec![0],
+                values: vec![],
+                dtype: self.dtype,
+            });
+        }
+        let n = self.values.len();
+        let mut results = Vec::with_capacity(indices.len());
+        for (i, &start) in indices.iter().enumerate() {
+            let end = if i + 1 < indices.len() {
+                indices[i + 1]
+            } else {
+                n
+            };
+            if start >= n {
+                results.push(identity);
+            } else if start >= end {
+                // NumPy: when start >= end, result is values[start] with op(identity, values[start])
+                results.push(op(identity, self.values[start]));
+            } else {
+                let mut acc = self.values[start];
+                for &v in &self.values[start + 1..end.min(n)] {
+                    acc = op(acc, v);
+                }
+                results.push(acc);
+            }
+        }
+        Ok(Self {
+            shape: vec![results.len()],
+            values: results,
+            dtype: self.dtype,
+        })
     }
 
     pub fn clip(&self, min_val: f64, max_val: f64) -> Self {
@@ -2596,48 +2713,111 @@ impl UFuncArray {
     /// elements after are all larger (but not necessarily sorted).
     ///
     /// Mimics `np.partition(a, kth)`. Only 1-D supported.
-    pub fn partition(&self, kth: usize) -> Result<Self, UFuncError> {
-        if self.shape.len() != 1 {
-            return Err(UFuncError::Msg(
-                "partition: only 1-D arrays supported".to_string(),
-            ));
+    pub fn partition(&self, kth: usize, axis: Option<isize>) -> Result<Self, UFuncError> {
+        match axis {
+            None => {
+                let n = self.values.len();
+                if kth >= n {
+                    return Err(UFuncError::Msg("partition: kth out of bounds".to_string()));
+                }
+                let mut values = self.values.clone();
+                values.select_nth_unstable_by(kth, |a, b| a.total_cmp(b));
+                Ok(Self {
+                    shape: vec![n],
+                    values,
+                    dtype: self.dtype,
+                })
+            }
+            Some(ax) => {
+                let axis = normalize_axis(ax, self.shape.len())?;
+                let axis_len = self.shape[axis];
+                if kth >= axis_len {
+                    return Err(UFuncError::Msg("partition: kth out of bounds".to_string()));
+                }
+                let inner: usize = self.shape[axis + 1..].iter().copied().product();
+                let outer: usize = self.shape[..axis].iter().copied().product();
+                let mut values = self.values.clone();
+                let mut lane = vec![0.0f64; axis_len];
+                for outer_idx in 0..outer {
+                    let base = outer_idx * axis_len * inner;
+                    for inner_idx in 0..inner {
+                        for k in 0..axis_len {
+                            lane[k] = values[base + k * inner + inner_idx];
+                        }
+                        lane.select_nth_unstable_by(kth, |a, b| a.total_cmp(b));
+                        for k in 0..axis_len {
+                            values[base + k * inner + inner_idx] = lane[k];
+                        }
+                    }
+                }
+                Ok(Self {
+                    shape: self.shape.clone(),
+                    values,
+                    dtype: self.dtype,
+                })
+            }
         }
-        let n = self.values.len();
-        if kth >= n {
-            return Err(UFuncError::Msg("partition: kth out of bounds".to_string()));
-        }
-        let mut values = self.values.clone();
-        values.select_nth_unstable_by(kth, |a, b| a.total_cmp(b));
-        Ok(Self {
-            shape: self.shape.clone(),
-            values,
-            dtype: self.dtype,
-        })
     }
 
-    /// Return indices that would partition the array.
+    /// Return indices that would partition the array along `axis`.
     ///
-    /// Mimics `np.argpartition(a, kth)`. Only 1-D supported.
-    pub fn argpartition(&self, kth: usize) -> Result<Self, UFuncError> {
-        if self.shape.len() != 1 {
-            return Err(UFuncError::Msg(
-                "argpartition: only 1-D arrays supported".to_string(),
-            ));
+    /// Mimics `np.argpartition(a, kth, axis)`. When `axis` is `None`, operates
+    /// on the flattened array.
+    pub fn argpartition(&self, kth: usize, axis: Option<isize>) -> Result<Self, UFuncError> {
+        match axis {
+            None => {
+                let n = self.values.len();
+                if kth >= n {
+                    return Err(UFuncError::Msg(
+                        "argpartition: kth out of bounds".to_string(),
+                    ));
+                }
+                let mut indices: Vec<usize> = (0..n).collect();
+                indices.select_nth_unstable_by(kth, |&a, &b| {
+                    self.values[a].total_cmp(&self.values[b])
+                });
+                let values: Vec<f64> = indices.iter().map(|&i| i as f64).collect();
+                Ok(Self {
+                    shape: vec![n],
+                    values,
+                    dtype: DType::I64,
+                })
+            }
+            Some(ax) => {
+                let axis = normalize_axis(ax, self.shape.len())?;
+                let axis_len = self.shape[axis];
+                if kth >= axis_len {
+                    return Err(UFuncError::Msg(
+                        "argpartition: kth out of bounds".to_string(),
+                    ));
+                }
+                let inner: usize = self.shape[axis + 1..].iter().copied().product();
+                let outer: usize = self.shape[..axis].iter().copied().product();
+                let mut result = vec![0.0f64; self.values.len()];
+                let mut indices: Vec<usize> = (0..axis_len).collect();
+                for outer_idx in 0..outer {
+                    let base = outer_idx * axis_len * inner;
+                    for inner_idx in 0..inner {
+                        for (k, idx) in indices.iter_mut().enumerate() {
+                            *idx = k;
+                        }
+                        indices.select_nth_unstable_by(kth, |&a, &b| {
+                            let va = self.values[base + a * inner + inner_idx];
+                            let vb = self.values[base + b * inner + inner_idx];
+                            va.total_cmp(&vb)
+                        });
+                        for k in 0..axis_len {
+                            result[base + k * inner + inner_idx] = indices[k] as f64;
+                        }
+                    }
+                }
+                Ok(Self {
+                    shape: self.shape.clone(),
+                    values: result,
+                    dtype: DType::I64,
+                })
+            }
         }
-        let n = self.values.len();
-        if kth >= n {
-            return Err(UFuncError::Msg(
-                "argpartition: kth out of bounds".to_string(),
-            ));
-        }
-        let mut indices: Vec<usize> = (0..n).collect();
-        indices.select_nth_unstable_by(kth, |&a, &b| self.values[a].total_cmp(&self.values[b]));
-        let values: Vec<f64> = indices.iter().map(|&i| i as f64).collect();
-        Ok(Self {
-            shape: self.shape.clone(),
-            values,
-            dtype: DType::I64,
-        })
     }
 
     /// Sort by multiple keys (last key is primary).
@@ -3040,9 +3220,7 @@ impl UFuncArray {
     /// Input must be at least 2-D.
     pub fn fliplr(&self) -> Result<Self, UFuncError> {
         if self.shape.len() < 2 {
-            return Err(UFuncError::Msg(
-                "fliplr: input must be at least 2-D".into(),
-            ));
+            return Err(UFuncError::Msg("fliplr: input must be at least 2-D".into()));
         }
         self.flip(Some(1))
     }
@@ -3053,9 +3231,7 @@ impl UFuncArray {
     /// Input must be at least 1-D.
     pub fn flipud(&self) -> Result<Self, UFuncError> {
         if self.shape.is_empty() {
-            return Err(UFuncError::Msg(
-                "flipud: input must be at least 1-D".into(),
-            ));
+            return Err(UFuncError::Msg("flipud: input must be at least 1-D".into()));
         }
         self.flip(Some(0))
     }
@@ -3353,6 +3529,543 @@ impl UFuncArray {
             result = result.dot(arr)?;
         }
         Ok(result)
+    }
+
+    // ── linalg bridge methods ─────────────────────────────────────
+
+    /// Compute vector or matrix norm (np.linalg.norm).
+    /// For 1-D arrays, computes vector norm. For 2-D arrays, computes matrix norm.
+    /// `ord` follows NumPy convention: "1", "2", "inf", "-inf", "fro", "nuc", "-1", "-2",
+    /// "0" (vector only), or any float string for arbitrary p-norms.
+    pub fn norm(&self, ord: Option<&str>) -> Result<f64, UFuncError> {
+        let ndim = self.shape.len();
+        if ndim <= 1 {
+            let vord = match ord {
+                None => None,
+                Some(s) => Some(
+                    fnp_linalg::VectorNormOrder::from_token(s)
+                        .map_err(|e| UFuncError::Msg(format!("{e}")))?,
+                ),
+            };
+            fnp_linalg::vector_norm(&self.values, vord).map_err(|e| UFuncError::Msg(format!("{e}")))
+        } else if ndim == 2 {
+            let ord_str = ord.unwrap_or("fro");
+            fnp_linalg::matrix_norm_nxn(&self.values, self.shape[0], self.shape[1], ord_str)
+                .map_err(|e| UFuncError::Msg(format!("{e}")))
+        } else {
+            Err(UFuncError::Msg(
+                "norm: only 1-D and 2-D arrays are supported".into(),
+            ))
+        }
+    }
+
+    /// Solve a linear system (np.linalg.lstsq) using least-squares.
+    /// `self` is the coefficient matrix A, `b` is the RHS.
+    /// Returns the least-squares solution x.
+    pub fn lstsq(&self, b: &Self) -> Result<Self, UFuncError> {
+        if self.shape.len() != 2 {
+            return Err(UFuncError::Msg("lstsq: A must be 2-D".into()));
+        }
+        let m = self.shape[0];
+        let n = self.shape[1];
+        let x = fnp_linalg::lstsq_nxn(&self.values, &b.values, m, n)
+            .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+        Ok(Self {
+            shape: vec![x.len()],
+            values: x,
+            dtype: DType::F64,
+        })
+    }
+
+    /// Compute matrix rank (np.linalg.matrix_rank).
+    pub fn matrix_rank(&self, rcond: f64) -> Result<usize, UFuncError> {
+        if self.shape.len() != 2 || self.shape[0] != self.shape[1] {
+            return Err(UFuncError::Msg(
+                "matrix_rank: input must be a square 2-D array".into(),
+            ));
+        }
+        fnp_linalg::matrix_rank_nxn(&self.values, self.shape[0], rcond)
+            .map_err(|e| UFuncError::Msg(format!("{e}")))
+    }
+
+    /// Compute matrix power (np.linalg.matrix_power).
+    /// Raises a square matrix to integer power `p`.
+    pub fn matrix_power(&self, p: i64) -> Result<Self, UFuncError> {
+        if self.shape.len() != 2 || self.shape[0] != self.shape[1] {
+            return Err(UFuncError::Msg(
+                "matrix_power: input must be a square 2-D array".into(),
+            ));
+        }
+        let n = self.shape[0];
+        let result = fnp_linalg::matrix_power_nxn(&self.values, n, p)
+            .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+        Ok(Self {
+            shape: vec![n, n],
+            values: result,
+            dtype: DType::F64,
+        })
+    }
+
+    /// Solve a tensor equation (np.linalg.tensorsolve).
+    pub fn tensorsolve(&self, b: &Self) -> Result<Self, UFuncError> {
+        let result = fnp_linalg::tensorsolve(&self.values, &self.shape, &b.values, &b.shape)
+            .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+        let n = result.len();
+        Ok(Self {
+            shape: vec![n],
+            values: result,
+            dtype: DType::F64,
+        })
+    }
+
+    /// Compute the tensor inverse (np.linalg.tensorinv).
+    pub fn tensorinv(&self, ind: usize) -> Result<Self, UFuncError> {
+        let (values, out_shape) = fnp_linalg::tensorinv(&self.values, &self.shape, ind)
+            .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+        Ok(Self {
+            shape: out_shape,
+            values,
+            dtype: DType::F64,
+        })
+    }
+
+    // ── Additional linalg bridge methods ─────────────────────────
+
+    /// Cholesky decomposition (np.linalg.cholesky).
+    /// Returns the lower-triangular factor L such that A = L L^T.
+    pub fn cholesky(&self) -> Result<Self, UFuncError> {
+        if self.shape.len() != 2 || self.shape[0] != self.shape[1] {
+            return Err(UFuncError::Msg(
+                "cholesky: input must be a square 2-D array".into(),
+            ));
+        }
+        let n = self.shape[0];
+        let result = fnp_linalg::cholesky_nxn(&self.values, n)
+            .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+        Ok(Self {
+            shape: vec![n, n],
+            values: result,
+            dtype: DType::F64,
+        })
+    }
+
+    /// Determinant (np.linalg.det).
+    pub fn det(&self) -> Result<f64, UFuncError> {
+        if self.shape.len() != 2 || self.shape[0] != self.shape[1] {
+            return Err(UFuncError::Msg(
+                "det: input must be a square 2-D array".into(),
+            ));
+        }
+        fnp_linalg::det_nxn(&self.values, self.shape[0])
+            .map_err(|e| UFuncError::Msg(format!("{e}")))
+    }
+
+    /// Sign and log-determinant (np.linalg.slogdet).
+    /// Returns (sign, logabsdet).
+    pub fn slogdet(&self) -> Result<(f64, f64), UFuncError> {
+        if self.shape.len() != 2 || self.shape[0] != self.shape[1] {
+            return Err(UFuncError::Msg(
+                "slogdet: input must be a square 2-D array".into(),
+            ));
+        }
+        fnp_linalg::slogdet_nxn(&self.values, self.shape[0])
+            .map_err(|e| UFuncError::Msg(format!("{e}")))
+    }
+
+    /// Matrix inverse (np.linalg.inv).
+    pub fn inv(&self) -> Result<Self, UFuncError> {
+        if self.shape.len() != 2 || self.shape[0] != self.shape[1] {
+            return Err(UFuncError::Msg(
+                "inv: input must be a square 2-D array".into(),
+            ));
+        }
+        let n = self.shape[0];
+        let result = fnp_linalg::inv_nxn(&self.values, n)
+            .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+        Ok(Self {
+            shape: vec![n, n],
+            values: result,
+            dtype: DType::F64,
+        })
+    }
+
+    /// Moore-Penrose pseudo-inverse (np.linalg.pinv).
+    pub fn pinv(&self) -> Result<Self, UFuncError> {
+        if self.shape.len() != 2 {
+            return Err(UFuncError::Msg("pinv: input must be a 2-D array".into()));
+        }
+        let m = self.shape[0];
+        let n = self.shape[1];
+        let result = fnp_linalg::pinv_nxn(&self.values, m, n)
+            .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+        Ok(Self {
+            shape: vec![n, m],
+            values: result,
+            dtype: DType::F64,
+        })
+    }
+
+    /// Solve linear system Ax = b (np.linalg.solve).
+    /// A must be square 2-D; b must be 1-D with matching length.
+    pub fn solve(&self, b: &Self) -> Result<Self, UFuncError> {
+        if self.shape.len() != 2 || self.shape[0] != self.shape[1] {
+            return Err(UFuncError::Msg(
+                "solve: A must be a square 2-D array".into(),
+            ));
+        }
+        let n = self.shape[0];
+        if b.values.len() != n {
+            return Err(UFuncError::Msg(
+                "solve: b length must match A dimension".into(),
+            ));
+        }
+        let x = fnp_linalg::solve_nxn(&self.values, &b.values, n)
+            .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+        Ok(Self {
+            shape: vec![n],
+            values: x,
+            dtype: DType::F64,
+        })
+    }
+
+    /// Solve linear system AX = B for multiple RHS columns (np.linalg.solve).
+    /// A is n x n, B is n x m. Returns X with shape [n, m].
+    pub fn solve_multi(&self, b: &Self) -> Result<Self, UFuncError> {
+        if self.shape.len() != 2 || self.shape[0] != self.shape[1] {
+            return Err(UFuncError::Msg(
+                "solve_multi: A must be a square 2-D array".into(),
+            ));
+        }
+        if b.shape.len() != 2 {
+            return Err(UFuncError::Msg("solve_multi: B must be 2-D".into()));
+        }
+        let n = self.shape[0];
+        let m = b.shape[1];
+        if b.shape[0] != n {
+            return Err(UFuncError::Msg(
+                "solve_multi: B rows must match A dimension".into(),
+            ));
+        }
+        let x = fnp_linalg::solve_nxn_multi(&self.values, &b.values, n, m)
+            .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+        Ok(Self {
+            shape: vec![n, m],
+            values: x,
+            dtype: DType::F64,
+        })
+    }
+
+    /// Eigenvalue decomposition (np.linalg.eig).
+    /// Returns (eigenvalues, eigenvectors) where eigenvalues is 1-D
+    /// and eigenvectors is n x n (columns are right eigenvectors).
+    pub fn eig(&self) -> Result<(Self, Self), UFuncError> {
+        if self.shape.len() != 2 || self.shape[0] != self.shape[1] {
+            return Err(UFuncError::Msg(
+                "eig: input must be a square 2-D array".into(),
+            ));
+        }
+        let n = self.shape[0];
+        let (eigenvalues, eigenvectors) = fnp_linalg::eig_nxn_full(&self.values, n)
+            .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+        Ok((
+            Self {
+                shape: vec![eigenvalues.len()],
+                values: eigenvalues,
+                dtype: DType::F64,
+            },
+            Self {
+                shape: vec![n, n],
+                values: eigenvectors,
+                dtype: DType::F64,
+            },
+        ))
+    }
+
+    /// Eigenvalues only (np.linalg.eigvals).
+    pub fn eigvals(&self) -> Result<Self, UFuncError> {
+        if self.shape.len() != 2 || self.shape[0] != self.shape[1] {
+            return Err(UFuncError::Msg(
+                "eigvals: input must be a square 2-D array".into(),
+            ));
+        }
+        let n = self.shape[0];
+        let vals = fnp_linalg::eig_nxn(&self.values, n)
+            .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+        Ok(Self {
+            shape: vec![vals.len()],
+            values: vals,
+            dtype: DType::F64,
+        })
+    }
+
+    /// Eigenvalue decomposition for symmetric/Hermitian matrices (np.linalg.eigh).
+    /// Returns (eigenvalues, eigenvectors) with eigenvalues sorted ascending.
+    pub fn eigh(&self) -> Result<(Self, Self), UFuncError> {
+        if self.shape.len() != 2 || self.shape[0] != self.shape[1] {
+            return Err(UFuncError::Msg(
+                "eigh: input must be a square 2-D array".into(),
+            ));
+        }
+        let n = self.shape[0];
+        let (eigenvalues, eigenvectors) = fnp_linalg::eigh_nxn(&self.values, n)
+            .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+        Ok((
+            Self {
+                shape: vec![n],
+                values: eigenvalues,
+                dtype: DType::F64,
+            },
+            Self {
+                shape: vec![n, n],
+                values: eigenvectors,
+                dtype: DType::F64,
+            },
+        ))
+    }
+
+    /// Eigenvalues of a symmetric/Hermitian matrix (np.linalg.eigvalsh).
+    pub fn eigvalsh(&self) -> Result<Self, UFuncError> {
+        if self.shape.len() != 2 || self.shape[0] != self.shape[1] {
+            return Err(UFuncError::Msg(
+                "eigvalsh: input must be a square 2-D array".into(),
+            ));
+        }
+        let n = self.shape[0];
+        let vals = fnp_linalg::eigvalsh_nxn(&self.values, n)
+            .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+        Ok(Self {
+            shape: vec![n],
+            values: vals,
+            dtype: DType::F64,
+        })
+    }
+
+    /// Full SVD (np.linalg.svd with full_matrices=True).
+    /// Returns (U, S, Vt) where U is m x m, S is min(m,n), Vt is n x n.
+    pub fn svd(&self) -> Result<(Self, Self, Self), UFuncError> {
+        if self.shape.len() != 2 {
+            return Err(UFuncError::Msg("svd: input must be a 2-D array".into()));
+        }
+        let m = self.shape[0];
+        let n = self.shape[1];
+        let (u, s, vt) = fnp_linalg::svd_mxn_full(&self.values, m, n)
+            .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+        Ok((
+            Self {
+                shape: vec![m, m],
+                values: u,
+                dtype: DType::F64,
+            },
+            Self {
+                shape: vec![s.len()],
+                values: s,
+                dtype: DType::F64,
+            },
+            Self {
+                shape: vec![n, n],
+                values: vt,
+                dtype: DType::F64,
+            },
+        ))
+    }
+
+    /// Singular values only (np.linalg.svdvals).
+    pub fn svdvals(&self) -> Result<Self, UFuncError> {
+        if self.shape.len() != 2 {
+            return Err(UFuncError::Msg(
+                "svdvals: input must be a 2-D array".into(),
+            ));
+        }
+        let m = self.shape[0];
+        let n = self.shape[1];
+        let s = fnp_linalg::svd_mxn(&self.values, m, n)
+            .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+        Ok(Self {
+            shape: vec![s.len()],
+            values: s,
+            dtype: DType::F64,
+        })
+    }
+
+    /// QR decomposition (np.linalg.qr).
+    /// Returns (Q, R). For m x n input, Q is m x min(m,n), R is min(m,n) x n.
+    pub fn qr(&self) -> Result<(Self, Self), UFuncError> {
+        if self.shape.len() != 2 {
+            return Err(UFuncError::Msg("qr: input must be a 2-D array".into()));
+        }
+        let m = self.shape[0];
+        let n = self.shape[1];
+        let (q, r) = fnp_linalg::qr_mxn(&self.values, m, n)
+            .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+        let k = m.min(n);
+        Ok((
+            Self {
+                shape: vec![m, k],
+                values: q,
+                dtype: DType::F64,
+            },
+            Self {
+                shape: vec![k, n],
+                values: r,
+                dtype: DType::F64,
+            },
+        ))
+    }
+
+    /// Condition number (np.linalg.cond).
+    pub fn cond(&self) -> Result<f64, UFuncError> {
+        if self.shape.len() != 2 || self.shape[0] != self.shape[1] {
+            return Err(UFuncError::Msg(
+                "cond: input must be a square 2-D array".into(),
+            ));
+        }
+        fnp_linalg::cond_nxn(&self.values, self.shape[0])
+            .map_err(|e| UFuncError::Msg(format!("{e}")))
+    }
+
+    /// LU factorization (scipy.linalg.lu_factor equivalent).
+    /// Returns (LU, pivots, det_sign) where LU is n x n packed L\U.
+    pub fn lu_factor(&self) -> Result<(Self, Vec<usize>, f64), UFuncError> {
+        if self.shape.len() != 2 || self.shape[0] != self.shape[1] {
+            return Err(UFuncError::Msg(
+                "lu_factor: input must be a square 2-D array".into(),
+            ));
+        }
+        let n = self.shape[0];
+        let (lu, perm, det_sign) = fnp_linalg::lu_factor_nxn(&self.values, n)
+            .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+        Ok((
+            Self {
+                shape: vec![n, n],
+                values: lu,
+                dtype: DType::F64,
+            },
+            perm,
+            det_sign,
+        ))
+    }
+
+    /// Solve a triangular system (scipy.linalg.solve_triangular).
+    pub fn solve_triangular(
+        &self,
+        b: &Self,
+        lower: bool,
+        unit_diagonal: bool,
+    ) -> Result<Self, UFuncError> {
+        if self.shape.len() != 2 || self.shape[0] != self.shape[1] {
+            return Err(UFuncError::Msg(
+                "solve_triangular: A must be a square 2-D array".into(),
+            ));
+        }
+        let n = self.shape[0];
+        let x = fnp_linalg::solve_triangular(&self.values, &b.values, n, lower, unit_diagonal)
+            .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+        Ok(Self {
+            shape: vec![n],
+            values: x,
+            dtype: DType::F64,
+        })
+    }
+
+    /// Matrix exponential (scipy.linalg.expm).
+    pub fn expm(&self) -> Result<Self, UFuncError> {
+        if self.shape.len() != 2 || self.shape[0] != self.shape[1] {
+            return Err(UFuncError::Msg(
+                "expm: input must be a square 2-D array".into(),
+            ));
+        }
+        let n = self.shape[0];
+        let result = fnp_linalg::expm_nxn(&self.values, n)
+            .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+        Ok(Self {
+            shape: vec![n, n],
+            values: result,
+            dtype: DType::F64,
+        })
+    }
+
+    /// Matrix square root (scipy.linalg.sqrtm).
+    pub fn sqrtm(&self) -> Result<Self, UFuncError> {
+        if self.shape.len() != 2 || self.shape[0] != self.shape[1] {
+            return Err(UFuncError::Msg(
+                "sqrtm: input must be a square 2-D array".into(),
+            ));
+        }
+        let n = self.shape[0];
+        let result = fnp_linalg::sqrtm_nxn(&self.values, n)
+            .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+        Ok(Self {
+            shape: vec![n, n],
+            values: result,
+            dtype: DType::F64,
+        })
+    }
+
+    /// Matrix logarithm (scipy.linalg.logm).
+    pub fn logm(&self) -> Result<Self, UFuncError> {
+        if self.shape.len() != 2 || self.shape[0] != self.shape[1] {
+            return Err(UFuncError::Msg(
+                "logm: input must be a square 2-D array".into(),
+            ));
+        }
+        let n = self.shape[0];
+        let result = fnp_linalg::logm_nxn(&self.values, n)
+            .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+        Ok(Self {
+            shape: vec![n, n],
+            values: result,
+            dtype: DType::F64,
+        })
+    }
+
+    /// Schur decomposition (scipy.linalg.schur).
+    /// Returns (T, Z) where T is upper quasi-triangular, Z is unitary.
+    pub fn schur(&self) -> Result<(Self, Self), UFuncError> {
+        if self.shape.len() != 2 || self.shape[0] != self.shape[1] {
+            return Err(UFuncError::Msg(
+                "schur: input must be a square 2-D array".into(),
+            ));
+        }
+        let n = self.shape[0];
+        let (t, z) = fnp_linalg::schur_nxn(&self.values, n)
+            .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+        Ok((
+            Self {
+                shape: vec![n, n],
+                values: t,
+                dtype: DType::F64,
+            },
+            Self {
+                shape: vec![n, n],
+                values: z,
+                dtype: DType::F64,
+            },
+        ))
+    }
+
+    /// Polar decomposition (scipy.linalg.polar).
+    /// Returns (U, P) where A = U * P, U is unitary, P is positive semidefinite.
+    pub fn polar(&self) -> Result<(Self, Self), UFuncError> {
+        if self.shape.len() != 2 || self.shape[0] != self.shape[1] {
+            return Err(UFuncError::Msg(
+                "polar: input must be a square 2-D array".into(),
+            ));
+        }
+        let n = self.shape[0];
+        let (u, p) = fnp_linalg::polar_nxn(&self.values, n)
+            .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+        Ok((
+            Self {
+                shape: vec![n, n],
+                values: u,
+                dtype: DType::F64,
+            },
+            Self {
+                shape: vec![n, n],
+                values: p,
+                dtype: DType::F64,
+            },
+        ))
     }
 
     // ── Fancy / boolean indexing ──────────────────────────────────
@@ -5583,6 +6296,17 @@ impl UFuncArray {
         Ok(result)
     }
 
+    /// Apply a scalar function element-wise (np.vectorize).
+    /// Takes a function `f(f64) -> f64` and applies it to every element,
+    /// preserving the array shape.
+    pub fn vectorize<F: Fn(f64) -> f64>(&self, func: F) -> Self {
+        Self {
+            shape: self.shape.clone(),
+            values: self.values.iter().map(|&v| func(v)).collect(),
+            dtype: self.dtype,
+        }
+    }
+
     /// Evaluate a polynomial at given points (np.polyval).
     /// `coeffs` are in descending order: p(x) = c[0]*x^n + c[1]*x^(n-1) + ... + c[n].
     pub fn polyval(coeffs: &Self, x: &Self) -> Result<Self, UFuncError> {
@@ -6563,6 +7287,31 @@ impl UFuncArray {
         })
     }
 
+    /// Compute the 2-D real FFT (np.fft.rfft2).
+    /// Input must be a real 2-D array. Output has interleaved complex
+    /// of shape `[rows, cols//2+1, 2]`.
+    pub fn rfft2(&self) -> Result<Self, UFuncError> {
+        if self.shape.len() != 2 {
+            return Err(UFuncError::Msg(
+                "rfft2: input must be a 2-D array".to_string(),
+            ));
+        }
+        self.rfftn()
+    }
+
+    /// Compute the inverse 2-D real FFT (np.fft.irfft2).
+    /// Input must be interleaved complex of shape `[rows, half_cols, 2]`.
+    /// Returns real 2-D array of shape `[rows, last_n]`.
+    pub fn irfft2(&self, last_n: Option<usize>) -> Result<Self, UFuncError> {
+        let ndim = self.shape.len();
+        if ndim != 3 || self.shape[ndim - 1] != 2 {
+            return Err(UFuncError::Msg(
+                "irfft2: input must have shape [rows, half_cols, 2]".to_string(),
+            ));
+        }
+        self.irfftn(last_n)
+    }
+
     /// Return the DFT sample frequencies (np.fft.fftfreq).
     /// For a signal of length `n` sampled at spacing `d`.
     pub fn fftfreq(n: usize, d: f64) -> Self {
@@ -6794,14 +7543,10 @@ impl UFuncArray {
         if n <= 2 {
             // Trivial: just contract all at once
             let path = vec![(0..n).collect::<Vec<usize>>()];
-            let sizes: Vec<usize> =
-                operands.iter().map(|o| o.values.len()).collect();
+            let sizes: Vec<usize> = operands.iter().map(|o| o.values.len()).collect();
             let desc = format!(
                 "  Complete contraction:  {}\n  Naive scaling:  {}\n  Optimized scaling:  {}\n  Input shapes:  {:?}\n",
-                subscripts,
-                n,
-                n,
-                sizes,
+                subscripts, n, n, sizes,
             );
             return Ok((path, desc));
         }
@@ -8587,39 +9332,114 @@ impl UFuncArray {
     /// Pack the elements of a binary-valued array into bits (np.packbits).
     /// Input values > 0 are treated as 1. Returns a 1-D u8 array
     /// stored as f64 values (each value is a packed byte, 0–255).
-    pub fn packbits(&self) -> Self {
-        let n = self.values.len();
-        let nbytes = n.div_ceil(8);
-        let mut packed = vec![0.0; nbytes];
-        for (i, &v) in self.values.iter().enumerate() {
-            if v > 0.0 {
-                let byte_idx = i / 8;
-                let bit_idx = 7 - (i % 8); // MSB first, matching NumPy default
-                packed[byte_idx] += (1u8 << bit_idx) as f64;
+    pub fn packbits(&self, axis: Option<isize>) -> Result<Self, UFuncError> {
+        match axis {
+            None => {
+                let n = self.values.len();
+                let nbytes = n.div_ceil(8);
+                let mut packed = vec![0.0; nbytes];
+                for (i, &v) in self.values.iter().enumerate() {
+                    if v > 0.0 {
+                        let byte_idx = i / 8;
+                        let bit_idx = 7 - (i % 8);
+                        packed[byte_idx] += (1u8 << bit_idx) as f64;
+                    }
+                }
+                Ok(Self {
+                    shape: vec![nbytes],
+                    values: packed,
+                    dtype: DType::U8,
+                })
             }
-        }
-        Self {
-            shape: vec![nbytes],
-            values: packed,
-            dtype: DType::U8,
+            Some(ax) => {
+                let axis = normalize_axis(ax, self.shape.len())?;
+                let axis_len = self.shape[axis];
+                let packed_len = axis_len.div_ceil(8);
+                let inner: usize = self.shape[axis + 1..].iter().copied().product();
+                let outer: usize = self.shape[..axis].iter().copied().product();
+                let mut out_shape = self.shape.clone();
+                out_shape[axis] = packed_len;
+                let total = element_count(&out_shape).map_err(UFuncError::Shape)?;
+                let mut packed = vec![0.0f64; total];
+                for o in 0..outer {
+                    for i in 0..inner {
+                        for k in 0..axis_len {
+                            let v = self.values[o * axis_len * inner + k * inner + i];
+                            if v > 0.0 {
+                                let byte_idx = k / 8;
+                                let bit_idx = 7 - (k % 8);
+                                packed[o * packed_len * inner + byte_idx * inner + i] +=
+                                    (1u8 << bit_idx) as f64;
+                            }
+                        }
+                    }
+                }
+                Ok(Self {
+                    shape: out_shape,
+                    values: packed,
+                    dtype: DType::U8,
+                })
+            }
         }
     }
 
     /// Unpack elements of a uint8 array into a binary array (np.unpackbits).
-    /// Each input value (0–255) is expanded to 8 bits. Returns a 1-D array of 0.0/1.0.
-    pub fn unpackbits(&self) -> Self {
-        let mut bits = Vec::with_capacity(self.values.len() * 8);
-        for &v in &self.values {
-            let byte = v as u8;
-            for bit in (0..8).rev() {
-                bits.push(if byte & (1 << bit) != 0 { 1.0 } else { 0.0 });
+    /// When `axis` is `None`, flattens and unpacks. When specified, unpacks along that axis.
+    /// `count` limits the number of unpacked bits along the axis (default: axis_len * 8).
+    pub fn unpackbits(&self, axis: Option<isize>, count: Option<usize>) -> Result<Self, UFuncError> {
+        match axis {
+            None => {
+                let mut bits = Vec::with_capacity(self.values.len() * 8);
+                for &v in &self.values {
+                    let byte = v as u8;
+                    for bit in (0..8).rev() {
+                        bits.push(if byte & (1 << bit) != 0 { 1.0 } else { 0.0 });
+                    }
+                }
+                if let Some(c) = count {
+                    bits.truncate(c);
+                }
+                let n = bits.len();
+                Ok(Self {
+                    shape: vec![n],
+                    values: bits,
+                    dtype: DType::U8,
+                })
             }
-        }
-        let n = bits.len();
-        Self {
-            shape: vec![n],
-            values: bits,
-            dtype: DType::U8,
+            Some(ax) => {
+                let axis = normalize_axis(ax, self.shape.len())?;
+                let axis_len = self.shape[axis];
+                let full_bits = axis_len * 8;
+                let out_bits = count.unwrap_or(full_bits).min(full_bits);
+                let inner: usize = self.shape[axis + 1..].iter().copied().product();
+                let outer: usize = self.shape[..axis].iter().copied().product();
+                let mut out_shape = self.shape.clone();
+                out_shape[axis] = out_bits;
+                let total = element_count(&out_shape).map_err(UFuncError::Shape)?;
+                let mut bits = vec![0.0f64; total];
+                for o in 0..outer {
+                    for i in 0..inner {
+                        let mut bit_pos = 0usize;
+                        for k in 0..axis_len {
+                            let byte =
+                                self.values[o * axis_len * inner + k * inner + i] as u8;
+                            for b in (0..8).rev() {
+                                if bit_pos >= out_bits {
+                                    break;
+                                }
+                                bits[o * out_bits * inner + bit_pos * inner + i] =
+                                    if byte & (1 << b) != 0 { 1.0 } else { 0.0 };
+                                bit_pos += 1;
+                            }
+                        }
+                    }
+                }
+                Ok(Self {
+                    shape: out_shape,
+                    values: bits,
+                    dtype: DType::U8,
+                })
+            }
         }
     }
 
@@ -8777,6 +9597,40 @@ impl UFuncArray {
         }
     }
 
+    /// Return indices of nonzero elements as an (N, ndim) array (np.argwhere).
+    pub fn argwhere(&self) -> Self {
+        let ndim = self.shape.len();
+        let nz_flat: Vec<usize> = self
+            .values
+            .iter()
+            .enumerate()
+            .filter(|&(_, v)| *v != 0.0)
+            .map(|(i, _)| i)
+            .collect();
+        let n = nz_flat.len();
+        if n == 0 {
+            return Self {
+                shape: vec![0, ndim],
+                values: vec![],
+                dtype: DType::I64,
+            };
+        }
+        let strides = c_strides_elems(&self.shape);
+        let mut out = Vec::with_capacity(n * ndim);
+        for flat_idx in nz_flat {
+            let mut rem = flat_idx;
+            for s in &strides {
+                out.push((rem / s) as f64);
+                rem %= s;
+            }
+        }
+        Self {
+            shape: vec![n, ndim],
+            values: out,
+            dtype: DType::I64,
+        }
+    }
+
     /// Round to nearest integer towards zero (np.fix).
     pub fn fix(&self) -> Self {
         let values: Vec<f64> = self.values.iter().map(|&x| x.trunc()).collect();
@@ -8844,7 +9698,22 @@ impl UFuncArray {
     }
 
     /// Copy values from src into self at positions where mask is true (np.copyto).
-    pub fn copyto(&mut self, src: &Self, mask: Option<&Self>) -> Result<(), UFuncError> {
+    ///
+    /// `casting` controls dtype compatibility: "no", "equiv", "safe", "same_kind", "unsafe".
+    /// When `None`, defaults to "same_kind".
+    pub fn copyto(
+        &mut self,
+        src: &Self,
+        mask: Option<&Self>,
+        casting: Option<&str>,
+    ) -> Result<(), UFuncError> {
+        let casting = casting.unwrap_or("same_kind");
+        if !Self::can_cast(src.dtype, self.dtype, casting) {
+            return Err(UFuncError::Msg(format!(
+                "copyto: cannot cast from {:?} to {:?} with casting='{casting}'",
+                src.dtype, self.dtype,
+            )));
+        }
         if self.values.len() != src.values.len() {
             return Err(UFuncError::Msg(
                 "copyto: src and dst must have the same size".to_string(),
@@ -8916,17 +9785,47 @@ impl UFuncArray {
         let axis_len = self.shape[axis];
         let base_size = axis_len / sections;
         let remainder = axis_len % sections;
+
+        // Build internal split indices (not including 0 and end)
+        let mut split_indices = Vec::with_capacity(sections - 1);
+        let mut pos = 0;
+        for s in 0..sections - 1 {
+            pos += if s < remainder { base_size + 1 } else { base_size };
+            split_indices.push(pos);
+        }
+        self.array_split_at_indices(&split_indices, axis)
+    }
+
+    /// Split an array at explicit index boundaries along an axis.
+    ///
+    /// Mimics `np.array_split(a, indices, axis)` where `indices` is a list of
+    /// split points. For N indices, produces N+1 sub-arrays:
+    /// `[0:idx[0]], [idx[0]:idx[1]], ..., [idx[N-1]:axis_len]`.
+    pub fn array_split_at_indices(
+        &self,
+        indices: &[usize],
+        axis: usize,
+    ) -> Result<Vec<Self>, UFuncError> {
+        if self.shape.is_empty() {
+            return Err(UFuncError::Msg("cannot split scalar array".to_string()));
+        }
+        let axis_len = self.shape[axis];
         let inner: usize = self.shape[axis + 1..].iter().copied().product();
         let outer: usize = self.shape[..axis].iter().copied().product();
 
-        let mut result = Vec::with_capacity(sections);
-        let mut start = 0;
-        for s in 0..sections {
-            let chunk = if s < remainder {
-                base_size + 1
-            } else {
-                base_size
-            };
+        // Build boundary pairs: [0, idx0, idx1, ..., axis_len]
+        let mut bounds = Vec::with_capacity(indices.len() + 2);
+        bounds.push(0usize);
+        for &idx in indices {
+            bounds.push(idx.min(axis_len));
+        }
+        bounds.push(axis_len);
+
+        let mut result = Vec::with_capacity(bounds.len() - 1);
+        for w in bounds.windows(2) {
+            let start = w[0];
+            let end = w[1];
+            let chunk = end.saturating_sub(start);
             let mut sub_shape = self.shape.clone();
             sub_shape[axis] = chunk;
             let count = element_count(&sub_shape).map_err(UFuncError::Shape)?;
@@ -8945,7 +9844,6 @@ impl UFuncArray {
                 values,
                 dtype: self.dtype,
             });
-            start += chunk;
         }
         Ok(result)
     }
@@ -9057,6 +9955,135 @@ impl UFuncArray {
             DType::Complex128 => 'D',
             DType::Str | DType::DateTime64 | DType::TimeDelta64 => 'd',
         }
+    }
+
+    /// Determine the common dtype that `from` and `to` promote to (np.promote_types).
+    pub fn promote_types(from: DType, to: DType) -> DType {
+        promote(from, to)
+    }
+
+    /// Return the minimum scalar dtype that can hold the given value (np.min_scalar_type).
+    /// For an array, returns the dtype needed to hold all values.
+    pub fn min_scalar_type(&self) -> DType {
+        if self.values.is_empty() {
+            return DType::F64;
+        }
+        let all_bool = self.values.iter().all(|&v| v == 0.0 || v == 1.0);
+        if all_bool {
+            return DType::Bool;
+        }
+        let all_int = self.values.iter().all(|&v| v == v.floor() && v.is_finite());
+        if all_int {
+            let min_v = self.values.iter().cloned().fold(f64::INFINITY, f64::min);
+            let max_v = self
+                .values
+                .iter()
+                .cloned()
+                .fold(f64::NEG_INFINITY, f64::max);
+            if min_v >= 0.0 {
+                if max_v <= 255.0 {
+                    return DType::U8;
+                }
+                if max_v <= 65535.0 {
+                    return DType::U16;
+                }
+                if max_v <= u32::MAX as f64 {
+                    return DType::U32;
+                }
+                return DType::U64;
+            }
+            if min_v >= i8::MIN as f64 && max_v <= i8::MAX as f64 {
+                return DType::I8;
+            }
+            if min_v >= i16::MIN as f64 && max_v <= i16::MAX as f64 {
+                return DType::I16;
+            }
+            if min_v >= i32::MIN as f64 && max_v <= i32::MAX as f64 {
+                return DType::I32;
+            }
+            return DType::I64;
+        }
+        DType::F64
+    }
+
+    /// Check if the array is stored in Fortran-contiguous order (np.isfortran).
+    /// Since `UFuncArray` always uses C-contiguous storage, this returns false
+    /// unless the array is 0-D or 1-D (which are both C- and F-contiguous).
+    #[must_use]
+    pub fn isfortran(&self) -> bool {
+        self.shape.len() <= 1
+    }
+
+    /// Check if the value is a scalar (0-D array) (np.isscalar).
+    #[must_use]
+    pub fn isscalar(&self) -> bool {
+        self.shape.is_empty() || (self.shape.len() == 1 && self.shape[0] == 1)
+    }
+
+    /// Element-wise test for real values (np.isreal).
+    /// For non-complex dtypes, all values are real. For complex dtypes,
+    /// an element is real if its imaginary part is zero.
+    pub fn isreal(&self) -> Self {
+        if !matches!(self.dtype, DType::Complex64 | DType::Complex128) {
+            return Self {
+                shape: self.shape.clone(),
+                values: vec![1.0; self.values.len()],
+                dtype: DType::Bool,
+            };
+        }
+        let n = self.values.len() / 2;
+        let values: Vec<f64> = (0..n)
+            .map(|i| {
+                if self.values[i * 2 + 1] == 0.0 {
+                    1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        Self {
+            shape: self.shape[..self.shape.len() - 1].to_vec(),
+            values,
+            dtype: DType::Bool,
+        }
+    }
+
+    /// Element-wise test for complex values with nonzero imaginary part (np.iscomplex).
+    pub fn iscomplex(&self) -> Self {
+        if !matches!(self.dtype, DType::Complex64 | DType::Complex128) {
+            return Self {
+                shape: self.shape.clone(),
+                values: vec![0.0; self.values.len()],
+                dtype: DType::Bool,
+            };
+        }
+        let n = self.values.len() / 2;
+        let values: Vec<f64> = (0..n)
+            .map(|i| {
+                if self.values[i * 2 + 1] != 0.0 {
+                    1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        Self {
+            shape: self.shape[..self.shape.len() - 1].to_vec(),
+            values,
+            dtype: DType::Bool,
+        }
+    }
+
+    /// Check if the array dtype is real (not complex) (np.isrealobj).
+    #[must_use]
+    pub fn isrealobj(&self) -> bool {
+        !matches!(self.dtype, DType::Complex64 | DType::Complex128)
+    }
+
+    /// Check if the array dtype is complex (np.iscomplexobj).
+    #[must_use]
+    pub fn iscomplexobj(&self) -> bool {
+        matches!(self.dtype, DType::Complex64 | DType::Complex128)
     }
 
     /// Check if two arrays share memory (np.shares_memory).
@@ -11185,6 +12212,388 @@ impl MaskedArray {
     pub fn ndim(&self) -> usize {
         self.data.shape().len()
     }
+
+    // ── Additional MaskedArray operations (numpy.ma parity) ──────
+
+    /// Sort unmasked elements, pushing masked to end (np.ma.sort).
+    pub fn sort(&self, axis: Option<isize>) -> Result<Self, MAError> {
+        let filled = self.filled(f64::MAX);
+        let sorted = filled.sort(axis)?;
+        // Reconstruct mask: masked elements are those equal to f64::MAX after sort
+        let mask_vals: Vec<f64> = sorted
+            .values()
+            .iter()
+            .map(|&v| if v == f64::MAX { 1.0 } else { 0.0 })
+            .collect();
+        let mask = if mask_vals.contains(&1.0) {
+            Some(UFuncArray::new(sorted.shape().to_vec(), mask_vals, DType::Bool)?)
+        } else {
+            None
+        };
+        Ok(Self {
+            data: sorted,
+            mask,
+            fill_value: self.fill_value,
+            hard_mask: self.hard_mask,
+        })
+    }
+
+    /// Argsort unmasked elements, masked indices appear at the end (np.ma.argsort).
+    pub fn argsort(&self, axis: Option<isize>) -> Result<UFuncArray, MAError> {
+        let filled = self.filled(f64::MAX);
+        Ok(filled.argsort(axis)?)
+    }
+
+    /// Index of minimum value among unmasked elements (np.ma.argmin).
+    pub fn argmin(&self, axis: Option<isize>) -> Result<UFuncArray, MAError> {
+        let filled = self.filled(f64::MAX);
+        Ok(filled.reduce_argmin(axis)?)
+    }
+
+    /// Index of maximum value among unmasked elements (np.ma.argmax).
+    pub fn argmax(&self, axis: Option<isize>) -> Result<UFuncArray, MAError> {
+        let filled = self.filled(f64::MIN);
+        Ok(filled.reduce_argmax(axis)?)
+    }
+
+    /// Cumulative sum over unmasked elements (np.ma.cumsum).
+    /// Masked elements contribute 0 to the running sum; mask is preserved.
+    pub fn cumsum(&self, axis: Option<isize>) -> Result<Self, MAError> {
+        let filled = self.filled(0.0);
+        let cs = filled.cumsum(axis)?;
+        Ok(Self {
+            data: cs,
+            mask: self.mask.clone(),
+            fill_value: self.fill_value,
+            hard_mask: self.hard_mask,
+        })
+    }
+
+    /// Cumulative product over unmasked elements (np.ma.cumprod).
+    /// Masked elements contribute 1 to the running product; mask is preserved.
+    pub fn cumprod(&self, axis: Option<isize>) -> Result<Self, MAError> {
+        let filled = self.filled(1.0);
+        let cp = filled.cumprod(axis)?;
+        Ok(Self {
+            data: cp,
+            mask: self.mask.clone(),
+            fill_value: self.fill_value,
+            hard_mask: self.hard_mask,
+        })
+    }
+
+    /// Median of unmasked elements (np.ma.median).
+    pub fn median(&self) -> Result<f64, MAError> {
+        let compressed = self.compressed();
+        if compressed.values().is_empty() {
+            return Err(MAError::Msg("median: no unmasked elements".into()));
+        }
+        let mut vals = compressed.values().to_vec();
+        vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let n = vals.len();
+        if n.is_multiple_of(2) {
+            Ok((vals[n / 2 - 1] + vals[n / 2]) / 2.0)
+        } else {
+            Ok(vals[n / 2])
+        }
+    }
+
+    /// Peak-to-peak (max - min) of unmasked elements (np.ma.ptp).
+    pub fn ptp(&self) -> Result<f64, MAError> {
+        let compressed = self.compressed();
+        if compressed.values().is_empty() {
+            return Err(MAError::Msg("ptp: no unmasked elements".into()));
+        }
+        let mn = compressed
+            .values()
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min);
+        let mx = compressed
+            .values()
+            .iter()
+            .copied()
+            .fold(f64::NEG_INFINITY, f64::max);
+        Ok(mx - mn)
+    }
+
+    /// Dot product of two masked arrays (np.ma.dot).
+    /// Masked elements are treated as zero.
+    pub fn dot(&self, other: &Self) -> Result<Self, MAError> {
+        let a = self.filled(0.0);
+        let b = other.filled(0.0);
+        let result = a.dot(&b)?;
+        Ok(Self {
+            data: result,
+            mask: None,
+            fill_value: self.fill_value,
+            hard_mask: false,
+        })
+    }
+
+    /// Expand dimensions of a masked array (np.ma.expand_dims).
+    pub fn expand_dims(&self, axis: isize) -> Result<Self, MAError> {
+        let new_data = self.data.expand_dims(axis)?;
+        let new_mask = match &self.mask {
+            Some(m) => Some(m.expand_dims(axis)?),
+            None => None,
+        };
+        Ok(Self {
+            data: new_data,
+            mask: new_mask,
+            fill_value: self.fill_value,
+            hard_mask: self.hard_mask,
+        })
+    }
+
+    /// Squeeze singleton dimensions (np.ma.squeeze).
+    pub fn squeeze(&self, axis: Option<isize>) -> Result<Self, MAError> {
+        let new_data = self.data.squeeze(axis)?;
+        let new_mask = match &self.mask {
+            Some(m) => Some(m.squeeze(axis)?),
+            None => None,
+        };
+        Ok(Self {
+            data: new_data,
+            mask: new_mask,
+            fill_value: self.fill_value,
+            hard_mask: self.hard_mask,
+        })
+    }
+
+    /// Create a masked array where all elements are masked (np.ma.masked_all).
+    pub fn masked_all(shape: Vec<usize>, dtype: DType) -> Result<Self, MAError> {
+        let n: usize = shape.iter().product();
+        let data = UFuncArray::new(shape.clone(), vec![0.0; n], dtype)?;
+        let mask = UFuncArray::new(shape, vec![1.0; n], DType::Bool)?;
+        Ok(Self {
+            data,
+            mask: Some(mask),
+            fill_value: 1e20,
+            hard_mask: false,
+        })
+    }
+
+    /// Create a masked array with same shape as model, all masked (np.ma.masked_all_like).
+    pub fn masked_all_like(model: &Self) -> Result<Self, MAError> {
+        Self::masked_all(model.shape().to_vec(), model.dtype())
+    }
+
+    /// Count of masked (invalid) elements (np.ma.count_masked).
+    pub fn count_masked(&self) -> usize {
+        match &self.mask {
+            Some(m) => m.values().iter().filter(|&&v| v != 0.0).count(),
+            None => 0,
+        }
+    }
+
+    /// Weighted average of unmasked elements (np.ma.average).
+    pub fn average(&self, weights: Option<&Self>) -> Result<f64, MAError> {
+        match weights {
+            None => {
+                let compressed = self.compressed();
+                if compressed.values().is_empty() {
+                    return Err(MAError::Msg("average: no unmasked elements".into()));
+                }
+                let s: f64 = compressed.values().iter().sum();
+                Ok(s / compressed.values().len() as f64)
+            }
+            Some(w) => {
+                // Both data and weights must match shape
+                let n = self.data.values().len();
+                let mut wsum = 0.0;
+                let mut vsum = 0.0;
+                for i in 0..n {
+                    let masked = self
+                        .mask
+                        .as_ref()
+                        .is_some_and(|m| m.values()[i] != 0.0);
+                    if !masked {
+                        let wi = w.data.values()[i];
+                        wsum += wi;
+                        vsum += self.data.values()[i] * wi;
+                    }
+                }
+                if wsum == 0.0 {
+                    return Err(MAError::Msg("average: zero weight sum".into()));
+                }
+                Ok(vsum / wsum)
+            }
+        }
+    }
+
+    /// Take elements from masked array by indices (np.ma.take).
+    pub fn take(&self, indices: &[i64]) -> Result<Self, MAError> {
+        let new_data = self.data.take(indices, None)?;
+        let new_mask = match &self.mask {
+            Some(m) => Some(m.take(indices, None)?),
+            None => None,
+        };
+        Ok(Self {
+            data: new_data,
+            mask: new_mask,
+            fill_value: self.fill_value,
+            hard_mask: self.hard_mask,
+        })
+    }
+
+    /// Return contiguous slices of unmasked data (np.ma.clump_unmasked).
+    /// Returns a vector of (start, end) index pairs for contiguous unmasked runs.
+    pub fn clump_unmasked(&self) -> Vec<(usize, usize)> {
+        let mut runs = Vec::new();
+        let mut start: Option<usize> = None;
+        let n = self.data.values().len();
+        for i in 0..n {
+            let masked = self
+                .mask
+                .as_ref()
+                .is_some_and(|m| m.values()[i] != 0.0);
+            if masked {
+                if let Some(s) = start {
+                    runs.push((s, i));
+                    start = None;
+                }
+            } else if start.is_none() {
+                start = Some(i);
+            }
+        }
+        if let Some(s) = start {
+            runs.push((s, n));
+        }
+        runs
+    }
+
+    /// Return contiguous slices of masked data (np.ma.clump_masked).
+    /// Returns a vector of (start, end) index pairs for contiguous masked runs.
+    pub fn clump_masked(&self) -> Vec<(usize, usize)> {
+        let mut runs = Vec::new();
+        let mut start: Option<usize> = None;
+        let n = self.data.values().len();
+        for i in 0..n {
+            let masked = self
+                .mask
+                .as_ref()
+                .is_some_and(|m| m.values()[i] != 0.0);
+            if !masked {
+                if let Some(s) = start {
+                    runs.push((s, i));
+                    start = None;
+                }
+            } else if start.is_none() {
+                start = Some(i);
+            }
+        }
+        if let Some(s) = start {
+            runs.push((s, n));
+        }
+        runs
+    }
+
+    /// Remove the mask if all elements are valid (np.ma.MaskedArray.shrink_mask).
+    /// If any element is masked, the mask is kept unchanged.
+    pub fn shrink_mask(&mut self) {
+        if let Some(m) = &self.mask
+            && m.values().iter().all(|&v| v == 0.0)
+        {
+            self.mask = None;
+        }
+    }
+
+    /// Deviation from mean of unmasked elements (np.ma.MaskedArray.anom).
+    /// Returns a new MaskedArray with each unmasked element replaced by
+    /// (element - mean). Masked elements are preserved.
+    pub fn anom(&self) -> Result<Self, MAError> {
+        let compressed = self.compressed();
+        if compressed.values().is_empty() {
+            return Err(MAError::Msg("anom: no unmasked elements".into()));
+        }
+        let mean: f64 = compressed.values().iter().sum::<f64>() / compressed.values().len() as f64;
+        let mut new_vals = self.data.values().to_vec();
+        for (i, val) in new_vals.iter_mut().enumerate() {
+            let masked = self
+                .mask
+                .as_ref()
+                .is_some_and(|m| m.values()[i] != 0.0);
+            if !masked {
+                *val -= mean;
+            }
+        }
+        let new_data = UFuncArray::new(self.shape().to_vec(), new_vals, self.dtype())?;
+        Ok(Self {
+            data: new_data,
+            mask: self.mask.clone(),
+            fill_value: self.fill_value,
+            hard_mask: self.hard_mask,
+        })
+    }
+
+    /// Mask invalid values in place (NaN, Inf) (np.ma.fix_invalid as mutation).
+    /// Sets the mask to 1 wherever the data contains NaN or Inf, and replaces
+    /// those data values with `fill_value`.
+    pub fn fix_invalid(&mut self) {
+        let n = self.data.values().len();
+        let mut mask_vals = match &self.mask {
+            Some(m) => m.values().to_vec(),
+            None => vec![0.0; n],
+        };
+        let mut data_vals = self.data.values().to_vec();
+        for i in 0..n {
+            if !data_vals[i].is_finite() {
+                mask_vals[i] = 1.0;
+                data_vals[i] = self.fill_value;
+            }
+        }
+        self.data = UFuncArray::new(self.shape().to_vec(), data_vals, self.dtype())
+            .unwrap_or_else(|_| self.data.clone());
+        self.mask = Some(
+            UFuncArray::new(self.shape().to_vec(), mask_vals, DType::Bool)
+                .unwrap_or_else(|_| self.mask.clone().unwrap()),
+        );
+    }
+}
+
+/// Check whether a MaskedArray has any masked elements (np.ma.is_masked).
+pub fn ma_is_masked(a: &MaskedArray) -> bool {
+    a.mask
+        .as_ref()
+        .is_some_and(|m| m.values().iter().any(|&v| v != 0.0))
+}
+
+/// Check whether an array qualifies as a boolean mask (np.ma.is_mask).
+/// Returns true if `arr` contains only 0.0 and 1.0 values with Bool dtype.
+pub fn ma_is_mask(arr: &UFuncArray) -> bool {
+    arr.dtype() == DType::Bool && arr.values().iter().all(|&v| v == 0.0 || v == 1.0)
+}
+
+/// Create a boolean mask from an array, treating non-zero as masked (np.ma.make_mask).
+pub fn ma_make_mask(arr: &UFuncArray) -> UFuncArray {
+    let vals: Vec<f64> = arr
+        .values()
+        .iter()
+        .map(|&v| if v != 0.0 { 1.0 } else { 0.0 })
+        .collect();
+    UFuncArray::new(arr.shape().to_vec(), vals, DType::Bool).unwrap()
+}
+
+/// Combine two masks with logical OR (np.ma.mask_or).
+/// Returns None if both inputs are None.
+pub fn ma_mask_or(
+    m1: Option<&UFuncArray>,
+    m2: Option<&UFuncArray>,
+) -> Option<UFuncArray> {
+    match (m1, m2) {
+        (None, None) => None,
+        (Some(m), None) | (None, Some(m)) => Some(m.clone()),
+        (Some(a), Some(b)) => {
+            let vals: Vec<f64> = a
+                .values()
+                .iter()
+                .zip(b.values().iter())
+                .map(|(&va, &vb)| if va != 0.0 || vb != 0.0 { 1.0 } else { 0.0 })
+                .collect();
+            Some(UFuncArray::new(a.shape().to_vec(), vals, DType::Bool).unwrap())
+        }
+    }
 }
 
 // ── numpy.financial — Financial Functions ────────────────────────────────
@@ -11914,7 +13323,8 @@ impl StringArray {
             .iter()
             .map(|s| match (sep, maxsplit) {
                 (None, None) => s.split_whitespace().map(String::from).collect(),
-                (None, Some(n)) => s.splitn(n + 1, char::is_whitespace)
+                (None, Some(n)) => s
+                    .splitn(n + 1, char::is_whitespace)
                     .filter(|p| !p.is_empty())
                     .map(String::from)
                     .collect(),
@@ -11932,7 +13342,8 @@ impl StringArray {
             .map(|s| match (sep, maxsplit) {
                 (None, None) => s.split_whitespace().map(String::from).collect(),
                 (None, Some(n)) => {
-                    let mut parts: Vec<String> = s.rsplitn(n + 1, char::is_whitespace)
+                    let mut parts: Vec<String> = s
+                        .rsplitn(n + 1, char::is_whitespace)
                         .filter(|p| !p.is_empty())
                         .map(String::from)
                         .collect();
@@ -11941,8 +13352,7 @@ impl StringArray {
                 }
                 (Some(sep), None) => s.split(sep).map(String::from).collect(),
                 (Some(sep), Some(n)) => {
-                    let mut parts: Vec<String> =
-                        s.rsplitn(n + 1, sep).map(String::from).collect();
+                    let mut parts: Vec<String> = s.rsplitn(n + 1, sep).map(String::from).collect();
                     // rsplitn gives reversed order
                     parts.reverse();
                     parts
@@ -11970,9 +13380,18 @@ impl StringArray {
             }
         }
         (
-            Self { shape: self.shape.clone(), values: befores },
-            Self { shape: self.shape.clone(), values: seps },
-            Self { shape: self.shape.clone(), values: afters },
+            Self {
+                shape: self.shape.clone(),
+                values: befores,
+            },
+            Self {
+                shape: self.shape.clone(),
+                values: seps,
+            },
+            Self {
+                shape: self.shape.clone(),
+                values: afters,
+            },
         )
     }
 
@@ -11993,9 +13412,18 @@ impl StringArray {
             }
         }
         (
-            Self { shape: self.shape.clone(), values: befores },
-            Self { shape: self.shape.clone(), values: seps },
-            Self { shape: self.shape.clone(), values: afters },
+            Self {
+                shape: self.shape.clone(),
+                values: befores,
+            },
+            Self {
+                shape: self.shape.clone(),
+                values: seps,
+            },
+            Self {
+                shape: self.shape.clone(),
+                values: afters,
+            },
         )
     }
 
@@ -12025,6 +13453,29 @@ impl StringArray {
             .map(|b| String::from_utf8_lossy(b).into_owned())
             .collect();
         Ok(Self { shape, values })
+    }
+
+    /// `np.char.maketrans(intab, outtab)` — build a translation table from two strings.
+    ///
+    /// Characters in `intab` are mapped to the corresponding character in `outtab`.
+    /// If `deletechars` is provided, those characters are mapped to deletion (None).
+    /// Returns a `HashMap<char, Option<char>>` suitable for use with `translate`.
+    #[must_use]
+    pub fn maketrans(
+        intab: &str,
+        outtab: &str,
+        deletechars: Option<&str>,
+    ) -> std::collections::HashMap<char, Option<char>> {
+        let mut table = std::collections::HashMap::new();
+        for (from, to) in intab.chars().zip(outtab.chars()) {
+            table.insert(from, Some(to));
+        }
+        if let Some(del) = deletechars {
+            for c in del.chars() {
+                table.insert(c, None);
+            }
+        }
+        table
     }
 
     /// `np.char.translate(a, table)` — translate characters using a mapping.
@@ -12159,6 +13610,180 @@ impl StringArray {
             dtype: DType::Bool,
         }
     }
+
+    /// Like find but returns error when substring not found (np.char.index).
+    pub fn index(&self, sub: &str) -> Result<UFuncArray, UFuncError> {
+        let mut vals = Vec::with_capacity(self.values.len());
+        for s in &self.values {
+            match s.find(sub) {
+                Some(byte_idx) => {
+                    let char_pos = s[..byte_idx].chars().count();
+                    vals.push(char_pos as f64);
+                }
+                None => {
+                    return Err(UFuncError::Msg("substring not found".into()));
+                }
+            }
+        }
+        Ok(UFuncArray {
+            shape: self.shape.clone(),
+            values: vals,
+            dtype: DType::I64,
+        })
+    }
+
+    /// Like rfind but returns error when substring not found (np.char.rindex).
+    pub fn rindex(&self, sub: &str) -> Result<UFuncArray, UFuncError> {
+        let mut vals = Vec::with_capacity(self.values.len());
+        for s in &self.values {
+            match s.rfind(sub) {
+                Some(byte_idx) => {
+                    let char_pos = s[..byte_idx].chars().count();
+                    vals.push(char_pos as f64);
+                }
+                None => {
+                    return Err(UFuncError::Msg("substring not found".into()));
+                }
+            }
+        }
+        Ok(UFuncArray {
+            shape: self.shape.clone(),
+            values: vals,
+            dtype: DType::I64,
+        })
+    }
+
+    /// Split each element by line boundaries (np.char.splitlines).
+    pub fn splitlines(&self) -> Vec<Vec<String>> {
+        self.values
+            .iter()
+            .map(|s| s.lines().map(String::from).collect())
+            .collect()
+    }
+
+    /// Apply printf-style formatting to each element (np.char.mod).
+    /// `values` are the format arguments applied positionally.
+    pub fn mod_format(&self, args: &[&str]) -> Self {
+        let values: Vec<String> = self
+            .values
+            .iter()
+            .enumerate()
+            .map(|(i, fmt_str)| {
+                let arg = if i < args.len() { args[i] } else { "" };
+                fmt_str.replace("%s", arg).replace("%d", arg)
+            })
+            .collect();
+        Self {
+            shape: self.shape.clone(),
+            values,
+        }
+    }
+
+    /// Element-wise string equality (np.char.equal).
+    pub fn equal(&self, other: &Self) -> UFuncArray {
+        let values: Vec<f64> = self
+            .values
+            .iter()
+            .zip(other.values.iter())
+            .map(|(a, b)| if a == b { 1.0 } else { 0.0 })
+            .collect();
+        UFuncArray {
+            shape: self.shape.clone(),
+            values,
+            dtype: DType::Bool,
+        }
+    }
+
+    /// Element-wise string inequality (np.char.not_equal).
+    pub fn not_equal(&self, other: &Self) -> UFuncArray {
+        let values: Vec<f64> = self
+            .values
+            .iter()
+            .zip(other.values.iter())
+            .map(|(a, b)| if a != b { 1.0 } else { 0.0 })
+            .collect();
+        UFuncArray {
+            shape: self.shape.clone(),
+            values,
+            dtype: DType::Bool,
+        }
+    }
+
+    /// Element-wise string greater-than (np.char.greater).
+    pub fn greater(&self, other: &Self) -> UFuncArray {
+        let values: Vec<f64> = self
+            .values
+            .iter()
+            .zip(other.values.iter())
+            .map(|(a, b)| if a > b { 1.0 } else { 0.0 })
+            .collect();
+        UFuncArray {
+            shape: self.shape.clone(),
+            values,
+            dtype: DType::Bool,
+        }
+    }
+
+    /// Element-wise string greater-or-equal (np.char.greater_equal).
+    pub fn greater_equal(&self, other: &Self) -> UFuncArray {
+        let values: Vec<f64> = self
+            .values
+            .iter()
+            .zip(other.values.iter())
+            .map(|(a, b)| if a >= b { 1.0 } else { 0.0 })
+            .collect();
+        UFuncArray {
+            shape: self.shape.clone(),
+            values,
+            dtype: DType::Bool,
+        }
+    }
+
+    /// Element-wise string less-than (np.char.less).
+    pub fn less(&self, other: &Self) -> UFuncArray {
+        let values: Vec<f64> = self
+            .values
+            .iter()
+            .zip(other.values.iter())
+            .map(|(a, b)| if a < b { 1.0 } else { 0.0 })
+            .collect();
+        UFuncArray {
+            shape: self.shape.clone(),
+            values,
+            dtype: DType::Bool,
+        }
+    }
+
+    /// Element-wise string less-or-equal (np.char.less_equal).
+    pub fn less_equal(&self, other: &Self) -> UFuncArray {
+        let values: Vec<f64> = self
+            .values
+            .iter()
+            .zip(other.values.iter())
+            .map(|(a, b)| if a <= b { 1.0 } else { 0.0 })
+            .collect();
+        UFuncArray {
+            shape: self.shape.clone(),
+            values,
+            dtype: DType::Bool,
+        }
+    }
+
+    /// Compare character arrays element-wise (np.char.compare_chararrays).
+    /// `cmp` is one of "==", "!=", "<", ">", "<=", ">=".
+    pub fn compare_chararrays(&self, other: &Self, cmp: &str) -> Result<UFuncArray, UFuncError> {
+        match cmp {
+            "==" => Ok(self.equal(other)),
+            "!=" => Ok(self.not_equal(other)),
+            "<" => Ok(self.less(other)),
+            ">" => Ok(self.greater(other)),
+            "<=" => Ok(self.less_equal(other)),
+            ">=" => Ok(self.greater_equal(other)),
+            _ => Err(UFuncError::Msg(format!(
+                "compare_chararrays: unknown comparison '{cmp}'"
+            ))),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -12168,7 +13793,8 @@ mod tests {
         UFUNC_PACKET_REASON_CODES, UFuncArray, UFuncError, UFuncLogRecord, UFuncRuntimeMode,
         UnaryOp, busday_count, busday_offset, financial_fv, financial_ipmt, financial_irr,
         financial_mirr, financial_nper, financial_npv, financial_pmt, financial_ppmt, financial_pv,
-        financial_rate, is_busday, normalize_signature_keywords, parse_gufunc_signature,
+        financial_rate, is_busday, ma_is_mask, ma_is_masked, ma_make_mask, ma_mask_or,
+        normalize_signature_keywords, parse_gufunc_signature,
         plan_binary_dispatch, register_custom_loop, validate_override_payload_class,
     };
     use fnp_dtype::{DType, promote};
@@ -14316,6 +15942,57 @@ mod tests {
     }
 
     #[test]
+    fn ndim_property() {
+        let a = UFuncArray::new(vec![2, 3, 4], vec![0.0; 24], DType::F64).unwrap();
+        assert_eq!(a.ndim(), 3);
+        let b = UFuncArray::scalar(1.0, DType::F64);
+        assert_eq!(b.ndim(), 0);
+    }
+
+    #[test]
+    fn size_property() {
+        let a = UFuncArray::new(vec![2, 3], vec![0.0; 6], DType::F64).unwrap();
+        assert_eq!(a.size(), 6);
+    }
+
+    #[test]
+    fn nbytes_property() {
+        let a = UFuncArray::new(vec![4], vec![0.0; 4], DType::F64).unwrap();
+        assert_eq!(a.nbytes(), 32); // 4 * 8 bytes
+    }
+
+    #[test]
+    fn itemsize_property() {
+        let a = UFuncArray::new(vec![1], vec![0.0], DType::F64).unwrap();
+        assert_eq!(a.itemsize(), 8);
+        let b = UFuncArray::new(vec![1], vec![0.0], DType::F32).unwrap();
+        assert_eq!(b.itemsize(), 4);
+    }
+
+    #[test]
+    fn strides_property() {
+        let a = UFuncArray::new(vec![2, 3], vec![0.0; 6], DType::F64).unwrap();
+        assert_eq!(a.strides(), vec![3, 1]); // C-contiguous: row-major
+    }
+
+    #[test]
+    fn t_property_2d() {
+        let a =
+            UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
+        let t = a.t().unwrap();
+        assert_eq!(t.shape(), &[3, 2]);
+        assert_eq!(t.values(), &[1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
+    }
+
+    #[test]
+    fn t_property_1d_noop() {
+        let a = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        let t = a.t().unwrap();
+        assert_eq!(t.shape(), &[3]);
+        assert_eq!(t.values(), a.values());
+    }
+
+    #[test]
     fn ones_creates_correct_array() {
         let arr = UFuncArray::ones(vec![4], DType::I64).unwrap();
         assert_eq!(arr.shape(), &[4]);
@@ -14531,6 +16208,28 @@ mod tests {
     fn split_uneven_fails() {
         let arr = UFuncArray::new(vec![5], vec![1.0, 2.0, 3.0, 4.0, 5.0], DType::F64).unwrap();
         assert!(arr.split(3, 0).is_err());
+    }
+
+    #[test]
+    fn array_split_at_indices_basic() {
+        let a = UFuncArray::new(vec![8], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], DType::F64).unwrap();
+        // Split at indices [2, 5] => sub-arrays [0:2], [2:5], [5:8]
+        let parts = a.array_split_at_indices(&[2, 5], 0).unwrap();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0].values(), &[1.0, 2.0]);
+        assert_eq!(parts[1].values(), &[3.0, 4.0, 5.0]);
+        assert_eq!(parts[2].values(), &[6.0, 7.0, 8.0]);
+    }
+
+    #[test]
+    fn array_split_at_indices_empty_section() {
+        let a = UFuncArray::new(vec![4], vec![1.0, 2.0, 3.0, 4.0], DType::F64).unwrap();
+        // Adjacent equal indices produce an empty section: [0:2], [2:2], [2:4]
+        let parts = a.array_split_at_indices(&[2, 2], 0).unwrap();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0].values(), &[1.0, 2.0]);
+        assert_eq!(parts[1].shape(), &[0]); // empty
+        assert_eq!(parts[2].values(), &[3.0, 4.0]);
     }
 
     #[test]
@@ -16055,7 +17754,7 @@ mod tests {
     #[test]
     fn partition_basic() {
         let a = UFuncArray::new(vec![5], vec![3.0, 1.0, 4.0, 1.0, 5.0], DType::F64).unwrap();
-        let r = a.partition(2).unwrap();
+        let r = a.partition(2, None).unwrap();
         // After partition with kth=2, element at index 2 should be 3.0 (sorted value)
         // Elements before should be <= 3.0, elements after >= 3.0
         assert!(r.values()[0] <= r.values()[2]);
@@ -16067,13 +17766,13 @@ mod tests {
     #[test]
     fn partition_out_of_bounds() {
         let a = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
-        assert!(a.partition(5).is_err());
+        assert!(a.partition(5, None).is_err());
     }
 
     #[test]
     fn argpartition_basic() {
         let a = UFuncArray::new(vec![5], vec![3.0, 1.0, 4.0, 1.0, 5.0], DType::F64).unwrap();
-        let r = a.argpartition(2).unwrap();
+        let r = a.argpartition(2, None).unwrap();
         // Index at kth position should point to an element that's the kth smallest
         let kth_idx = r.values()[2] as usize;
         let kth_val = a.values()[kth_idx];
@@ -16086,6 +17785,48 @@ mod tests {
             let idx = r.values()[i] as usize;
             assert!(a.values()[idx] >= kth_val);
         }
+    }
+
+    #[test]
+    fn partition_2d_axis1() {
+        // 2x4 array, partition along axis 1 with kth=1
+        let a = UFuncArray::new(
+            vec![2, 4],
+            vec![4.0, 2.0, 3.0, 1.0, 8.0, 6.0, 7.0, 5.0],
+            DType::F64,
+        )
+        .unwrap();
+        let r = a.partition(1, Some(-1)).unwrap();
+        assert_eq!(r.shape(), &[2, 4]);
+        // In each row, element at index 1 should be the 2nd smallest
+        // Row 0: sorted would be [1,2,3,4], so kth=1 => value 2.0
+        assert!(r.values()[0] <= r.values()[1]); // left of kth <= kth
+        assert!(r.values()[2] >= r.values()[1]); // right of kth >= kth
+        assert!(r.values()[3] >= r.values()[1]);
+        // Row 1: sorted would be [5,6,7,8], so kth=1 => value 6.0
+        assert!(r.values()[4] <= r.values()[5]);
+        assert!(r.values()[6] >= r.values()[5]);
+        assert!(r.values()[7] >= r.values()[5]);
+    }
+
+    #[test]
+    fn argpartition_2d_axis0() {
+        // 3x2 array, partition along axis 0 with kth=1
+        let a = UFuncArray::new(
+            vec![3, 2],
+            vec![3.0, 6.0, 1.0, 4.0, 2.0, 5.0],
+            DType::F64,
+        )
+        .unwrap();
+        let r = a.argpartition(1, Some(0)).unwrap();
+        assert_eq!(r.shape(), &[3, 2]);
+        // Column 0 values: [3.0, 1.0, 2.0]. Sorted indices: [1,2,0].
+        // kth=1: index at position 1 should point to 2nd smallest (2.0 at index 2)
+        let col0_kth_idx = r.values()[2] as usize; // row 1, col 0
+        let col0_vals = [3.0, 1.0, 2.0];
+        let kth_val = col0_vals[col0_kth_idx];
+        assert!(col0_vals[r.values()[0] as usize] <= kth_val);
+        assert!(col0_vals[r.values()[2 * 2] as usize] >= kth_val);
     }
 
     #[test]
@@ -17496,7 +19237,7 @@ mod tests {
         // Binary array [1, 0, 1, 1, 0, 0, 1, 0] → packed byte = 0b10110010 = 178
         let bits = vec![1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0];
         let a = UFuncArray::new(vec![8], bits.clone(), DType::U8).unwrap();
-        let packed = a.packbits();
+        let packed = a.packbits(None).unwrap();
         assert_eq!(packed.shape, vec![1]);
         assert!(
             (packed.values[0] - 178.0).abs() < 1e-10,
@@ -17505,7 +19246,7 @@ mod tests {
         );
 
         // Unpack should recover the original bits
-        let unpacked = packed.unpackbits();
+        let unpacked = packed.unpackbits(None, None).unwrap();
         assert_eq!(unpacked.shape, vec![8]);
         for (i, &b) in bits.iter().enumerate() {
             assert!(
@@ -17521,7 +19262,7 @@ mod tests {
     fn packbits_partial_byte() {
         // 5 bits → 1 byte (padded with zeros)
         let a = UFuncArray::new(vec![5], vec![1.0, 1.0, 1.0, 0.0, 1.0], DType::U8).unwrap();
-        let packed = a.packbits();
+        let packed = a.packbits(None).unwrap();
         assert_eq!(packed.shape, vec![1]);
         // 11101000 = 232
         assert!(
@@ -17529,6 +19270,38 @@ mod tests {
             "packed={}",
             packed.values[0]
         );
+    }
+
+    #[test]
+    fn packbits_axis0() {
+        // 2x8 array of bits, pack along axis 0 → 1x8 (each col has 2 bits → 1 byte)
+        // Wait, actually axis=0 packs along rows, so 2 bits per column packed to 1 byte each
+        // Shape [2, 8] → packed shape [1, 8] (2 bits per column → ceil(2/8)=1 byte)
+        let a = UFuncArray::new(
+            vec![2, 8],
+            vec![
+                1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, // row 0
+                0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, // row 1
+            ],
+            DType::U8,
+        )
+        .unwrap();
+        let packed = a.packbits(Some(0)).unwrap();
+        assert_eq!(packed.shape(), &[1, 8]);
+        // Column 0: bits [1, 0] → 10000000 = 128
+        assert!((packed.values()[0] - 128.0).abs() < 1e-10);
+        // Column 1: bits [0, 1] → 01000000 = 64
+        assert!((packed.values()[1] - 64.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn unpackbits_with_count() {
+        // Pack 5 bits, unpack with count=5 to recover original length
+        let a = UFuncArray::new(vec![5], vec![1.0, 1.0, 1.0, 0.0, 1.0], DType::U8).unwrap();
+        let packed = a.packbits(None).unwrap();
+        let unpacked = packed.unpackbits(None, Some(5)).unwrap();
+        assert_eq!(unpacked.shape(), &[5]);
+        assert_eq!(unpacked.values(), &[1.0, 1.0, 1.0, 0.0, 1.0]);
     }
 
     #[test]
@@ -17683,8 +19456,7 @@ mod tests {
         let a = UFuncArray::new(vec![2, 3], vec![0.0; 6], DType::F64).unwrap();
         let b = UFuncArray::new(vec![3, 4], vec![0.0; 12], DType::F64).unwrap();
         let c = UFuncArray::new(vec![4, 5], vec![0.0; 20], DType::F64).unwrap();
-        let (path, _desc) =
-            UFuncArray::einsum_path("ij,jk,kl->il", &[&a, &b, &c]).unwrap();
+        let (path, _desc) = UFuncArray::einsum_path("ij,jk,kl->il", &[&a, &b, &c]).unwrap();
         // Should produce 2 contraction steps
         assert_eq!(path.len(), 2);
     }
@@ -18233,7 +20005,7 @@ mod tests {
     fn copyto_basic() {
         let mut dst = UFuncArray::new(vec![3], vec![0.0, 0.0, 0.0], DType::F64).unwrap();
         let src = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
-        dst.copyto(&src, None).unwrap();
+        dst.copyto(&src, None, None).unwrap();
         assert_eq!(dst.values(), &[1.0, 2.0, 3.0]);
     }
 
@@ -18242,10 +20014,34 @@ mod tests {
         let mut dst = UFuncArray::new(vec![3], vec![0.0, 0.0, 0.0], DType::F64).unwrap();
         let src = UFuncArray::new(vec![3], vec![10.0, 20.0, 30.0], DType::F64).unwrap();
         let mask = UFuncArray::new(vec![3], vec![1.0, 0.0, 1.0], DType::Bool).unwrap();
-        dst.copyto(&src, Some(&mask)).unwrap();
+        dst.copyto(&src, Some(&mask), None).unwrap();
         assert!((dst.values()[0] - 10.0).abs() < 1e-10);
         assert!((dst.values()[1] - 0.0).abs() < 1e-10); // mask false, unchanged
         assert!((dst.values()[2] - 30.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn copyto_casting_safe_allows_i32_to_f64() {
+        let mut dst = UFuncArray::new(vec![2], vec![0.0, 0.0], DType::F64).unwrap();
+        let src = UFuncArray::new(vec![2], vec![5.0, 10.0], DType::I32).unwrap();
+        dst.copyto(&src, None, Some("safe")).unwrap();
+        assert_eq!(dst.values(), &[5.0, 10.0]);
+    }
+
+    #[test]
+    fn copyto_casting_safe_rejects_f64_to_i32() {
+        let mut dst = UFuncArray::new(vec![2], vec![0.0, 0.0], DType::I32).unwrap();
+        let src = UFuncArray::new(vec![2], vec![5.0, 10.0], DType::F64).unwrap();
+        let err = dst.copyto(&src, None, Some("safe")).unwrap_err();
+        assert!(err.to_string().contains("cannot cast"));
+    }
+
+    #[test]
+    fn copyto_casting_unsafe_allows_any() {
+        let mut dst = UFuncArray::new(vec![2], vec![0.0, 0.0], DType::I32).unwrap();
+        let src = UFuncArray::new(vec![2], vec![5.0, 10.0], DType::F64).unwrap();
+        dst.copyto(&src, None, Some("unsafe")).unwrap();
+        assert_eq!(dst.values(), &[5.0, 10.0]);
     }
 
     #[test]
@@ -19092,6 +20888,268 @@ mod tests {
         assert_eq!(ma.ndim(), 2);
     }
 
+    // ── additional MaskedArray operation tests ─────────────────────
+
+    #[test]
+    fn masked_sort_pushes_masked_to_end() {
+        let data = UFuncArray::new(vec![4], vec![3.0, 1.0, 4.0, 2.0], DType::F64).unwrap();
+        let mask = UFuncArray::new(vec![4], vec![0.0, 1.0, 0.0, 0.0], DType::Bool).unwrap();
+        let ma = MaskedArray::new(data, Some(mask), None).unwrap();
+        let sorted = ma.sort(None).unwrap();
+        // Unmasked values [3, 4, 2] sorted = [2, 3, 4], masked at end
+        let vals = sorted.data().values();
+        assert!((vals[0] - 2.0).abs() < 1e-10);
+        assert!((vals[1] - 3.0).abs() < 1e-10);
+        assert!((vals[2] - 4.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn masked_argsort() {
+        let data = UFuncArray::new(vec![3], vec![3.0, 1.0, 2.0], DType::F64).unwrap();
+        let ma = MaskedArray::new(data, None, None).unwrap();
+        let indices = ma.argsort(None).unwrap();
+        assert_eq!(indices.values(), &[1.0, 2.0, 0.0]);
+    }
+
+    #[test]
+    fn masked_argmin_argmax() {
+        let data = UFuncArray::new(vec![4], vec![5.0, 1.0, 9.0, 3.0], DType::F64).unwrap();
+        let mask = UFuncArray::new(vec![4], vec![0.0, 0.0, 1.0, 0.0], DType::Bool).unwrap();
+        let ma = MaskedArray::new(data, Some(mask), None).unwrap();
+        let amin = ma.argmin(None).unwrap();
+        assert_eq!(amin.values()[0], 1.0); // index 1 (value=1.0)
+        let amax = ma.argmax(None).unwrap();
+        assert_eq!(amax.values()[0], 0.0); // index 0 (value=5.0, 9.0 is masked)
+    }
+
+    #[test]
+    fn masked_cumsum() {
+        let data = UFuncArray::new(vec![4], vec![1.0, 2.0, 3.0, 4.0], DType::F64).unwrap();
+        let mask = UFuncArray::new(vec![4], vec![0.0, 1.0, 0.0, 0.0], DType::Bool).unwrap();
+        let ma = MaskedArray::new(data, Some(mask), None).unwrap();
+        let cs = ma.cumsum(None).unwrap();
+        // masked element contributes 0: [1, 0, 3, 4] -> cumsum [1, 1, 4, 8]
+        assert_eq!(cs.data().values(), &[1.0, 1.0, 4.0, 8.0]);
+        assert!(cs.mask().is_some()); // mask preserved
+    }
+
+    #[test]
+    fn masked_cumprod() {
+        let data = UFuncArray::new(vec![3], vec![2.0, 3.0, 4.0], DType::F64).unwrap();
+        let mask = UFuncArray::new(vec![3], vec![0.0, 1.0, 0.0], DType::Bool).unwrap();
+        let ma = MaskedArray::new(data, Some(mask), None).unwrap();
+        let cp = ma.cumprod(None).unwrap();
+        // masked element contributes 1: [2, 1, 4] -> cumprod [2, 2, 8]
+        assert_eq!(cp.data().values(), &[2.0, 2.0, 8.0]);
+    }
+
+    #[test]
+    fn masked_median() {
+        let data = UFuncArray::new(vec![5], vec![1.0, 5.0, 3.0, 9.0, 7.0], DType::F64).unwrap();
+        let mask = UFuncArray::new(vec![5], vec![0.0, 1.0, 0.0, 1.0, 0.0], DType::Bool).unwrap();
+        let ma = MaskedArray::new(data, Some(mask), None).unwrap();
+        let med = ma.median().unwrap();
+        // Unmasked: [1, 3, 7] -> median = 3
+        assert!((med - 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn masked_ptp() {
+        let data = UFuncArray::new(vec![4], vec![1.0, 5.0, 3.0, 9.0], DType::F64).unwrap();
+        let mask = UFuncArray::new(vec![4], vec![0.0, 0.0, 1.0, 0.0], DType::Bool).unwrap();
+        let ma = MaskedArray::new(data, Some(mask), None).unwrap();
+        let p = ma.ptp().unwrap();
+        // Unmasked: [1, 5, 9] -> ptp = 9 - 1 = 8
+        assert!((p - 8.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn masked_dot() {
+        let d1 = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        let m1 = UFuncArray::new(vec![3], vec![0.0, 1.0, 0.0], DType::Bool).unwrap();
+        let ma1 = MaskedArray::new(d1, Some(m1), None).unwrap();
+        let d2 = UFuncArray::new(vec![3], vec![4.0, 5.0, 6.0], DType::F64).unwrap();
+        let ma2 = MaskedArray::new(d2, None, None).unwrap();
+        let result = ma1.dot(&ma2).unwrap();
+        // ma1 filled with 0: [1, 0, 3] . [4, 5, 6] = 4 + 0 + 18 = 22
+        assert!((result.data().values()[0] - 22.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn masked_expand_dims() {
+        let data = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        let ma = MaskedArray::new(data, None, None).unwrap();
+        let expanded = ma.expand_dims(0).unwrap();
+        assert_eq!(expanded.shape(), &[1, 3]);
+    }
+
+    #[test]
+    fn masked_squeeze() {
+        let data = UFuncArray::new(vec![1, 3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        let ma = MaskedArray::new(data, None, None).unwrap();
+        let squeezed = ma.squeeze(Some(0)).unwrap();
+        assert_eq!(squeezed.shape(), &[3]);
+    }
+
+    #[test]
+    fn masked_all_constructor() {
+        let ma = MaskedArray::masked_all(vec![2, 3], DType::F64).unwrap();
+        assert_eq!(ma.shape(), &[2, 3]);
+        assert_eq!(ma.count_masked(), 6);
+        let compressed = ma.compressed();
+        assert!(compressed.values().is_empty());
+    }
+
+    #[test]
+    fn masked_all_like_constructor() {
+        let data = UFuncArray::new(vec![4], vec![1.0; 4], DType::F64).unwrap();
+        let model = MaskedArray::new(data, None, None).unwrap();
+        let ma = MaskedArray::masked_all_like(&model).unwrap();
+        assert_eq!(ma.shape(), &[4]);
+        assert_eq!(ma.count_masked(), 4);
+    }
+
+    #[test]
+    fn masked_count_masked() {
+        let data = UFuncArray::new(vec![4], vec![1.0; 4], DType::F64).unwrap();
+        let mask = UFuncArray::new(vec![4], vec![0.0, 1.0, 1.0, 0.0], DType::Bool).unwrap();
+        let ma = MaskedArray::new(data, Some(mask), None).unwrap();
+        assert_eq!(ma.count_masked(), 2);
+    }
+
+    #[test]
+    fn masked_average_unweighted() {
+        let data = UFuncArray::new(vec![4], vec![2.0, 4.0, 6.0, 8.0], DType::F64).unwrap();
+        let mask = UFuncArray::new(vec![4], vec![0.0, 1.0, 0.0, 0.0], DType::Bool).unwrap();
+        let ma = MaskedArray::new(data, Some(mask), None).unwrap();
+        let avg = ma.average(None).unwrap();
+        // Unmasked: [2, 6, 8] -> mean = 16/3
+        assert!((avg - 16.0 / 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn masked_take() {
+        let data = UFuncArray::new(vec![4], vec![10.0, 20.0, 30.0, 40.0], DType::F64).unwrap();
+        let mask = UFuncArray::new(vec![4], vec![0.0, 1.0, 0.0, 0.0], DType::Bool).unwrap();
+        let ma = MaskedArray::new(data, Some(mask), None).unwrap();
+        let taken = ma.take(&[0, 2, 3]).unwrap();
+        assert_eq!(taken.data().values(), &[10.0, 30.0, 40.0]);
+        // Index 1 is not taken; mask should reflect only indices 0, 2, 3
+        assert_eq!(taken.mask().unwrap().values(), &[0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn masked_clump_unmasked() {
+        let data = UFuncArray::new(vec![6], vec![1.0; 6], DType::F64).unwrap();
+        let mask =
+            UFuncArray::new(vec![6], vec![0.0, 0.0, 1.0, 1.0, 0.0, 0.0], DType::Bool).unwrap();
+        let ma = MaskedArray::new(data, Some(mask), None).unwrap();
+        let runs = ma.clump_unmasked();
+        assert_eq!(runs, vec![(0, 2), (4, 6)]);
+    }
+
+    #[test]
+    fn masked_clump_masked() {
+        let data = UFuncArray::new(vec![6], vec![1.0; 6], DType::F64).unwrap();
+        let mask =
+            UFuncArray::new(vec![6], vec![0.0, 0.0, 1.0, 1.0, 0.0, 0.0], DType::Bool).unwrap();
+        let ma = MaskedArray::new(data, Some(mask), None).unwrap();
+        let runs = ma.clump_masked();
+        assert_eq!(runs, vec![(2, 4)]);
+    }
+
+    #[test]
+    fn masked_shrink_mask_removes_nomask() {
+        let data = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        let mask = UFuncArray::new(vec![3], vec![0.0, 0.0, 0.0], DType::Bool).unwrap();
+        let mut ma = MaskedArray::new(data, Some(mask), None).unwrap();
+        assert!(ma.mask().is_some());
+        ma.shrink_mask();
+        assert!(ma.mask().is_none());
+    }
+
+    #[test]
+    fn masked_shrink_mask_keeps_mask() {
+        let data = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        let mask = UFuncArray::new(vec![3], vec![0.0, 1.0, 0.0], DType::Bool).unwrap();
+        let mut ma = MaskedArray::new(data, Some(mask), None).unwrap();
+        ma.shrink_mask();
+        assert!(ma.mask().is_some());
+    }
+
+    #[test]
+    fn masked_anom() {
+        let data = UFuncArray::new(vec![4], vec![2.0, 4.0, 6.0, 8.0], DType::F64).unwrap();
+        let mask = UFuncArray::new(vec![4], vec![0.0, 0.0, 0.0, 1.0], DType::Bool).unwrap();
+        let ma = MaskedArray::new(data, Some(mask), None).unwrap();
+        let anom = ma.anom().unwrap();
+        // Unmasked values: [2,4,6], mean = 4.0
+        // Anomalies: [-2.0, 0.0, 2.0, (masked)]
+        assert!((anom.data().values()[0] - (-2.0)).abs() < 1e-10);
+        assert!((anom.data().values()[1] - 0.0).abs() < 1e-10);
+        assert!((anom.data().values()[2] - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn masked_fix_invalid_nans() {
+        let data = UFuncArray::new(
+            vec![4],
+            vec![1.0, f64::NAN, 3.0, f64::INFINITY],
+            DType::F64,
+        )
+        .unwrap();
+        let mut ma = MaskedArray::new(data, None, None).unwrap();
+        ma.fix_invalid();
+        // NaN and Inf should now be masked
+        let m = ma.mask().unwrap();
+        assert_eq!(m.values()[0], 0.0); // valid
+        assert_eq!(m.values()[1], 1.0); // was NaN
+        assert_eq!(m.values()[2], 0.0); // valid
+        assert_eq!(m.values()[3], 1.0); // was Inf
+    }
+
+    #[test]
+    fn ma_standalone_is_masked() {
+        let data = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        let ma_no_mask = MaskedArray::new(data.clone(), None, None).unwrap();
+        assert!(!ma_is_masked(&ma_no_mask));
+
+        let mask = UFuncArray::new(vec![3], vec![0.0, 1.0, 0.0], DType::Bool).unwrap();
+        let ma_with_mask = MaskedArray::new(data, Some(mask), None).unwrap();
+        assert!(ma_is_masked(&ma_with_mask));
+    }
+
+    #[test]
+    fn ma_standalone_is_mask() {
+        let valid = UFuncArray::new(vec![3], vec![0.0, 1.0, 0.0], DType::Bool).unwrap();
+        assert!(ma_is_mask(&valid));
+        let invalid = UFuncArray::new(vec![3], vec![0.0, 2.0, 0.0], DType::Bool).unwrap();
+        assert!(!ma_is_mask(&invalid));
+    }
+
+    #[test]
+    fn ma_standalone_make_mask() {
+        let arr = UFuncArray::new(vec![4], vec![0.0, 5.0, 0.0, -1.0], DType::F64).unwrap();
+        let m = ma_make_mask(&arr);
+        assert_eq!(m.values(), &[0.0, 1.0, 0.0, 1.0]);
+        assert_eq!(m.dtype(), DType::Bool);
+    }
+
+    #[test]
+    fn ma_standalone_mask_or() {
+        let m1 = UFuncArray::new(vec![4], vec![1.0, 0.0, 1.0, 0.0], DType::Bool).unwrap();
+        let m2 = UFuncArray::new(vec![4], vec![0.0, 0.0, 1.0, 1.0], DType::Bool).unwrap();
+        let combined = ma_mask_or(Some(&m1), Some(&m2)).unwrap();
+        assert_eq!(combined.values(), &[1.0, 0.0, 1.0, 1.0]);
+
+        // None + Some = Some
+        let r = ma_mask_or(None, Some(&m1)).unwrap();
+        assert_eq!(r.values(), m1.values());
+
+        // None + None = None
+        assert!(ma_mask_or(None, None).is_none());
+    }
+
     // ── datetime/timedelta arithmetic tests ────────────────────────
 
     #[test]
@@ -19562,6 +21620,22 @@ mod tests {
     }
 
     #[test]
+    fn string_maketrans_basic() {
+        let table = StringArray::maketrans("aeiou", "AEIOU", None);
+        let sa = StringArray::from_strs(vec![1], &["hello world"]).unwrap();
+        let result = sa.translate(&table);
+        assert_eq!(result.values()[0], "hEllO wOrld");
+    }
+
+    #[test]
+    fn string_maketrans_with_delete() {
+        let table = StringArray::maketrans("h", "H", Some("lo"));
+        let sa = StringArray::from_strs(vec![1], &["hello"]).unwrap();
+        let result = sa.translate(&table);
+        assert_eq!(result.values()[0], "He");
+    }
+
+    #[test]
     fn string_expandtabs() {
         let sa = StringArray::from_strs(vec![1], &["a\tb"]).unwrap();
         let result = sa.expandtabs(4);
@@ -19584,8 +21658,7 @@ mod tests {
 
     #[test]
     fn string_istitle() {
-        let sa =
-            StringArray::from_strs(vec![3], &["Hello World", "hello world", "HELLO"]).unwrap();
+        let sa = StringArray::from_strs(vec![3], &["Hello World", "hello world", "HELLO"]).unwrap();
         let result = sa.istitle();
         assert_eq!(result.values(), &[1.0, 0.0, 0.0]);
     }
@@ -19727,5 +21800,652 @@ mod tests {
         let result = a.real_if_close(100.0);
         assert_eq!(result.dtype(), DType::F64);
         assert_eq!(result.values(), &[1.0, 2.0, 3.0]);
+    }
+
+    // --- argwhere tests ---
+
+    #[test]
+    fn argwhere_1d() {
+        let a = UFuncArray::new(vec![5], vec![0.0, 1.0, 0.0, 3.0, 0.0], DType::F64).unwrap();
+        let result = a.argwhere();
+        assert_eq!(result.shape(), &[2, 1]);
+        assert_eq!(result.values(), &[1.0, 3.0]);
+    }
+
+    #[test]
+    fn argwhere_2d() {
+        let a =
+            UFuncArray::new(vec![2, 3], vec![0.0, 1.0, 0.0, 2.0, 0.0, 3.0], DType::F64).unwrap();
+        let result = a.argwhere();
+        // nonzero at (0,1), (1,0), (1,2) => shape [3, 2]
+        assert_eq!(result.shape(), &[3, 2]);
+        assert_eq!(result.values(), &[0.0, 1.0, 1.0, 0.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn argwhere_all_zero() {
+        let a = UFuncArray::new(vec![2, 2], vec![0.0, 0.0, 0.0, 0.0], DType::F64).unwrap();
+        let result = a.argwhere();
+        assert_eq!(result.shape(), &[0, 2]);
+        assert!(result.values().is_empty());
+    }
+
+    // --- StringArray char.index / rindex / splitlines / mod_format tests ---
+
+    // --- vectorize tests ---
+
+    #[test]
+    fn vectorize_square() {
+        let a = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        let result = a.vectorize(|x| x * x);
+        assert_eq!(result.values(), &[1.0, 4.0, 9.0]);
+        assert_eq!(result.shape(), &[3]);
+    }
+
+    #[test]
+    fn vectorize_preserves_shape() {
+        let a = UFuncArray::new(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0], DType::F64).unwrap();
+        let result = a.vectorize(|x| x + 10.0);
+        assert_eq!(result.shape(), &[2, 2]);
+        assert_eq!(result.values(), &[11.0, 12.0, 13.0, 14.0]);
+    }
+
+    // --- string comparison tests ---
+
+    #[test]
+    fn string_equal() {
+        let a = StringArray::new(vec![3], vec!["abc".into(), "def".into(), "xyz".into()]).unwrap();
+        let b = StringArray::new(vec![3], vec!["abc".into(), "xyz".into(), "xyz".into()]).unwrap();
+        let r = a.equal(&b);
+        assert_eq!(r.values(), &[1.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn string_not_equal() {
+        let a = StringArray::new(vec![2], vec!["abc".into(), "def".into()]).unwrap();
+        let b = StringArray::new(vec![2], vec!["abc".into(), "xyz".into()]).unwrap();
+        let r = a.not_equal(&b);
+        assert_eq!(r.values(), &[0.0, 1.0]);
+    }
+
+    #[test]
+    fn string_greater_less() {
+        let a = StringArray::new(vec![2], vec!["b".into(), "a".into()]).unwrap();
+        let b = StringArray::new(vec![2], vec!["a".into(), "b".into()]).unwrap();
+        let gt = a.greater(&b);
+        assert_eq!(gt.values(), &[1.0, 0.0]);
+        let lt = a.less(&b);
+        assert_eq!(lt.values(), &[0.0, 1.0]);
+    }
+
+    #[test]
+    fn string_compare_chararrays() {
+        let a = StringArray::new(vec![2], vec!["abc".into(), "xyz".into()]).unwrap();
+        let b = StringArray::new(vec![2], vec!["abc".into(), "abc".into()]).unwrap();
+        let r = a.compare_chararrays(&b, ">=").unwrap();
+        assert_eq!(r.values(), &[1.0, 1.0]);
+    }
+
+    // --- type introspection tests ---
+
+    #[test]
+    fn promote_types_int_float() {
+        let result = UFuncArray::promote_types(DType::I32, DType::F64);
+        assert_eq!(result, DType::F64);
+    }
+
+    #[test]
+    fn min_scalar_type_small_uint() {
+        let a = UFuncArray::new(vec![3], vec![0.0, 100.0, 200.0], DType::F64).unwrap();
+        assert_eq!(a.min_scalar_type(), DType::U8);
+    }
+
+    #[test]
+    fn min_scalar_type_negative_int() {
+        let a = UFuncArray::new(vec![2], vec![-5.0, 50.0], DType::F64).unwrap();
+        assert_eq!(a.min_scalar_type(), DType::I8);
+    }
+
+    #[test]
+    fn min_scalar_type_float() {
+        let a = UFuncArray::new(vec![2], vec![1.5, 2.7], DType::F64).unwrap();
+        assert_eq!(a.min_scalar_type(), DType::F64);
+    }
+
+    #[test]
+    fn isfortran_1d() {
+        let a = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        assert!(a.isfortran()); // 1D is both C and F
+    }
+
+    #[test]
+    fn isfortran_2d() {
+        let a = UFuncArray::new(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0], DType::F64).unwrap();
+        assert!(!a.isfortran()); // 2D is C-contiguous only
+    }
+
+    #[test]
+    fn isscalar_true() {
+        let a = UFuncArray::new(vec![1], vec![42.0], DType::F64).unwrap();
+        assert!(a.isscalar());
+    }
+
+    #[test]
+    fn isscalar_false() {
+        let a = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        assert!(!a.isscalar());
+    }
+
+    #[test]
+    fn isreal_non_complex() {
+        let a = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        let r = a.isreal();
+        assert_eq!(r.values(), &[1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn iscomplex_non_complex() {
+        let a = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        let r = a.iscomplex();
+        assert_eq!(r.values(), &[0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn isrealobj_and_iscomplexobj() {
+        let real = UFuncArray::new(vec![2], vec![1.0, 2.0], DType::F64).unwrap();
+        assert!(real.isrealobj());
+        assert!(!real.iscomplexobj());
+        let cplx = UFuncArray::new(vec![1, 2], vec![1.0, 2.0], DType::Complex128).unwrap();
+        assert!(!cplx.isrealobj());
+        assert!(cplx.iscomplexobj());
+    }
+
+    // --- linalg bridge tests ---
+
+    #[test]
+    fn norm_vector_default() {
+        let a = UFuncArray::new(vec![3], vec![3.0, 4.0, 0.0], DType::F64).unwrap();
+        let n = a.norm(None).unwrap();
+        assert!((n - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn norm_vector_ord_1() {
+        let a = UFuncArray::new(vec![3], vec![1.0, -2.0, 3.0], DType::F64).unwrap();
+        let n = a.norm(Some("1")).unwrap();
+        assert!((n - 6.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn norm_matrix_fro() {
+        let a = UFuncArray::new(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0], DType::F64).unwrap();
+        let n = a.norm(Some("fro")).unwrap();
+        let expected = (1.0 + 4.0 + 9.0 + 16.0_f64).sqrt();
+        assert!((n - expected).abs() < 1e-10);
+    }
+
+    #[test]
+    fn matrix_rank_identity() {
+        let a = UFuncArray::new(
+            vec![3, 3],
+            vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            DType::F64,
+        )
+        .unwrap();
+        let r = a.matrix_rank(1e-10).unwrap();
+        assert_eq!(r, 3);
+    }
+
+    #[test]
+    fn matrix_power_identity() {
+        let eye = UFuncArray::new(vec![2, 2], vec![1.0, 0.0, 0.0, 1.0], DType::F64).unwrap();
+        let result = eye.matrix_power(5).unwrap();
+        assert_eq!(result.values(), &[1.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn lstsq_simple() {
+        // Solve [[1,0],[0,1]] * x = [3, 4] => x = [3, 4]
+        let a = UFuncArray::new(vec![2, 2], vec![1.0, 0.0, 0.0, 1.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![2], vec![3.0, 4.0], DType::F64).unwrap();
+        let x = a.lstsq(&b).unwrap();
+        assert!((x.values()[0] - 3.0).abs() < 1e-10);
+        assert!((x.values()[1] - 4.0).abs() < 1e-10);
+    }
+
+    // --- additional linalg bridge tests ---
+
+    #[test]
+    fn cholesky_identity() {
+        let a = UFuncArray::new(vec![2, 2], vec![1.0, 0.0, 0.0, 1.0], DType::F64).unwrap();
+        let l = a.cholesky().unwrap();
+        assert_eq!(l.shape(), &[2, 2]);
+        assert!((l.values()[0] - 1.0).abs() < 1e-10);
+        assert!((l.values()[3] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn det_identity() {
+        let a = UFuncArray::new(
+            vec![3, 3],
+            vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            DType::F64,
+        )
+        .unwrap();
+        let d = a.det().unwrap();
+        assert!((d - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn det_2x2() {
+        let a = UFuncArray::new(vec![2, 2], vec![3.0, 8.0, 4.0, 6.0], DType::F64).unwrap();
+        let d = a.det().unwrap();
+        // 3*6 - 8*4 = 18 - 32 = -14
+        assert!((d - (-14.0)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn slogdet_positive() {
+        let a = UFuncArray::new(vec![2, 2], vec![2.0, 0.0, 0.0, 3.0], DType::F64).unwrap();
+        let (sign, logabsdet) = a.slogdet().unwrap();
+        assert!((sign - 1.0).abs() < 1e-10);
+        assert!((logabsdet - (6.0_f64).ln()).abs() < 1e-10);
+    }
+
+    #[test]
+    fn inv_identity() {
+        let a = UFuncArray::new(vec![2, 2], vec![1.0, 0.0, 0.0, 1.0], DType::F64).unwrap();
+        let inv = a.inv().unwrap();
+        assert_eq!(inv.shape(), &[2, 2]);
+        assert!((inv.values()[0] - 1.0).abs() < 1e-10);
+        assert!((inv.values()[3] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn inv_2x2() {
+        let a = UFuncArray::new(vec![2, 2], vec![4.0, 7.0, 2.0, 6.0], DType::F64).unwrap();
+        let inv = a.inv().unwrap();
+        // A * A^-1 should be identity
+        let prod = a.matmul(&inv).unwrap();
+        assert!((prod.values()[0] - 1.0).abs() < 1e-8);
+        assert!((prod.values()[1]).abs() < 1e-8);
+        assert!((prod.values()[2]).abs() < 1e-8);
+        assert!((prod.values()[3] - 1.0).abs() < 1e-8);
+    }
+
+    #[test]
+    fn pinv_identity() {
+        let a = UFuncArray::new(vec![2, 2], vec![1.0, 0.0, 0.0, 1.0], DType::F64).unwrap();
+        let p = a.pinv().unwrap();
+        assert_eq!(p.shape(), &[2, 2]);
+        assert!((p.values()[0] - 1.0).abs() < 1e-10);
+        assert!((p.values()[3] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn solve_identity() {
+        let a = UFuncArray::new(vec![2, 2], vec![1.0, 0.0, 0.0, 1.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![2], vec![5.0, 7.0], DType::F64).unwrap();
+        let x = a.solve(&b).unwrap();
+        assert!((x.values()[0] - 5.0).abs() < 1e-10);
+        assert!((x.values()[1] - 7.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn solve_2x2() {
+        // [[2, 1], [5, 3]] * x = [4, 7] => x = [5, -6]
+        let a = UFuncArray::new(vec![2, 2], vec![2.0, 1.0, 5.0, 3.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![2], vec![4.0, 7.0], DType::F64).unwrap();
+        let x = a.solve(&b).unwrap();
+        assert!((x.values()[0] - 5.0).abs() < 1e-8);
+        assert!((x.values()[1] - (-6.0)).abs() < 1e-8);
+    }
+
+    #[test]
+    fn eigvals_diagonal() {
+        let a = UFuncArray::new(vec![2, 2], vec![3.0, 0.0, 0.0, 5.0], DType::F64).unwrap();
+        let vals = a.eigvals().unwrap();
+        // eig_nxn returns interleaved [real, imag, real, imag, ...] for 2 eigenvalues = 4 values
+        let v = vals.values();
+        assert_eq!(v.len(), 4);
+        // Extract real parts (indices 0, 2)
+        let mut reals = [v[0], v[2]];
+        reals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert!((reals[0] - 3.0).abs() < 1e-6);
+        assert!((reals[1] - 5.0).abs() < 1e-6);
+        // Imaginary parts should be zero for real eigenvalues
+        assert!(v[1].abs() < 1e-6);
+        assert!(v[3].abs() < 1e-6);
+    }
+
+    #[test]
+    fn eig_diagonal() {
+        let a = UFuncArray::new(vec![2, 2], vec![3.0, 0.0, 0.0, 5.0], DType::F64).unwrap();
+        let (vals, vecs) = a.eig().unwrap();
+        assert_eq!(vecs.shape(), &[2, 2]);
+        // Eigenvalues in interleaved real/imag format
+        let v = vals.values();
+        let mut reals = [v[0], v[2]];
+        reals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert!((reals[0] - 3.0).abs() < 1e-6);
+        assert!((reals[1] - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn eigh_symmetric() {
+        // Symmetric: [[2, 1], [1, 3]]
+        let a = UFuncArray::new(vec![2, 2], vec![2.0, 1.0, 1.0, 3.0], DType::F64).unwrap();
+        let (vals, vecs) = a.eigh().unwrap();
+        assert_eq!(vals.shape(), &[2]);
+        assert_eq!(vecs.shape(), &[2, 2]);
+        // eigenvalues of [[2,1],[1,3]] are (5 +/- sqrt(5))/2
+        let expected_low = (5.0 - 5.0_f64.sqrt()) / 2.0;
+        let expected_high = (5.0 + 5.0_f64.sqrt()) / 2.0;
+        let mut v = vals.values().to_vec();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert!((v[0] - expected_low).abs() < 1e-6);
+        assert!((v[1] - expected_high).abs() < 1e-6);
+    }
+
+    #[test]
+    fn eigvalsh_symmetric() {
+        let a = UFuncArray::new(vec![2, 2], vec![4.0, 0.0, 0.0, 9.0], DType::F64).unwrap();
+        let vals = a.eigvalsh().unwrap();
+        let mut v = vals.values().to_vec();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert!((v[0] - 4.0).abs() < 1e-6);
+        assert!((v[1] - 9.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn svd_identity() {
+        let a = UFuncArray::new(vec![2, 2], vec![1.0, 0.0, 0.0, 1.0], DType::F64).unwrap();
+        let (_u, s, _vt) = a.svd().unwrap();
+        let mut sv = s.values().to_vec();
+        sv.sort_by(|a, b| b.partial_cmp(a).unwrap());
+        assert!((sv[0] - 1.0).abs() < 1e-10);
+        assert!((sv[1] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn svdvals_rectangular() {
+        let a = UFuncArray::new(
+            vec![2, 3],
+            vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            DType::F64,
+        )
+        .unwrap();
+        let s = a.svdvals().unwrap();
+        assert_eq!(s.shape(), &[2]); // min(2,3) = 2
+    }
+
+    #[test]
+    fn qr_identity() {
+        let a = UFuncArray::new(vec![2, 2], vec![1.0, 0.0, 0.0, 1.0], DType::F64).unwrap();
+        let (q, r) = a.qr().unwrap();
+        assert_eq!(q.shape(), &[2, 2]);
+        assert_eq!(r.shape(), &[2, 2]);
+        // Q*R should reconstruct A
+        let recon = q.matmul(&r).unwrap();
+        for (orig, rec) in a.values().iter().zip(recon.values().iter()) {
+            assert!((orig - rec).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn qr_rectangular() {
+        let a = UFuncArray::new(
+            vec![3, 2],
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            DType::F64,
+        )
+        .unwrap();
+        let (q, r) = a.qr().unwrap();
+        assert_eq!(q.shape(), &[3, 2]); // m x min(m,n)
+        assert_eq!(r.shape(), &[2, 2]); // min(m,n) x n
+    }
+
+    #[test]
+    fn cond_identity() {
+        let a = UFuncArray::new(
+            vec![3, 3],
+            vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            DType::F64,
+        )
+        .unwrap();
+        let c = a.cond().unwrap();
+        assert!((c - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn lu_factor_identity() {
+        let a = UFuncArray::new(vec![2, 2], vec![1.0, 0.0, 0.0, 1.0], DType::F64).unwrap();
+        let (lu, _perm, _det_sign) = a.lu_factor().unwrap();
+        assert_eq!(lu.shape(), &[2, 2]);
+    }
+
+    #[test]
+    fn solve_triangular_lower() {
+        let a = UFuncArray::new(vec![2, 2], vec![2.0, 0.0, 3.0, 4.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![2], vec![6.0, 11.0], DType::F64).unwrap();
+        // Lx = b: 2*x0 = 6 => x0=3; 3*3 + 4*x1 = 11 => x1 = 0.5
+        let x = a.solve_triangular(&b, true, false).unwrap();
+        assert!((x.values()[0] - 3.0).abs() < 1e-10);
+        assert!((x.values()[1] - 0.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn expm_identity() {
+        let a = UFuncArray::new(vec![2, 2], vec![0.0, 0.0, 0.0, 0.0], DType::F64).unwrap();
+        let e = a.expm().unwrap();
+        // exp(0) = I
+        assert!((e.values()[0] - 1.0).abs() < 1e-10);
+        assert!(e.values()[1].abs() < 1e-10);
+        assert!(e.values()[2].abs() < 1e-10);
+        assert!((e.values()[3] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn sqrtm_identity() {
+        let a = UFuncArray::new(vec![2, 2], vec![1.0, 0.0, 0.0, 1.0], DType::F64).unwrap();
+        let s = a.sqrtm().unwrap();
+        assert!((s.values()[0] - 1.0).abs() < 1e-8);
+        assert!((s.values()[3] - 1.0).abs() < 1e-8);
+    }
+
+    #[test]
+    fn logm_identity() {
+        let a = UFuncArray::new(vec![2, 2], vec![1.0, 0.0, 0.0, 1.0], DType::F64).unwrap();
+        let l = a.logm().unwrap();
+        // log(I) = 0
+        for v in l.values() {
+            assert!(v.abs() < 1e-8);
+        }
+    }
+
+    #[test]
+    fn schur_diagonal() {
+        let a = UFuncArray::new(vec![2, 2], vec![3.0, 0.0, 0.0, 7.0], DType::F64).unwrap();
+        let (t, z) = a.schur().unwrap();
+        assert_eq!(t.shape(), &[2, 2]);
+        assert_eq!(z.shape(), &[2, 2]);
+    }
+
+    #[test]
+    fn polar_identity() {
+        let a = UFuncArray::new(vec![2, 2], vec![1.0, 0.0, 0.0, 1.0], DType::F64).unwrap();
+        let (u, p) = a.polar().unwrap();
+        assert_eq!(u.shape(), &[2, 2]);
+        assert_eq!(p.shape(), &[2, 2]);
+        // For identity: U=I, P=I
+        assert!((u.values()[0] - 1.0).abs() < 1e-8);
+        assert!((p.values()[0] - 1.0).abs() < 1e-8);
+    }
+
+    #[test]
+    fn solve_multi_identity() {
+        let a = UFuncArray::new(vec![2, 2], vec![1.0, 0.0, 0.0, 1.0], DType::F64).unwrap();
+        let b =
+            UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
+        let x = a.solve_multi(&b).unwrap();
+        assert_eq!(x.shape(), &[2, 3]);
+        assert_eq!(x.values(), b.values());
+    }
+
+    #[test]
+    fn det_non_square_error() {
+        let a =
+            UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
+        assert!(a.det().is_err());
+    }
+
+    #[test]
+    fn inv_non_square_error() {
+        let a =
+            UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
+        assert!(a.inv().is_err());
+    }
+
+    #[test]
+    fn cholesky_non_square_error() {
+        let a =
+            UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
+        assert!(a.cholesky().is_err());
+    }
+
+    // --- rfft2/irfft2 tests ---
+
+    #[test]
+    fn rfft2_basic() {
+        // 2x4 real input => rfftn output shape [2, 3, 2] (cols//2+1 = 3)
+        let a = UFuncArray::new(
+            vec![2, 4],
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+            DType::F64,
+        )
+        .unwrap();
+        let r = a.rfft2().unwrap();
+        assert_eq!(r.shape(), &[2, 3, 2]);
+    }
+
+    #[test]
+    fn rfft2_rejects_non_2d() {
+        let a = UFuncArray::new(vec![8], vec![1.0; 8], DType::F64).unwrap();
+        assert!(a.rfft2().is_err());
+    }
+
+    #[test]
+    fn rfft2_irfft2_roundtrip() {
+        let a = UFuncArray::new(
+            vec![2, 4],
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+            DType::F64,
+        )
+        .unwrap();
+        let freq = a.rfft2().unwrap();
+        let back = freq.irfft2(Some(4)).unwrap();
+        assert_eq!(back.shape(), &[2, 4]);
+        for (orig, rec) in a.values().iter().zip(back.values().iter()) {
+            assert!((orig - rec).abs() < 1e-10, "orig={orig}, rec={rec}");
+        }
+    }
+
+    // --- accumulate tests ---
+
+    #[test]
+    fn accumulate_add() {
+        let a = UFuncArray::new(vec![4], vec![1.0, 2.0, 3.0, 4.0], DType::F64).unwrap();
+        let result = a.accumulate(|acc, v| acc + v, 0.0);
+        assert_eq!(result.values(), &[1.0, 3.0, 6.0, 10.0]);
+    }
+
+    #[test]
+    fn accumulate_multiply() {
+        let a = UFuncArray::new(vec![3], vec![2.0, 3.0, 4.0], DType::F64).unwrap();
+        let result = a.accumulate(|acc, v| acc * v, 1.0);
+        assert_eq!(result.values(), &[2.0, 6.0, 24.0]);
+    }
+
+    #[test]
+    fn accumulate_empty() {
+        let a = UFuncArray::new(vec![0], vec![], DType::F64).unwrap();
+        let result = a.accumulate(|acc, v| acc + v, 0.0);
+        assert!(result.values().is_empty());
+    }
+
+    // --- reduceat tests ---
+
+    #[test]
+    fn reduceat_add() {
+        let a = UFuncArray::new(
+            vec![8],
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+            DType::F64,
+        )
+        .unwrap();
+        // indices [0, 4] => reduce [0..4] = 10, reduce [4..8] = 26
+        let result = a.reduceat(|acc, v| acc + v, &[0, 4], 0.0).unwrap();
+        assert_eq!(result.values(), &[10.0, 26.0]);
+    }
+
+    #[test]
+    fn reduceat_single_segment() {
+        let a = UFuncArray::new(vec![4], vec![1.0, 2.0, 3.0, 4.0], DType::F64).unwrap();
+        let result = a.reduceat(|acc, v| acc + v, &[0], 0.0).unwrap();
+        assert_eq!(result.values(), &[10.0]);
+    }
+
+    #[test]
+    fn reduceat_empty_indices() {
+        let a = UFuncArray::new(vec![4], vec![1.0, 2.0, 3.0, 4.0], DType::F64).unwrap();
+        let result = a.reduceat(|acc, v| acc + v, &[], 0.0).unwrap();
+        assert!(result.values().is_empty());
+    }
+
+    #[test]
+    fn string_index_found() {
+        let sa = StringArray::new(
+            vec![3],
+            vec!["hello".into(), "world".into(), "foobar".into()],
+        )
+        .unwrap();
+        let r = sa.index("o").unwrap();
+        assert_eq!(r.values(), &[4.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn string_index_not_found() {
+        let sa = StringArray::new(vec![2], vec!["abc".into(), "def".into()]).unwrap();
+        assert!(sa.index("z").is_err());
+    }
+
+    #[test]
+    fn string_rindex_found() {
+        let sa = StringArray::new(vec![2], vec!["abcabc".into(), "xbx".into()]).unwrap();
+        let r = sa.rindex("b").unwrap();
+        // "abcabc": last 'b' at char pos 4; "xbx": 'b' at char pos 1
+        assert_eq!(r.values(), &[4.0, 1.0]);
+    }
+
+    #[test]
+    fn string_rindex_not_found() {
+        let sa = StringArray::new(vec![1], vec!["abc".into()]).unwrap();
+        assert!(sa.rindex("z").is_err());
+    }
+
+    #[test]
+    fn string_splitlines() {
+        let sa = StringArray::new(vec![2], vec!["line1\nline2".into(), "single".into()]).unwrap();
+        let result = sa.splitlines();
+        assert_eq!(result[0], vec!["line1", "line2"]);
+        assert_eq!(result[1], vec!["single"]);
+    }
+
+    #[test]
+    fn string_mod_format() {
+        let sa = StringArray::new(vec![2], vec!["hello %s".into(), "count %d".into()]).unwrap();
+        let result = sa.mod_format(&["world", "42"]);
+        assert_eq!(result.values[0], "hello world");
+        assert_eq!(result.values[1], "count 42");
     }
 }

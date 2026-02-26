@@ -1706,6 +1706,112 @@ pub fn tostring(values: &[f64], sep: &str) -> String {
         .join(sep)
 }
 
+// ── High-level convenience functions (np.save, np.load, np.savez, np.savez_compressed) ──
+
+/// High-level save: serialize a numeric array to NPY bytes (np.save equivalent).
+///
+/// Combines header construction and writing into a single call.
+/// `shape` and `dtype` describe the array, `values` is the flat row-major data.
+pub fn save(
+    shape: &[usize],
+    values: &[f64],
+    dtype: IOSupportedDType,
+) -> Result<Vec<u8>, IOError> {
+    let header = NpyHeader {
+        shape: shape.to_vec(),
+        fortran_order: false,
+        descr: dtype,
+    };
+    let payload = tobytes(values, dtype)?;
+    write_npy_bytes(&header, &payload, false)
+}
+
+/// High-level load: deserialize NPY bytes back to array data (np.load equivalent for .npy).
+///
+/// Returns (shape, values, dtype).
+pub fn load(data: &[u8]) -> Result<(Vec<usize>, Vec<f64>, IOSupportedDType), IOError> {
+    let npy = read_npy_bytes(data, false)?;
+    let dtype = npy.header.descr;
+    let shape = npy.header.shape;
+    let values = fromfile(&npy.payload, dtype, None)?;
+    Ok((shape, values, dtype))
+}
+
+/// Entry returned by `load_npz`: (name, shape, values, dtype).
+pub type NpzLoadedEntry = (String, Vec<usize>, Vec<f64>, IOSupportedDType);
+
+/// High-level load for NPZ archives (np.load equivalent for .npz).
+///
+/// Returns a vector of `NpzLoadedEntry` tuples.
+pub fn load_npz(data: &[u8]) -> Result<Vec<NpzLoadedEntry>, IOError> {
+    let entries = read_npz_bytes(data)?;
+    let mut results = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let dtype = entry.array.header.descr;
+        let shape = entry.array.header.shape;
+        let values = fromfile(&entry.array.payload, dtype, None)?;
+        results.push((entry.name, shape, values, dtype));
+    }
+    Ok(results)
+}
+
+/// High-level savez: serialize multiple named arrays to an uncompressed NPZ archive (np.savez).
+///
+/// Each entry is (name, shape, values, dtype).
+pub fn savez(
+    entries: &[(&str, &[usize], &[f64], IOSupportedDType)],
+) -> Result<Vec<u8>, IOError> {
+    let mut payloads = Vec::with_capacity(entries.len());
+    let mut headers = Vec::with_capacity(entries.len());
+
+    for (name, shape, values, dtype) in entries {
+        let header = NpyHeader {
+            shape: shape.to_vec(),
+            fortran_order: false,
+            descr: *dtype,
+        };
+        let payload = tobytes(values, *dtype)?;
+        headers.push((name, header));
+        payloads.push(payload);
+    }
+
+    let raw_entries: Vec<(&str, &NpyHeader, &[u8])> = headers
+        .iter()
+        .zip(payloads.iter())
+        .map(|((name, header), payload)| (**name, header, payload.as_slice()))
+        .collect();
+
+    write_npz_bytes(&raw_entries)
+}
+
+/// High-level savez_compressed: serialize multiple named arrays to a DEFLATE-compressed NPZ
+/// archive (np.savez_compressed).
+pub fn savez_compressed(
+    entries: &[(&str, &[usize], &[f64], IOSupportedDType)],
+) -> Result<Vec<u8>, IOError> {
+    let mut payloads = Vec::with_capacity(entries.len());
+    let mut headers = Vec::with_capacity(entries.len());
+
+    for (name, shape, values, dtype) in entries {
+        let header = NpyHeader {
+            shape: shape.to_vec(),
+            fortran_order: false,
+            descr: *dtype,
+        };
+        let payload = tobytes(values, *dtype)?;
+        headers.push((name, header));
+        payloads.push(payload);
+    }
+
+    let raw_entries: Vec<(&str, &NpyHeader, &[u8])> = headers
+        .iter()
+        .zip(payloads.iter())
+        .map(|((name, header), payload)| (**name, header, payload.as_slice()))
+        .collect();
+
+    write_npz_bytes_with_compression(&raw_entries, NpzCompression::Deflate)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1719,7 +1825,7 @@ mod tests {
         validate_io_policy_metadata, validate_magic_version, validate_memmap_contract,
         validate_npz_archive_budget, validate_read_payload, validate_write_contract,
         write_npy_bytes, write_npy_bytes_with_version, write_npy_preamble, write_npz_bytes,
-        write_npz_bytes_with_compression,
+        write_npz_bytes_with_compression, save, load, load_npz, savez, savez_compressed,
     };
 
     fn packet009_artifacts() -> Vec<String> {
@@ -2763,5 +2869,46 @@ mod tests {
         let vals = vec![1.5, 2.7, 3.25];
         let text = tostring(&vals, " ");
         assert_eq!(text, "1.5 2.7 3.25");
+    }
+
+    // ── High-level convenience function tests ──
+
+    #[test]
+    fn save_load_roundtrip() {
+        let shape = &[2, 3];
+        let values = &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let bytes = save(shape, values, IOSupportedDType::F64).unwrap();
+        let (loaded_shape, loaded_values, loaded_dtype) = load(&bytes).unwrap();
+        assert_eq!(loaded_shape, shape);
+        assert_eq!(loaded_values, values);
+        assert_eq!(loaded_dtype, IOSupportedDType::F64);
+    }
+
+    #[test]
+    fn savez_load_npz_roundtrip() {
+        let entries: Vec<(&str, &[usize], &[f64], IOSupportedDType)> = vec![
+            ("x", &[3], &[1.0, 2.0, 3.0], IOSupportedDType::F64),
+            ("y", &[2], &[4.0, 5.0], IOSupportedDType::F64),
+        ];
+        let bytes = savez(&entries).unwrap();
+        let loaded = load_npz(&bytes).unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].0, "x");
+        assert_eq!(loaded[0].1, vec![3]);
+        assert_eq!(loaded[0].2, vec![1.0, 2.0, 3.0]);
+        assert_eq!(loaded[1].0, "y");
+        assert_eq!(loaded[1].2, vec![4.0, 5.0]);
+    }
+
+    #[test]
+    fn savez_compressed_roundtrip() {
+        let entries: Vec<(&str, &[usize], &[f64], IOSupportedDType)> = vec![
+            ("arr", &[4], &[10.0, 20.0, 30.0, 40.0], IOSupportedDType::F64),
+        ];
+        let bytes = savez_compressed(&entries).unwrap();
+        let loaded = load_npz(&bytes).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].0, "arr");
+        assert_eq!(loaded[0].2, vec![10.0, 20.0, 30.0, 40.0]);
     }
 }

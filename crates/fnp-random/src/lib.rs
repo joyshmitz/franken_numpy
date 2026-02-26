@@ -1137,6 +1137,32 @@ impl Generator {
         Ok(result)
     }
 
+    /// Generate integers in `[low, high]` (inclusive on both ends).
+    ///
+    /// Mimics `rng.integers(low, high, size, endpoint=True)`.
+    pub fn integers_endpoint(
+        &mut self,
+        low: i64,
+        high: i64,
+        size: usize,
+    ) -> Result<Vec<i64>, RandomError> {
+        if high < low {
+            return Err(RandomError::InvalidUpperBound);
+        }
+        let range = (high as u64).wrapping_sub(low as u64) + 1;
+        let mut result = Vec::with_capacity(size);
+        for _ in 0..size {
+            let val = if range == 0 {
+                // Full u64 range — just use raw
+                self.next_u64() as i64
+            } else {
+                (self.bounded_u64(range)? as i64).wrapping_add(low)
+            };
+            result.push(val);
+        }
+        Ok(result)
+    }
+
     /// Generate standard normal (Gaussian, mean=0, std=1) samples using Box-Muller.
     ///
     /// Mimics `rng.standard_normal(size)`.
@@ -1638,6 +1664,79 @@ impl Generator {
             .collect()
     }
 
+    /// Alias for `f_distribution` matching NumPy's `rng.f(dfnum, dfden, size)`.
+    pub fn f(&mut self, dfnum: f64, dfden: f64, size: usize) -> Vec<f64> {
+        self.f_distribution(dfnum, dfden, size)
+    }
+
+    /// Randomly permute elements of `x` along a given axis (np.random.Generator.permuted).
+    ///
+    /// Unlike `permutation`, this operates on a specific axis and permutes
+    /// each 1-D slice along that axis independently.
+    /// `x` is a flat row-major array with the given `shape`.
+    pub fn permuted(
+        &mut self,
+        x: &[f64],
+        shape: &[usize],
+        axis: usize,
+    ) -> Result<Vec<f64>, RandomError> {
+        if shape.is_empty() || axis >= shape.len() {
+            return Err(RandomError::InvalidUpperBound);
+        }
+        let total: usize = shape.iter().product();
+        if x.len() != total {
+            return Err(RandomError::InvalidUpperBound);
+        }
+
+        let mut result = x.to_vec();
+
+        // Compute strides for row-major layout
+        let ndim = shape.len();
+        let mut strides = vec![1usize; ndim];
+        for i in (0..ndim - 1).rev() {
+            strides[i] = strides[i + 1] * shape[i + 1];
+        }
+
+        let axis_len = shape[axis];
+        let axis_stride = strides[axis];
+
+        // Number of independent 1-D slices to shuffle
+        let n_slices = total / axis_len;
+
+        // For each slice along the axis, perform Fisher-Yates shuffle
+        for slice_idx in 0..n_slices {
+            // Compute multi-index excluding axis dimension
+            let mut multi_idx = vec![0usize; ndim];
+            let mut rem = slice_idx;
+            for d in (0..ndim).rev() {
+                if d == axis {
+                    continue;
+                }
+                multi_idx[d] = rem % shape[d];
+                rem /= shape[d];
+            }
+            let mut base_offset = 0;
+            for d in 0..ndim {
+                if d != axis {
+                    base_offset += multi_idx[d] * strides[d];
+                }
+            }
+
+            // Gather indices along the axis
+            let indices: Vec<usize> = (0..axis_len)
+                .map(|k| base_offset + k * axis_stride)
+                .collect();
+
+            // Fisher-Yates shuffle on these indices
+            for i in (1..axis_len).rev() {
+                let j = self.bounded_u64((i + 1) as u64)? as usize;
+                result.swap(indices[i], indices[j]);
+            }
+        }
+
+        Ok(result)
+    }
+
     /// Student's t-distribution with `df` degrees of freedom.
     pub fn standard_t(&mut self, df: f64, size: usize) -> Vec<f64> {
         (0..size)
@@ -1942,6 +2041,65 @@ impl Generator {
                     }
                 }
                 sample
+            })
+            .collect()
+    }
+
+    /// Half-normal distribution: |X| where X ~ N(0, sigma^2).
+    /// Equivalent to the folded normal with mean 0.
+    pub fn halfnormal(&mut self, sigma: f64, size: usize) -> Vec<f64> {
+        (0..size)
+            .map(|_| (self.sample_standard_normal_single() * sigma).abs())
+            .collect()
+    }
+
+    /// Truncated normal distribution on `[low, high]` using rejection sampling.
+    /// Draws from N(loc, scale^2) conditioned on `low <= X <= high`.
+    pub fn truncated_normal(
+        &mut self,
+        loc: f64,
+        scale: f64,
+        low: f64,
+        high: f64,
+        size: usize,
+    ) -> Vec<f64> {
+        let mut result = Vec::with_capacity(size);
+        for _ in 0..size {
+            loop {
+                let x = loc + self.sample_standard_normal_single() * scale;
+                if x >= low && x <= high {
+                    result.push(x);
+                    break;
+                }
+            }
+        }
+        result
+    }
+
+    /// Lomax (Pareto Type II) distribution with shape `c` and scale 1.
+    /// If X ~ Pareto(c), then X - 1 ~ Lomax(c).
+    /// PDF: c / (1 + x)^(c+1) for x >= 0.
+    pub fn lomax(&mut self, c: f64, size: usize) -> Vec<f64> {
+        (0..size)
+            .map(|_| {
+                let u = self.next_f64();
+                (1.0 - u).powf(-1.0 / c) - 1.0
+            })
+            .collect()
+    }
+
+    /// Levy distribution with location `loc` and scale `c`.
+    /// Uses the inverse CDF method: X = loc + c / (Phi^{-1}(1-U/2))^2
+    /// where Phi^{-1} is the standard normal quantile.
+    pub fn levy(&mut self, loc: f64, c: f64, size: usize) -> Vec<f64> {
+        (0..size)
+            .map(|_| {
+                let z = self.sample_standard_normal_single().abs();
+                if z < 1e-15 {
+                    loc + c * 1e30 // avoid division by zero
+                } else {
+                    loc + c / (z * z)
+                }
             })
             .collect()
     }
@@ -3490,5 +3648,83 @@ mod tests {
         for sample in &results {
             assert_eq!(sample, &[3, 2, 1]);
         }
+    }
+
+    #[test]
+    fn halfnormal_all_nonnegative() {
+        let mut rng = test_generator();
+        let samples = rng.halfnormal(2.0, 1000);
+        assert_eq!(samples.len(), 1000);
+        assert!(samples.iter().all(|&x| x >= 0.0));
+    }
+
+    #[test]
+    fn truncated_normal_within_bounds() {
+        let mut rng = test_generator();
+        let samples = rng.truncated_normal(0.0, 1.0, -1.0, 1.0, 500);
+        assert_eq!(samples.len(), 500);
+        assert!(samples.iter().all(|&x| (-1.0..=1.0).contains(&x)));
+    }
+
+    #[test]
+    fn lomax_all_nonnegative() {
+        let mut rng = test_generator();
+        let samples = rng.lomax(2.0, 1000);
+        assert_eq!(samples.len(), 1000);
+        assert!(samples.iter().all(|&x| x >= 0.0));
+    }
+
+    #[test]
+    fn levy_all_at_least_loc() {
+        let mut rng = test_generator();
+        let loc = 1.0;
+        let samples = rng.levy(loc, 2.0, 1000);
+        assert_eq!(samples.len(), 1000);
+        assert!(samples.iter().all(|&x| x >= loc));
+    }
+
+    #[test]
+    fn integers_endpoint_inclusive() {
+        let mut rng = test_generator();
+        let samples = rng.integers_endpoint(0, 5, 1000).unwrap();
+        assert_eq!(samples.len(), 1000);
+        assert!(samples.iter().all(|&x| (0..=5).contains(&x)));
+        // With endpoint=True, 5 should be reachable
+        assert!(samples.contains(&5));
+    }
+
+    #[test]
+    fn integers_endpoint_single_value() {
+        let mut rng = test_generator();
+        let samples = rng.integers_endpoint(3, 3, 100).unwrap();
+        assert!(samples.iter().all(|&x| x == 3));
+    }
+
+    #[test]
+    fn f_alias_matches_f_distribution() {
+        let mut rng1 = test_generator();
+        let mut rng2 = test_generator();
+        let a = rng1.f(2.0, 5.0, 100);
+        let b = rng2.f_distribution(2.0, 5.0, 100);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn permuted_1d() {
+        let mut rng = test_generator();
+        let x = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let result = rng.permuted(&x, &[5], 0).unwrap();
+        assert_eq!(result.len(), 5);
+        // Same elements, possibly reordered
+        let mut sorted = result.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert_eq!(sorted, vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+    }
+
+    #[test]
+    fn permuted_invalid_axis() {
+        let mut rng = test_generator();
+        let x = vec![1.0, 2.0, 3.0];
+        assert!(rng.permuted(&x, &[3], 1).is_err());
     }
 }

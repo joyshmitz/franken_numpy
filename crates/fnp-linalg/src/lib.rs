@@ -56,24 +56,33 @@ impl QrMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum VectorNormOrder {
+    Zero,
     One,
     Two,
     Inf,
     NegInf,
+    P(f64),
 }
 
 impl VectorNormOrder {
     pub fn from_token(token: &str) -> Result<Self, LinAlgError> {
         match token.trim().to_ascii_lowercase().as_str() {
+            "0" => Ok(Self::Zero),
             "1" => Ok(Self::One),
             "2" => Ok(Self::Two),
             "inf" | "+inf" => Ok(Self::Inf),
             "-inf" => Ok(Self::NegInf),
-            _ => Err(LinAlgError::NormDetRankPolicyViolation(
-                "unsupported vector norm order token",
-            )),
+            other => {
+                if let Ok(p) = other.parse::<f64>() {
+                    Ok(Self::P(p))
+                } else {
+                    Err(LinAlgError::NormDetRankPolicyViolation(
+                        "unsupported vector norm order token",
+                    ))
+                }
+            }
         }
     }
 }
@@ -82,7 +91,9 @@ impl VectorNormOrder {
 pub enum MatrixNormOrder {
     Fro,
     One,
+    NegOne,
     Inf,
+    NegInf,
     Two,
     NegTwo,
     Nuclear,
@@ -93,7 +104,9 @@ impl MatrixNormOrder {
         match token.trim().to_ascii_lowercase().as_str() {
             "fro" | "f" => Ok(Self::Fro),
             "1" => Ok(Self::One),
+            "-1" => Ok(Self::NegOne),
             "inf" | "+inf" => Ok(Self::Inf),
+            "-inf" => Ok(Self::NegInf),
             "2" => Ok(Self::Two),
             "-2" => Ok(Self::NegTwo),
             "nuc" => Ok(Self::Nuclear),
@@ -1304,6 +1317,18 @@ pub fn matrix_norm_nxn(a: &[f64], m: usize, n: usize, ord: &str) -> Result<f64, 
             }
             Ok(max_col)
         }
+        "-1" => {
+            // Min absolute column sum
+            let mut min_col = f64::INFINITY;
+            for j in 0..n {
+                let mut col_sum = 0.0;
+                for i in 0..m {
+                    col_sum += a[i * n + j].abs();
+                }
+                min_col = min_col.min(col_sum);
+            }
+            Ok(min_col)
+        }
         "inf" => {
             // Max absolute row sum
             let mut max_row = 0.0_f64;
@@ -1316,6 +1341,18 @@ pub fn matrix_norm_nxn(a: &[f64], m: usize, n: usize, ord: &str) -> Result<f64, 
             }
             Ok(max_row)
         }
+        "-inf" => {
+            // Min absolute row sum
+            let mut min_row = f64::INFINITY;
+            for i in 0..m {
+                let mut row_sum = 0.0;
+                for j in 0..n {
+                    row_sum += a[i * n + j].abs();
+                }
+                min_row = min_row.min(row_sum);
+            }
+            Ok(min_row)
+        }
         "2" => {
             // Spectral norm = largest singular value
             if m != n {
@@ -1325,6 +1362,16 @@ pub fn matrix_norm_nxn(a: &[f64], m: usize, n: usize, ord: &str) -> Result<f64, 
             }
             let sigmas = svd_nxn(a, n)?;
             Ok(sigmas.first().copied().unwrap_or(0.0))
+        }
+        "-2" => {
+            // Smallest singular value
+            if m != n {
+                return Err(LinAlgError::ShapeContractViolation(
+                    "spectral norm requires square matrix",
+                ));
+            }
+            let sigmas = svd_nxn(a, n)?;
+            Ok(sigmas.last().copied().unwrap_or(0.0))
         }
         "nuc" => {
             // Nuclear norm = sum of singular values
@@ -1337,7 +1384,7 @@ pub fn matrix_norm_nxn(a: &[f64], m: usize, n: usize, ord: &str) -> Result<f64, 
             Ok(sigmas.iter().sum())
         }
         _ => Err(LinAlgError::NormDetRankPolicyViolation(
-            "unknown norm order; use fro, 1, inf, 2, or nuc",
+            "unknown norm order; use fro, 1, -1, inf, -inf, 2, -2, or nuc",
         )),
     }
 }
@@ -2231,6 +2278,63 @@ pub fn logm_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
     Ok(result)
 }
 
+/// General matrix function: compute f(A) for an NxN matrix.
+///
+/// Uses Schur decomposition: A = Z * T * Z^T where Z is orthogonal.
+/// For matrices with real eigenvalues on the diagonal of T, applies f to each
+/// diagonal element and reconstructs: f(A) = Z * f(T) * Z^T.
+///
+/// Only supports matrices whose Schur form is (quasi-)upper triangular with
+/// real diagonal entries (i.e., all eigenvalues are real).
+///
+/// Equivalent to `scipy.linalg.funm(A, func)`.
+pub fn funm_nxn(
+    a: &[f64],
+    n: usize,
+    f: impl Fn(f64) -> f64,
+) -> Result<Vec<f64>, LinAlgError> {
+    if a.len() != n * n || n == 0 {
+        return Err(LinAlgError::ShapeContractViolation(
+            "funm_nxn: input must be n*n with n > 0",
+        ));
+    }
+    if a.iter().any(|v| !v.is_finite()) {
+        return Err(LinAlgError::SpectralConvergenceFailed);
+    }
+
+    // Schur decomposition: A = Z * T * Z^T, Z orthogonal
+    let (t, z) = schur_nxn(a, n)?;
+
+    // Check that T has real eigenvalues (sub-diagonal entries negligible)
+    for i in 1..n {
+        if t[i * n + (i - 1)].abs() > 1e-8 {
+            return Err(LinAlgError::SpectralConvergenceFailed);
+        }
+    }
+
+    // Apply f to diagonal of T (the eigenvalues)
+    let mut ft = t.clone();
+    for i in 0..n {
+        ft[i * n + i] = f(t[i * n + i]);
+    }
+
+    // Zero out sub-diagonal to keep upper triangular form
+    for i in 1..n {
+        ft[i * n + (i - 1)] = 0.0;
+    }
+
+    // Reconstruct: f(A) = Z * f(T) * Z^T
+    let z_ft = mat_mul_flat(&z, &ft, n);
+    // Z^T (transpose of Z)
+    let mut z_t = vec![0.0; n * n];
+    for i in 0..n {
+        for j in 0..n {
+            z_t[i * n + j] = z[j * n + i];
+        }
+    }
+    Ok(mat_mul_flat(&z_ft, &z_t, n))
+}
+
 /// Polar decomposition of an NxN matrix: A = U * P.
 ///
 /// `U` is a unitary (orthogonal) matrix and `P` is a positive semi-definite
@@ -2527,12 +2631,25 @@ pub fn vector_norm(values: &[f64], ord: Option<VectorNormOrder>) -> Result<f64, 
         return Ok(0.0);
     }
 
-    let abs_values = values.iter().map(|value| value.abs());
     let result = match order {
-        VectorNormOrder::One => abs_values.sum(),
-        VectorNormOrder::Two => abs_values.map(|value| value * value).sum::<f64>().sqrt(),
-        VectorNormOrder::Inf => abs_values.fold(0.0, f64::max),
-        VectorNormOrder::NegInf => abs_values.fold(f64::INFINITY, f64::min),
+        VectorNormOrder::Zero => values.iter().filter(|v| **v != 0.0).count() as f64,
+        VectorNormOrder::One => values.iter().map(|v| v.abs()).sum(),
+        VectorNormOrder::Two => values.iter().map(|v| v * v).sum::<f64>().sqrt(),
+        VectorNormOrder::Inf => values.iter().map(|v| v.abs()).fold(0.0, f64::max),
+        VectorNormOrder::NegInf => values.iter().map(|v| v.abs()).fold(f64::INFINITY, f64::min),
+        VectorNormOrder::P(p) => {
+            if p == 1.0 {
+                values.iter().map(|v| v.abs()).sum()
+            } else if p == 2.0 {
+                values.iter().map(|v| v * v).sum::<f64>().sqrt()
+            } else {
+                values
+                    .iter()
+                    .map(|v| v.abs().powf(p))
+                    .sum::<f64>()
+                    .powf(1.0 / p)
+            }
+        }
     };
     Ok(result)
 }
@@ -2559,10 +2676,20 @@ pub fn matrix_norm_2x2(
             let col1 = matrix[0][1].abs() + matrix[1][1].abs();
             col0.max(col1)
         }
+        MatrixNormOrder::NegOne => {
+            let col0 = matrix[0][0].abs() + matrix[1][0].abs();
+            let col1 = matrix[0][1].abs() + matrix[1][1].abs();
+            col0.min(col1)
+        }
         MatrixNormOrder::Inf => {
             let row0 = matrix[0][0].abs() + matrix[0][1].abs();
             let row1 = matrix[1][0].abs() + matrix[1][1].abs();
             row0.max(row1)
+        }
+        MatrixNormOrder::NegInf => {
+            let row0 = matrix[0][0].abs() + matrix[0][1].abs();
+            let row1 = matrix[1][0].abs() + matrix[1][1].abs();
+            row0.min(row1)
         }
         MatrixNormOrder::Two => singular_values_2x2(matrix)?[0],
         MatrixNormOrder::NegTwo => singular_values_2x2(matrix)?[1],
@@ -3062,13 +3189,13 @@ mod tests {
         MAX_TOLERANCE_SEARCH_DEPTH, MatrixNormOrder, QrMode, VectorNormOrder, cholesky_2x2,
         cholesky_nxn, cholesky_solve, cholesky_solve_multi, cond_nxn, cross_product, det_2x2,
         det_nxn, eig_nxn, eig_nxn_full, eigh_2x2, eigh_nxn, eigvals_2x2, eigvalsh_nxn, expm_nxn,
-        inv_2x2, inv_nxn, kron_nxn, logm_nxn, lstsq_2x2, lstsq_nxn, lstsq_output_shapes,
+        funm_nxn, inv_2x2, inv_nxn, kron_nxn, logm_nxn, lstsq_2x2, lstsq_nxn, lstsq_output_shapes,
         lu_factor_nxn, lu_solve, mat_mul_flat, mat_mul_rect, matrix_norm_2x2,
         matrix_norm_frobenius, matrix_norm_nxn, matrix_power_nxn, matrix_rank_2x2, matrix_rank_nxn,
-        multi_dot, pinv_2x2, pinv_nxn, polar_nxn, qr_2x2, qr_mxn, qr_nxn, qr_output_shapes, schur_nxn,
-        slogdet_2x2, slogdet_nxn, solve_2x2, solve_nxn, solve_nxn_multi, solve_triangular,
-        sqrtm_nxn, svd_2x2, svd_mxn, svd_mxn_full, svd_nxn, svd_output_shapes, tensorinv,
-        tensorsolve, trace_nxn, validate_backend_bridge, validate_cholesky_diagonal,
+        multi_dot, pinv_2x2, pinv_nxn, polar_nxn, qr_2x2, qr_mxn, qr_nxn, qr_output_shapes,
+        schur_nxn, slogdet_2x2, slogdet_nxn, solve_2x2, solve_nxn, solve_nxn_multi,
+        solve_triangular, sqrtm_nxn, svd_2x2, svd_mxn, svd_mxn_full, svd_nxn, svd_output_shapes,
+        tensorinv, tensorsolve, trace_nxn, validate_backend_bridge, validate_cholesky_diagonal,
         validate_matrix_shape, validate_policy_metadata, validate_spectral_branch,
         validate_square_matrix, validate_tolerance_policy, vector_norm,
     };
@@ -4295,6 +4422,75 @@ mod tests {
     }
 
     #[test]
+    fn vector_norm_zero_counts_nonzero() {
+        let v = [1.0, 0.0, -3.0, 0.0, 5.0];
+        let n = vector_norm(&v, Some(VectorNormOrder::Zero)).unwrap();
+        assert!((n - 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn vector_norm_arbitrary_p() {
+        let v = [1.0, 2.0, 3.0];
+        let n3 = vector_norm(&v, Some(VectorNormOrder::P(3.0))).unwrap();
+        let expected = (1.0_f64 + 8.0 + 27.0).powf(1.0 / 3.0);
+        assert!(
+            (n3 - expected).abs() < 1e-10,
+            "3-norm={n3}, expected {expected}"
+        );
+    }
+
+    #[test]
+    fn vector_norm_p_token_parsing() {
+        let ord = VectorNormOrder::from_token("3").unwrap();
+        assert_eq!(ord, VectorNormOrder::P(3.0));
+        let ord0 = VectorNormOrder::from_token("0").unwrap();
+        assert_eq!(ord0, VectorNormOrder::Zero);
+        let ord_half = VectorNormOrder::from_token("0.5").unwrap();
+        assert_eq!(ord_half, VectorNormOrder::P(0.5));
+    }
+
+    #[test]
+    fn matrix_norm_nxn_neg_one_and_neg_inf() {
+        // A = [[1, -2], [3, 4]]
+        // -1-norm = min col sum = min(|1|+|3|, |-2|+|4|) = min(4, 6) = 4
+        // -inf-norm = min row sum = min(|1|+|-2|, |3|+|4|) = min(3, 7) = 3
+        let a = [1.0, -2.0, 3.0, 4.0];
+        let n_neg1 = matrix_norm_nxn(&a, 2, 2, "-1").unwrap();
+        assert!((n_neg1 - 4.0).abs() < 1e-10, "-1-norm={n_neg1}");
+        let n_neginf = matrix_norm_nxn(&a, 2, 2, "-inf").unwrap();
+        assert!((n_neginf - 3.0).abs() < 1e-10, "-inf-norm={n_neginf}");
+    }
+
+    #[test]
+    fn matrix_norm_nxn_neg_two() {
+        // Identity: smallest singular value = 1
+        let eye = [1.0, 0.0, 0.0, 1.0];
+        let s = matrix_norm_nxn(&eye, 2, 2, "-2").unwrap();
+        assert!((s - 1.0).abs() < 1e-6, "-2-norm(I)={s}");
+    }
+
+    #[test]
+    fn matrix_norm_2x2_neg_one_and_neg_inf() {
+        let m = [[1.0, -2.0], [3.0, 4.0]];
+        let n_neg1 = matrix_norm_2x2(m, Some(MatrixNormOrder::NegOne)).unwrap();
+        assert!((n_neg1 - 4.0).abs() < 1e-10, "-1-norm={n_neg1}");
+        let n_neginf = matrix_norm_2x2(m, Some(MatrixNormOrder::NegInf)).unwrap();
+        assert!((n_neginf - 3.0).abs() < 1e-10, "-inf-norm={n_neginf}");
+    }
+
+    #[test]
+    fn matrix_norm_order_token_neg_variants() {
+        assert_eq!(
+            MatrixNormOrder::from_token("-1").unwrap(),
+            MatrixNormOrder::NegOne
+        );
+        assert_eq!(
+            MatrixNormOrder::from_token("-inf").unwrap(),
+            MatrixNormOrder::NegInf
+        );
+    }
+
+    #[test]
     fn eig_nxn_symmetric_gives_real_eigenvalues() {
         // Symmetric 2x2: [[2, 1], [1, 2]], eigenvalues = 3, 1
         let a = [2.0, 1.0, 1.0, 2.0];
@@ -5311,5 +5507,45 @@ mod tests {
         let a = [1.0; 6];
         let err = tensorinv(&a, &[2, 3], 1).expect_err("non-square should fail");
         assert!(matches!(err, LinAlgError::ShapeContractViolation(_)));
+    }
+
+    #[test]
+    fn funm_identity_with_square() {
+        // f(x) = x^2 applied to identity should give identity
+        let eye = vec![1.0, 0.0, 0.0, 1.0];
+        let result = funm_nxn(&eye, 2, |x| x * x).unwrap();
+        for i in 0..2 {
+            for j in 0..2 {
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert!((result[i * 2 + j] - expected).abs() < 1e-10);
+            }
+        }
+    }
+
+    #[test]
+    fn funm_diagonal_applies_function() {
+        // Diagonal matrix [[2, 0], [0, 3]]: f(x) = x^2 should give [[4, 0], [0, 9]]
+        let a = vec![2.0, 0.0, 0.0, 3.0];
+        let result = funm_nxn(&a, 2, |x| x * x).unwrap();
+        assert!((result[0] - 4.0).abs() < 1e-8);
+        assert!(result[1].abs() < 1e-8);
+        assert!(result[2].abs() < 1e-8);
+        assert!((result[3] - 9.0).abs() < 1e-8);
+    }
+
+    #[test]
+    fn funm_exp_matches_expm() {
+        // funm with exp should approximate expm for a symmetric matrix
+        let a = vec![1.0, 0.5, 0.5, 1.0];
+        let via_funm = funm_nxn(&a, 2, f64::exp).unwrap();
+        let via_expm = expm_nxn(&a, 2).unwrap();
+        for i in 0..4 {
+            assert!(
+                (via_funm[i] - via_expm[i]).abs() < 1e-6,
+                "funm[{i}]={} vs expm[{i}]={}",
+                via_funm[i],
+                via_expm[i],
+            );
+        }
     }
 }

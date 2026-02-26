@@ -296,6 +296,7 @@ name = "fnp-ufunc"
 version = "0.1.0"
 dependencies = [
  "fnp-dtype",
+ "fnp-linalg",
  "fnp-ndarray",
 ]
 

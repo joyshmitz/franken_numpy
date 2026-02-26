@@ -7,3 +7,4 @@ license-file = "../../LICENSE"
 [dependencies]
 fnp-dtype = { path = "../fnp-dtype", version = "0.1.0" }
 fnp-ndarray = { path = "../fnp-ndarray", version = "0.1.0" }
+fnp-linalg = { path = "../fnp-linalg", version = "0.1.0" }
