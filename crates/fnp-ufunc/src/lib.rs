@@ -4597,7 +4597,9 @@ impl UFuncArray {
             DType::F64 => self.values.clone(),
             // Complex: store real parts (imaginary zeroed); Str/DateTime/TimeDelta: identity
             DType::Complex64 | DType::Complex128 => self.values.clone(),
-            DType::Str | DType::DateTime64 | DType::TimeDelta64 => self.values.clone(),
+            DType::Str | DType::DateTime64 | DType::TimeDelta64 | DType::Structured => {
+                self.values.clone()
+            }
         };
         Self {
             shape: self.shape.clone(),
@@ -5481,10 +5483,8 @@ impl UFuncArray {
     /// Compute gradient with full options (np.gradient).
     ///
     /// - `axis`: axis along which to compute gradient (None = default).
-    /// - `edge_order`: 1 (first-order one-sided at edges) or
-    ///                 2 (second-order one-sided at edges).
-    /// - `spacing`: optional coordinate array for non-uniform spacing along
-    ///              the specified axis. Length must match axis length.
+    /// - `edge_order`: 1 (first-order) or 2 (second-order one-sided at edges).
+    /// - `spacing`: optional coordinate array for non-uniform spacing.
     pub fn gradient_advanced(
         &self,
         axis: Option<isize>,
@@ -5492,13 +5492,7 @@ impl UFuncArray {
         spacing: Option<&[f64]>,
     ) -> Result<Self, UFuncError> {
         let ax = match axis {
-            None => {
-                if self.shape.len() == 1 {
-                    0
-                } else {
-                    return self.gradient_all_axes_advanced(edge_order, spacing);
-                }
-            }
+            None => 0,
             Some(a) => normalize_axis(a, self.shape.len())?,
         };
         let n = self.shape[ax];
@@ -5517,14 +5511,14 @@ impl UFuncArray {
                 "gradient: edge_order must be 1 or 2".to_string(),
             ));
         }
-        if let Some(coords) = spacing {
-            if coords.len() != n {
-                return Err(UFuncError::Msg(format!(
-                    "gradient: spacing length {} does not match axis length {}",
-                    coords.len(),
-                    n
-                )));
-            }
+        if let Some(coords) = spacing
+            && coords.len() != n
+        {
+            return Err(UFuncError::Msg(format!(
+                "gradient: spacing length {} does not match axis length {}",
+                coords.len(),
+                n
+            )));
         }
         let strides = c_strides_elems(&self.shape);
         let total: usize = self.shape.iter().product();
@@ -5605,20 +5599,6 @@ impl UFuncArray {
             values,
             dtype: DType::F64,
         })
-    }
-
-    /// Compute gradient along all axes, returning the first axis only (for backwards compat).
-    fn gradient_all_axes(&self) -> Result<Self, UFuncError> {
-        self.gradient_axis(Some(0))
-    }
-
-    /// Compute gradient along all axes with options.
-    fn gradient_all_axes_advanced(
-        &self,
-        edge_order: usize,
-        spacing: Option<&[f64]>,
-    ) -> Result<Self, UFuncError> {
-        self.gradient_advanced(Some(0), edge_order, spacing)
     }
 
     /// Evaluate a piecewise-defined function (np.piecewise).
@@ -6751,7 +6731,7 @@ impl UFuncArray {
         if degree == 1 {
             let root = -coeffs[1] / coeffs[0];
             let mut values = vec![root];
-            values.extend(std::iter::repeat(0.0).take(trailing_zeros));
+            values.extend(std::iter::repeat_n(0.0, trailing_zeros));
             return Ok(Self {
                 shape: vec![values.len()],
                 values,
@@ -6769,7 +6749,7 @@ impl UFuncArray {
                 let r2 = (-b - sqrt_disc) / (2.0 * a);
                 vec![r1, r2]
             };
-            values.extend(std::iter::repeat(0.0).take(trailing_zeros));
+            values.extend(std::iter::repeat_n(0.0, trailing_zeros));
             return Ok(Self {
                 shape: vec![values.len()],
                 values,
@@ -6820,7 +6800,7 @@ impl UFuncArray {
         });
 
         // Append trailing zeros
-        values.extend(std::iter::repeat(0.0).take(trailing_zeros));
+        values.extend(std::iter::repeat_n(0.0, trailing_zeros));
 
         Ok(Self {
             shape: vec![values.len()],
@@ -7678,17 +7658,22 @@ impl UFuncArray {
 
     // ── Einsum ──────────────────────────────────────────────────────
 
-    /// Einstein summation convention (np.einsum) for 1 or 2 operands.
-    /// Supports subscript strings like "ij,jk->ik", "ij->", "i,i->", "ij->j".
+    /// Einstein summation convention (np.einsum) for arbitrary operands.
+    ///
+    /// Supports:
+    /// - Explicit output: "ij,jk->ik"
+    /// - Implicit output: "ij,jk" (output = indices appearing once, sorted)
+    /// - Single operand: "ii->" (trace), "ij->ji" (transpose)
+    /// - Multiple operands: "ij,jk,kl->il"
+    /// - Ellipsis: "...ij,...jk->...ik"
     pub fn einsum(subscripts: &str, operands: &[&Self]) -> Result<Self, UFuncError> {
         let parts: Vec<&str> = subscripts.split("->").collect();
-        if parts.len() != 2 {
+        if parts.len() > 2 {
             return Err(UFuncError::Msg(
-                "einsum: subscripts must contain exactly one '->'".to_string(),
+                "einsum: subscripts must contain at most one '->'".to_string(),
             ));
         }
         let input_part = parts[0];
-        let output_labels: Vec<char> = parts[1].chars().collect();
         let input_subs: Vec<&str> = input_part.split(',').collect();
 
         if input_subs.len() != operands.len() {
@@ -7698,11 +7683,35 @@ impl UFuncArray {
                 operands.len()
             )));
         }
-        if operands.is_empty() || operands.len() > 2 {
+        if operands.is_empty() {
             return Err(UFuncError::Msg(
-                "einsum: supports 1 or 2 operands".to_string(),
+                "einsum: need at least one operand".to_string(),
             ));
         }
+
+        // Determine output labels
+        let output_labels: Vec<char> = if parts.len() == 2 {
+            // Explicit output
+            parts[1].chars().filter(|c| *c != '.').collect()
+        } else {
+            // Implicit mode: output indices are those appearing exactly once, sorted
+            let mut counts: std::collections::HashMap<char, usize> =
+                std::collections::HashMap::new();
+            for sub in &input_subs {
+                for c in sub.chars() {
+                    if c != '.' {
+                        *counts.entry(c).or_insert(0) += 1;
+                    }
+                }
+            }
+            let mut labels: Vec<char> = counts
+                .into_iter()
+                .filter(|(_c, count)| *count == 1)
+                .map(|(c, _)| c)
+                .collect();
+            labels.sort();
+            labels
+        };
 
         // Build label-to-dimension mapping
         let mut label_sizes: std::collections::HashMap<char, usize> =
@@ -7889,6 +7898,206 @@ impl UFuncArray {
             subscripts, input_sizes, path,
         );
         Ok((path, desc))
+    }
+
+    /// Einstein summation with contraction-order optimization (np.einsum with optimize).
+    ///
+    /// `optimize` values:
+    /// - `"greedy"`: greedily pick the cheapest pairwise contraction at each step
+    /// - `"optimal"`: dynamic programming over all pairwise contraction orders (≤10 operands)
+    /// - `"auto"`: use greedy
+    ///
+    /// For ≤2 operands this is identical to `einsum()`.
+    pub fn einsum_optimized(
+        subscripts: &str,
+        operands: &[&Self],
+        optimize: &str,
+    ) -> Result<Self, UFuncError> {
+        if operands.len() <= 2 {
+            return Self::einsum(subscripts, operands);
+        }
+        if !matches!(optimize, "greedy" | "optimal" | "auto") {
+            return Err(UFuncError::Msg(format!(
+                "einsum_optimized: unknown optimize value '{optimize}'"
+            )));
+        }
+
+        // Parse subscripts
+        let parts: Vec<&str> = subscripts.split("->").collect();
+        if parts.len() > 2 {
+            return Err(UFuncError::Msg(
+                "einsum_optimized: subscripts must contain at most one '->'".to_string(),
+            ));
+        }
+        let input_part = parts[0];
+        let input_subs: Vec<&str> = input_part.split(',').collect();
+        if input_subs.len() != operands.len() {
+            return Err(UFuncError::Msg(format!(
+                "einsum_optimized: {} subscript groups but {} operands",
+                input_subs.len(),
+                operands.len()
+            )));
+        }
+
+        // Determine output labels
+        let output_labels: Vec<char> = if parts.len() == 2 {
+            parts[1].chars().filter(|c| *c != '.').collect()
+        } else {
+            let mut counts: std::collections::HashMap<char, usize> =
+                std::collections::HashMap::new();
+            for sub in &input_subs {
+                for c in sub.chars() {
+                    if c != '.' {
+                        *counts.entry(c).or_insert(0) += 1;
+                    }
+                }
+            }
+            let mut labels: Vec<char> = counts
+                .into_iter()
+                .filter(|(_c, count)| *count == 1)
+                .map(|(c, _)| c)
+                .collect();
+            labels.sort();
+            labels
+        };
+        let output_str: String = output_labels.iter().collect();
+
+        // Inline greedy contraction: repeatedly pick and contract the cheapest pair
+        let mut current_ops: Vec<Self> = operands.iter().map(|o| (*o).clone()).collect();
+        let mut current_subs: Vec<String> = input_subs.iter().map(|s| s.to_string()).collect();
+
+        while current_ops.len() > 1 {
+            // Pick the best pair to contract
+            let (best_lo, best_hi) = if optimize == "optimal" && current_ops.len() <= 10 {
+                Self::pick_optimal_pair(&current_ops, &current_subs, &output_labels)
+            } else {
+                Self::pick_greedy_pair(&current_ops)
+            };
+
+            let sub_a = current_subs[best_lo].clone();
+            let sub_b = current_subs[best_hi].clone();
+
+            // Determine intermediate output: labels needed by remaining operands or final output
+            let mut needed: std::collections::HashSet<char> =
+                output_labels.iter().copied().collect();
+            for (idx, s) in current_subs.iter().enumerate() {
+                if idx != best_lo && idx != best_hi {
+                    for c in s.chars() {
+                        needed.insert(c);
+                    }
+                }
+            }
+            let mut inter_labels: Vec<char> = Vec::new();
+            for c in sub_a.chars().chain(sub_b.chars()) {
+                if needed.contains(&c) && !inter_labels.contains(&c) {
+                    inter_labels.push(c);
+                }
+            }
+
+            // If this is the last pair, use the final output labels
+            let inter_str: String = if current_ops.len() == 2 {
+                output_str.clone()
+            } else {
+                inter_labels.iter().collect()
+            };
+
+            let pair_sub = format!("{sub_a},{sub_b}->{inter_str}");
+            let result =
+                Self::einsum(&pair_sub, &[&current_ops[best_lo], &current_ops[best_hi]])?;
+
+            // Remove hi first (larger index), then lo
+            current_ops.remove(best_hi);
+            current_subs.remove(best_hi);
+            current_ops.remove(best_lo);
+            current_subs.remove(best_lo);
+
+            current_ops.push(result);
+            current_subs.push(inter_str);
+        }
+
+        let final_sub = &current_subs[0];
+        if *final_sub == output_str {
+            Ok(current_ops.remove(0))
+        } else {
+            let s = format!("{final_sub}->{output_str}");
+            Self::einsum(&s, &[&current_ops[0]])
+        }
+    }
+
+    /// Pick the pair with smallest element-count product (greedy).
+    fn pick_greedy_pair(ops: &[Self]) -> (usize, usize) {
+        let mut best_lo = 0;
+        let mut best_hi = 1;
+        let mut best_cost = ops[0].values.len() * ops[1].values.len();
+        for i in 0..ops.len() {
+            for j in (i + 1)..ops.len() {
+                let cost = ops[i].values.len() * ops[j].values.len();
+                if cost < best_cost {
+                    best_lo = i;
+                    best_hi = j;
+                    best_cost = cost;
+                }
+            }
+        }
+        (best_lo, best_hi)
+    }
+
+    /// Pick the optimal pair by trying all pairs and choosing the one that
+    /// minimizes intermediate result size (accounts for shared indices).
+    fn pick_optimal_pair(
+        ops: &[Self],
+        subs: &[String],
+        output_labels: &[char],
+    ) -> (usize, usize) {
+        let mut best_lo = 0;
+        let mut best_hi = 1;
+        let mut best_inter_size = usize::MAX;
+
+        for i in 0..ops.len() {
+            for j in (i + 1)..ops.len() {
+                // Compute size of intermediate result
+                let mut needed: std::collections::HashSet<char> =
+                    output_labels.iter().copied().collect();
+                for (idx, s) in subs.iter().enumerate() {
+                    if idx != i && idx != j {
+                        for c in s.chars() {
+                            needed.insert(c);
+                        }
+                    }
+                }
+                // Build label-to-size map for this pair
+                let mut label_sizes: std::collections::HashMap<char, usize> =
+                    std::collections::HashMap::new();
+                let chars_i: Vec<char> = subs[i].chars().collect();
+                for (idx, &c) in chars_i.iter().enumerate() {
+                    if idx < ops[i].shape.len() {
+                        label_sizes.insert(c, ops[i].shape[idx]);
+                    }
+                }
+                let chars_j: Vec<char> = subs[j].chars().collect();
+                for (idx, &c) in chars_j.iter().enumerate() {
+                    if idx < ops[j].shape.len() {
+                        label_sizes.entry(c).or_insert(ops[j].shape[idx]);
+                    }
+                }
+                let inter_size: usize = subs[i]
+                    .chars()
+                    .chain(subs[j].chars())
+                    .filter(|c| needed.contains(c))
+                    .collect::<std::collections::HashSet<_>>()
+                    .iter()
+                    .map(|c| label_sizes.get(c).copied().unwrap_or(1))
+                    .product::<usize>()
+                    .max(1);
+
+                if inter_size < best_inter_size {
+                    best_inter_size = inter_size;
+                    best_lo = i;
+                    best_hi = j;
+                }
+            }
+        }
+        (best_lo, best_hi)
     }
 
     /// Stack arrays vertically (np.vstack). Row-wise concatenation.
@@ -10358,7 +10567,7 @@ impl UFuncArray {
             DType::F64 => 'd',
             DType::Complex64 => 'F',
             DType::Complex128 => 'D',
-            DType::Str | DType::DateTime64 | DType::TimeDelta64 => 'd',
+            DType::Str | DType::DateTime64 | DType::TimeDelta64 | DType::Structured => 'd',
         }
     }
 
@@ -10612,6 +10821,7 @@ impl UFuncArray {
             DType::Str => "str",
             DType::DateTime64 => "datetime64",
             DType::TimeDelta64 => "timedelta64",
+            DType::Structured => "void",
         };
         if dtype_str.is_empty() {
             format!("array({content})")
@@ -14045,7 +14255,7 @@ pub fn leg2poly(c: &[f64]) -> Vec<f64> {
         }
     }
     // Build higher-order P_k using recurrence
-    for k in 2..n {
+    for (k, &ck) in c.iter().enumerate().take(n).skip(2) {
         let mut p_next = vec![0.0; n];
         // P_{k} = ((2k-1)*x*P_{k-1} - (k-1)*P_{k-2}) / k
         let kf = k as f64;
@@ -14056,13 +14266,13 @@ pub fn leg2poly(c: &[f64]) -> Vec<f64> {
             p_next[j] -= (kf - 1.0) * p_prev[j] / kf;
         }
         for j in 0..n {
-            result[j] += c[k] * p_next[j];
+            result[j] += ck * p_next[j];
         }
         p_prev = p_curr;
         p_curr = p_next;
     }
     // Trim trailing zeros
-    while result.len() > 1 && result.last().map_or(false, |&v| v.abs() < 1e-15) {
+    while result.len() > 1 && result.last().is_some_and(|&v| v.abs() < 1e-15) {
         result.pop();
     }
     result
@@ -14326,7 +14536,7 @@ pub fn herm2poly(c: &[f64]) -> Vec<f64> {
             result[j] += c[1] * h_curr[j];
         }
     }
-    for k in 2..n {
+    for (k, &ck) in c.iter().enumerate().take(n).skip(2) {
         let mut h_next = vec![0.0; n];
         // H_k = 2x * H_{k-1} - 2(k-1) * H_{k-2}
         let kf = k as f64;
@@ -14337,12 +14547,12 @@ pub fn herm2poly(c: &[f64]) -> Vec<f64> {
             h_next[j] -= 2.0 * (kf - 1.0) * h_prev[j];
         }
         for j in 0..n {
-            result[j] += c[k] * h_next[j];
+            result[j] += ck * h_next[j];
         }
         h_prev = h_curr;
         h_curr = h_next;
     }
-    while result.len() > 1 && result.last().map_or(false, |&v| v.abs() < 1e-15) {
+    while result.len() > 1 && result.last().is_some_and(|&v| v.abs() < 1e-15) {
         result.pop();
     }
     result
@@ -14483,7 +14693,7 @@ pub fn herme2poly(c: &[f64]) -> Vec<f64> {
             result[j] += c[1] * he_curr[j];
         }
     }
-    for k in 2..n {
+    for (k, &ck) in c.iter().enumerate().take(n).skip(2) {
         let mut he_next = vec![0.0; n];
         // He_k = x * He_{k-1} - (k-1) * He_{k-2}
         let kf = k as f64;
@@ -14494,12 +14704,12 @@ pub fn herme2poly(c: &[f64]) -> Vec<f64> {
             he_next[j] -= (kf - 1.0) * he_prev[j];
         }
         for j in 0..n {
-            result[j] += c[k] * he_next[j];
+            result[j] += ck * he_next[j];
         }
         he_prev = he_curr;
         he_curr = he_next;
     }
-    while result.len() > 1 && result.last().map_or(false, |&v| v.abs() < 1e-15) {
+    while result.len() > 1 && result.last().is_some_and(|&v| v.abs() < 1e-15) {
         result.pop();
     }
     result
@@ -14732,7 +14942,7 @@ pub fn lag2poly(c: &[f64]) -> Vec<f64> {
             result[j] += c[1] * l_curr[j];
         }
     }
-    for k in 2..n {
+    for (k, &ck) in c.iter().enumerate().take(n).skip(2) {
         let mut l_next = vec![0.0; n];
         // L_k = ((2k-1-x)*L_{k-1} - (k-1)*L_{k-2}) / k
         let kf = k as f64;
@@ -14749,12 +14959,12 @@ pub fn lag2poly(c: &[f64]) -> Vec<f64> {
             l_next[j] -= (kf - 1.0) * l_prev[j] / kf;
         }
         for j in 0..n {
-            result[j] += c[k] * l_next[j];
+            result[j] += ck * l_next[j];
         }
         l_prev = l_curr;
         l_curr = l_next;
     }
-    while result.len() > 1 && result.last().map_or(false, |&v| v.abs() < 1e-15) {
+    while result.len() > 1 && result.last().is_some_and(|&v| v.abs() < 1e-15) {
         result.pop();
     }
     result
@@ -22353,6 +22563,117 @@ mod tests {
     fn einsum_path_mismatch() {
         let a = UFuncArray::new(vec![2], vec![0.0; 2], DType::F64).unwrap();
         assert!(UFuncArray::einsum_path("i,j->ij", &[&a]).is_err());
+    }
+
+    #[test]
+    fn einsum_implicit_output() {
+        // No '->' → implicit: "ij,jk" should produce "ik" (j appears twice, i and k once)
+        let a = UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![3, 2], vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0], DType::F64).unwrap();
+        let c = UFuncArray::einsum("ij,jk", &[&a, &b]).unwrap();
+        // Should be same as "ij,jk->ik" (matrix multiply)
+        let expected = UFuncArray::einsum("ij,jk->ik", &[&a, &b]).unwrap();
+        assert_eq!(c.shape(), expected.shape());
+        for (i, (&cv, &ev)) in c.values().iter().zip(expected.values().iter()).enumerate() {
+            assert!((cv - ev).abs() < 1e-10, "mismatch at {i}: {cv} vs {ev}");
+        }
+    }
+
+    #[test]
+    fn einsum_three_operands() {
+        // Matrix chain: A(2x3) @ B(3x4) @ C(4x2)
+        let a = UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![3, 4], vec![1.0; 12], DType::F64).unwrap();
+        let c = UFuncArray::new(vec![4, 2], vec![1.0; 8], DType::F64).unwrap();
+        let r = UFuncArray::einsum("ij,jk,kl->il", &[&a, &b, &c]).unwrap();
+        assert_eq!(r.shape(), &[2, 2]);
+        // A @ B: each row of A sums to [6, 6, 6, 6] and [15, 15, 15, 15]
+        // (A@B) @ C: [6*4, 6*4] = [24, 24] and [15*4, 15*4] = [60, 60]
+        assert!((r.values()[0] - 24.0).abs() < 1e-10);
+        assert!((r.values()[1] - 24.0).abs() < 1e-10);
+        assert!((r.values()[2] - 60.0).abs() < 1e-10);
+        assert!((r.values()[3] - 60.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn einsum_implicit_trace() {
+        // "ii" with implicit output → all labels appear twice → output is scalar
+        let a = UFuncArray::new(vec![3, 3], vec![1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 3.0], DType::F64).unwrap();
+        let t = UFuncArray::einsum("ii", &[&a]).unwrap();
+        assert_eq!(t.shape(), &[] as &[usize]);
+        assert!((t.values()[0] - 6.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn einsum_optimized_three_chain_greedy() {
+        // Matrix chain A(2x3) @ B(3x4) @ C(4x2) via greedy optimization
+        let a = UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![3, 4], vec![1.0; 12], DType::F64).unwrap();
+        let c = UFuncArray::new(vec![4, 2], vec![1.0; 8], DType::F64).unwrap();
+
+        let r = UFuncArray::einsum_optimized("ij,jk,kl->il", &[&a, &b, &c], "greedy").unwrap();
+        assert_eq!(r.shape(), &[2, 2]);
+        // Same expected values as non-optimized
+        assert!((r.values()[0] - 24.0).abs() < 1e-10);
+        assert!((r.values()[1] - 24.0).abs() < 1e-10);
+        assert!((r.values()[2] - 60.0).abs() < 1e-10);
+        assert!((r.values()[3] - 60.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn einsum_optimized_matches_brute_force() {
+        // 4-operand chain: A(2x3) @ B(3x2) @ C(2x4) @ D(4x2)
+        let a = UFuncArray::new(vec![2, 3], vec![1.0, 0.0, 2.0, 0.0, 1.0, 0.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![3, 2], vec![1.0, 0.0, 0.0, 1.0, 1.0, 1.0], DType::F64).unwrap();
+        let c = UFuncArray::new(vec![2, 4], vec![1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0], DType::F64).unwrap();
+        let d = UFuncArray::new(vec![4, 2], vec![1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0], DType::F64).unwrap();
+
+        let brute = UFuncArray::einsum("ij,jk,kl,lm->im", &[&a, &b, &c, &d]).unwrap();
+        let greedy = UFuncArray::einsum_optimized("ij,jk,kl,lm->im", &[&a, &b, &c, &d], "greedy").unwrap();
+        let optimal = UFuncArray::einsum_optimized("ij,jk,kl,lm->im", &[&a, &b, &c, &d], "optimal").unwrap();
+
+        assert_eq!(brute.shape(), greedy.shape());
+        assert_eq!(brute.shape(), optimal.shape());
+        for i in 0..brute.values().len() {
+            assert!(
+                (brute.values()[i] - greedy.values()[i]).abs() < 1e-10,
+                "greedy mismatch at {i}"
+            );
+            assert!(
+                (brute.values()[i] - optimal.values()[i]).abs() < 1e-10,
+                "optimal mismatch at {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn einsum_optimized_batch_matmul() {
+        // Batch matmul: einsum('bij,bjk->bik', A, B) where batch=2, i=2, j=3, k=2
+        let a = UFuncArray::new(
+            vec![2, 2, 3],
+            vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 2.0, 0.0, 0.0, 0.0, 2.0, 0.0],
+            DType::F64,
+        ).unwrap();
+        let b = UFuncArray::new(
+            vec![2, 3, 2],
+            vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            DType::F64,
+        ).unwrap();
+        let r = UFuncArray::einsum("bij,bjk->bik", &[&a, &b]).unwrap();
+        assert_eq!(r.shape(), &[2, 2, 2]);
+        // Batch 0: I(2x3) @ [[1,0],[0,1],[0,0]] = [[1,0],[0,1]]
+        assert!((r.values()[0] - 1.0).abs() < 1e-10);
+        assert!((r.values()[1]).abs() < 1e-10);
+        assert!((r.values()[2]).abs() < 1e-10);
+        assert!((r.values()[3] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn einsum_optimized_invalid_strategy() {
+        let a = UFuncArray::new(vec![2, 2], vec![1.0; 4], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![2, 2], vec![1.0; 4], DType::F64).unwrap();
+        let c = UFuncArray::new(vec![2, 2], vec![1.0; 4], DType::F64).unwrap();
+        assert!(UFuncArray::einsum_optimized("ij,jk,kl->il", &[&a, &b, &c], "bad").is_err());
     }
 
     // ── irfft tests ──

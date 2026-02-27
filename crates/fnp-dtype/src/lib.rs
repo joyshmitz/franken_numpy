@@ -19,6 +19,8 @@ pub enum DType {
     Str,
     DateTime64,
     TimeDelta64,
+    /// Marker for structured/record dtypes. Field descriptors stored externally.
+    Structured,
 }
 
 impl DType {
@@ -41,6 +43,7 @@ impl DType {
             Self::Str => "str",
             Self::DateTime64 => "datetime64",
             Self::TimeDelta64 => "timedelta64",
+            Self::Structured => "void",
         }
     }
 
@@ -57,7 +60,7 @@ impl DType {
             | Self::DateTime64
             | Self::TimeDelta64 => 8,
             Self::Complex128 => 16,
-            Self::Str => 0, // variable-length
+            Self::Str | Self::Structured => 0, // variable-length
         }
     }
 
@@ -242,7 +245,7 @@ pub const fn promote_for_sum_reduction(dt: DType) -> DType {
         DType::F64 => DType::F64,
         DType::Complex64 => DType::Complex64,
         DType::Complex128 => DType::Complex128,
-        DType::Str | DType::DateTime64 | DType::TimeDelta64 => dt,
+        DType::Str | DType::DateTime64 | DType::TimeDelta64 | DType::Structured => dt,
     }
 }
 
@@ -266,7 +269,7 @@ pub const fn promote_for_mean_reduction(dt: DType) -> DType {
         DType::F64 => DType::F64,
         DType::Complex64 => DType::Complex64,
         DType::Complex128 => DType::Complex128,
-        DType::Str | DType::DateTime64 | DType::TimeDelta64 => dt,
+        DType::Str | DType::DateTime64 | DType::TimeDelta64 | DType::Structured => dt,
     }
 }
 
@@ -488,6 +491,140 @@ pub fn common_type(dtypes: &[DType]) -> DType {
     result
 }
 
+/// Descriptor for a single field in a structured dtype.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StructuredField {
+    /// Field name.
+    pub name: std::string::String,
+    /// Field dtype.
+    pub dtype: DType,
+    /// Byte offset within the record.
+    pub offset: usize,
+}
+
+/// Storage for structured/record arrays.
+/// Each record contains named, typed fields at fixed offsets.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StructuredStorage {
+    /// Field descriptors (name, dtype, byte offset).
+    pub fields: Vec<StructuredField>,
+    /// Number of records.
+    pub num_records: usize,
+    /// Per-field typed data, parallel with `fields`.
+    pub columns: Vec<ArrayStorage>,
+}
+
+impl StructuredStorage {
+    /// Create a structured storage with no fields and no records.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            fields: Vec::new(),
+            num_records: 0,
+            columns: Vec::new(),
+        }
+    }
+
+    /// Create a structured storage from field descriptors and column data.
+    /// All columns must have the same length.
+    pub fn new(
+        fields: Vec<StructuredField>,
+        columns: Vec<ArrayStorage>,
+    ) -> Result<Self, StorageError> {
+        if fields.len() != columns.len() {
+            return Err(StorageError::StructuredFieldMismatch {
+                expected: fields.len(),
+                got: columns.len(),
+            });
+        }
+        let num_records = if columns.is_empty() {
+            0
+        } else {
+            let n = columns[0].len();
+            for (i, col) in columns.iter().enumerate().skip(1) {
+                if col.len() != n {
+                    return Err(StorageError::StructuredFieldMismatch {
+                        expected: n,
+                        got: col.len(),
+                    });
+                }
+                // Verify dtype matches field descriptor
+                if col.dtype() != fields[i].dtype {
+                    return Err(StorageError::UnsupportedCast {
+                        from: col.dtype(),
+                        to: fields[i].dtype,
+                    });
+                }
+            }
+            n
+        };
+        Ok(Self {
+            fields,
+            num_records,
+            columns,
+        })
+    }
+
+    /// Total byte size per record (sum of field item sizes).
+    #[must_use]
+    pub fn record_size(&self) -> usize {
+        self.fields.iter().map(|f| f.dtype.item_size()).sum()
+    }
+
+    /// Number of records.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.num_records
+    }
+
+    /// Whether the storage is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.num_records == 0
+    }
+
+    /// Number of fields.
+    #[must_use]
+    pub fn num_fields(&self) -> usize {
+        self.fields.len()
+    }
+
+    /// Get field names.
+    #[must_use]
+    pub fn field_names(&self) -> Vec<&str> {
+        self.fields.iter().map(|f| f.name.as_str()).collect()
+    }
+
+    /// Get field index by name.
+    #[must_use]
+    pub fn field_index(&self, name: &str) -> Option<usize> {
+        self.fields.iter().position(|f| f.name == name)
+    }
+
+    /// Access a column (field) by name, returning the storage for that field.
+    #[must_use]
+    pub fn get_field(&self, name: &str) -> Option<&ArrayStorage> {
+        self.field_index(name).map(|idx| &self.columns[idx])
+    }
+
+    /// Access a column (field) by index.
+    #[must_use]
+    pub fn get_field_by_index(&self, index: usize) -> Option<&ArrayStorage> {
+        self.columns.get(index)
+    }
+
+    /// Get the dtype string representation (NumPy format).
+    #[must_use]
+    pub fn dtype_str(&self) -> std::string::String {
+        let field_strs: Vec<std::string::String> = self
+            .fields
+            .iter()
+            .map(|f| format!("('{}', '{}')", f.name, f.dtype.name()))
+            .collect();
+        format!("[{}]", field_strs.join(", "))
+    }
+}
+
 /// Polymorphic typed storage backend for array data.
 ///
 /// Replaces the `Vec<f64>`-only storage pattern. Each variant holds a
@@ -510,6 +647,7 @@ pub enum ArrayStorage {
     Complex64(Vec<(f32, f32)>),
     Complex128(Vec<(f64, f64)>),
     String(Vec<std::string::String>),
+    Structured(StructuredStorage),
 }
 
 /// Error type for storage operations.
@@ -517,6 +655,7 @@ pub enum ArrayStorage {
 pub enum StorageError {
     IndexOutOfBounds { index: usize, len: usize },
     UnsupportedCast { from: DType, to: DType },
+    StructuredFieldMismatch { expected: usize, got: usize },
 }
 
 impl std::fmt::Display for StorageError {
@@ -527,6 +666,12 @@ impl std::fmt::Display for StorageError {
             }
             Self::UnsupportedCast { from, to } => {
                 write!(f, "cannot cast from {} to {}", from.name(), to.name())
+            }
+            Self::StructuredFieldMismatch { expected, got } => {
+                write!(
+                    f,
+                    "structured storage field count mismatch: expected {expected}, got {got}"
+                )
             }
         }
     }
@@ -551,6 +696,7 @@ impl ArrayStorage {
             Self::Complex64(v) => v.len(),
             Self::Complex128(v) => v.len(),
             Self::String(v) => v.len(),
+            Self::Structured(s) => s.len(),
         }
     }
 
@@ -578,6 +724,7 @@ impl ArrayStorage {
             Self::Complex64(_) => DType::Complex64,
             Self::Complex128(_) => DType::Complex128,
             Self::String(_) => DType::Str,
+            Self::Structured(_) => DType::Structured,
         }
     }
 
@@ -603,7 +750,7 @@ impl ArrayStorage {
             Self::F64(v) => v[index],
             Self::Complex64(v) => f64::from(v[index].0),
             Self::Complex128(v) => v[index].0,
-            Self::String(_) => f64::NAN,
+            Self::String(_) | Self::Structured(_) => f64::NAN,
         })
     }
 
@@ -628,6 +775,12 @@ impl ArrayStorage {
             Self::Complex64(v) => v[index] = (val as f32, 0.0),
             Self::Complex128(v) => v[index] = (val, 0.0),
             Self::String(v) => v[index] = val.to_string(),
+            Self::Structured(_) => {
+                return Err(StorageError::UnsupportedCast {
+                    from: DType::F64,
+                    to: DType::Structured,
+                });
+            }
         }
         Ok(())
     }
@@ -651,6 +804,7 @@ impl ArrayStorage {
             DType::Complex128 => Self::Complex128(vec![(0.0, 0.0); n]),
             DType::Str => Self::String(vec![std::string::String::new(); n]),
             DType::DateTime64 | DType::TimeDelta64 => Self::I64(vec![0; n]),
+            DType::Structured => Self::Structured(StructuredStorage::empty()),
         }
     }
 
@@ -705,14 +859,371 @@ impl ArrayStorage {
     pub fn from_f64_vec(data: Vec<f64>) -> Self {
         Self::F64(data)
     }
+
+    /// Create Complex128 storage from a Vec of (real, imag) pairs.
+    #[must_use]
+    pub fn from_complex128_vec(data: Vec<(f64, f64)>) -> Self {
+        Self::Complex128(data)
+    }
+
+    /// Create Complex64 storage from a Vec of (real, imag) pairs.
+    #[must_use]
+    pub fn from_complex64_vec(data: Vec<(f32, f32)>) -> Self {
+        Self::Complex64(data)
+    }
+
+    /// Extract data as Vec of (f64, f64) complex pairs.
+    /// Non-complex types get zero imaginary part.
+    #[must_use]
+    pub fn to_complex128_vec(&self) -> Vec<(f64, f64)> {
+        match self {
+            Self::Complex128(v) => v.clone(),
+            Self::Complex64(v) => v.iter().map(|&(r, i)| (f64::from(r), f64::from(i))).collect(),
+            _ => {
+                let n = self.len();
+                (0..n)
+                    .map(|i| (self.get_f64(i).unwrap_or(f64::NAN), 0.0))
+                    .collect()
+            }
+        }
+    }
+
+    /// Read element at `index` as a complex128 (f64, f64) pair.
+    /// Non-complex types return (real_value, 0.0).
+    pub fn get_complex128(&self, index: usize) -> Result<(f64, f64), StorageError> {
+        let n = self.len();
+        if index >= n {
+            return Err(StorageError::IndexOutOfBounds { index, len: n });
+        }
+        Ok(match self {
+            Self::Complex128(v) => v[index],
+            Self::Complex64(v) => (f64::from(v[index].0), f64::from(v[index].1)),
+            _ => (self.get_f64(index)?, 0.0),
+        })
+    }
+
+    /// Write element at `index` as a complex128 (re, im) pair.
+    /// For non-complex storage, only the real part is written.
+    pub fn set_complex128(
+        &mut self,
+        index: usize,
+        re: f64,
+        im: f64,
+    ) -> Result<(), StorageError> {
+        let n = self.len();
+        if index >= n {
+            return Err(StorageError::IndexOutOfBounds { index, len: n });
+        }
+        match self {
+            Self::Complex128(v) => v[index] = (re, im),
+            Self::Complex64(v) => v[index] = (re as f32, im as f32),
+            _ => self.set_f64(index, re)?,
+        }
+        Ok(())
+    }
+
+    /// Whether this storage holds complex data.
+    #[must_use]
+    pub fn is_complex(&self) -> bool {
+        matches!(self, Self::Complex64(_) | Self::Complex128(_))
+    }
+
+    // ── Complex arithmetic (element-wise, returns Complex128) ──
+
+    /// Element-wise complex addition.
+    pub fn complex_add(&self, other: &Self) -> Result<Self, StorageError> {
+        let a = self.to_complex128_vec();
+        let b = other.to_complex128_vec();
+        if a.len() != b.len() {
+            return Err(StorageError::UnsupportedCast {
+                from: self.dtype(),
+                to: other.dtype(),
+            });
+        }
+        Ok(Self::Complex128(
+            a.iter()
+                .zip(b.iter())
+                .map(|(&(ar, ai), &(br, bi))| (ar + br, ai + bi))
+                .collect(),
+        ))
+    }
+
+    /// Element-wise complex subtraction.
+    pub fn complex_sub(&self, other: &Self) -> Result<Self, StorageError> {
+        let a = self.to_complex128_vec();
+        let b = other.to_complex128_vec();
+        if a.len() != b.len() {
+            return Err(StorageError::UnsupportedCast {
+                from: self.dtype(),
+                to: other.dtype(),
+            });
+        }
+        Ok(Self::Complex128(
+            a.iter()
+                .zip(b.iter())
+                .map(|(&(ar, ai), &(br, bi))| (ar - br, ai - bi))
+                .collect(),
+        ))
+    }
+
+    /// Element-wise complex multiplication: (a+bi)(c+di) = (ac-bd) + (ad+bc)i.
+    pub fn complex_mul(&self, other: &Self) -> Result<Self, StorageError> {
+        let a = self.to_complex128_vec();
+        let b = other.to_complex128_vec();
+        if a.len() != b.len() {
+            return Err(StorageError::UnsupportedCast {
+                from: self.dtype(),
+                to: other.dtype(),
+            });
+        }
+        Ok(Self::Complex128(
+            a.iter()
+                .zip(b.iter())
+                .map(|(&(ar, ai), &(br, bi))| (ar * br - ai * bi, ar * bi + ai * br))
+                .collect(),
+        ))
+    }
+
+    /// Element-wise complex division: (a+bi)/(c+di).
+    pub fn complex_div(&self, other: &Self) -> Result<Self, StorageError> {
+        let a = self.to_complex128_vec();
+        let b = other.to_complex128_vec();
+        if a.len() != b.len() {
+            return Err(StorageError::UnsupportedCast {
+                from: self.dtype(),
+                to: other.dtype(),
+            });
+        }
+        Ok(Self::Complex128(
+            a.iter()
+                .zip(b.iter())
+                .map(|(&(ar, ai), &(br, bi))| {
+                    let denom = br * br + bi * bi;
+                    if denom == 0.0 {
+                        (f64::NAN, f64::NAN)
+                    } else {
+                        ((ar * br + ai * bi) / denom, (ai * br - ar * bi) / denom)
+                    }
+                })
+                .collect(),
+        ))
+    }
+
+    // ── Complex unary operations ──
+
+    /// Element-wise complex conjugate: (a+bi) → (a-bi).
+    #[must_use]
+    pub fn complex_conjugate(&self) -> Self {
+        match self {
+            Self::Complex128(v) => {
+                Self::Complex128(v.iter().map(|&(r, i)| (r, -i)).collect())
+            }
+            Self::Complex64(v) => {
+                Self::Complex64(v.iter().map(|&(r, i)| (r, -i)).collect())
+            }
+            // For real types, conjugate is identity
+            _ => self.clone(),
+        }
+    }
+
+    /// Element-wise complex absolute value (magnitude): |a+bi| = sqrt(a²+b²).
+    /// Returns F64 storage.
+    #[must_use]
+    pub fn complex_abs(&self) -> Self {
+        match self {
+            Self::Complex128(v) => Self::F64(
+                v.iter()
+                    .map(|&(r, i)| (r * r + i * i).sqrt())
+                    .collect(),
+            ),
+            Self::Complex64(v) => Self::F64(
+                v.iter()
+                    .map(|&(r, i)| {
+                        let r64 = f64::from(r);
+                        let i64 = f64::from(i);
+                        (r64 * r64 + i64 * i64).sqrt()
+                    })
+                    .collect(),
+            ),
+            // For real types, abs is just f64 abs
+            _ => {
+                let vals = self.to_f64_vec();
+                Self::F64(vals.into_iter().map(f64::abs).collect())
+            }
+        }
+    }
+
+    /// Element-wise complex angle (argument): atan2(imag, real).
+    /// Returns F64 storage.
+    #[must_use]
+    pub fn complex_angle(&self) -> Self {
+        match self {
+            Self::Complex128(v) => {
+                Self::F64(v.iter().map(|&(r, i)| i.atan2(r)).collect())
+            }
+            Self::Complex64(v) => Self::F64(
+                v.iter()
+                    .map(|&(r, i)| f64::from(i).atan2(f64::from(r)))
+                    .collect(),
+            ),
+            // For real types, angle is 0.0 for non-negative, pi for negative
+            _ => {
+                let vals = self.to_f64_vec();
+                Self::F64(
+                    vals.into_iter()
+                        .map(|v| if v < 0.0 { std::f64::consts::PI } else { 0.0 })
+                        .collect(),
+                )
+            }
+        }
+    }
+
+    /// Extract real part. Returns F64 storage.
+    #[must_use]
+    pub fn complex_real(&self) -> Self {
+        match self {
+            Self::Complex128(v) => Self::F64(v.iter().map(|&(r, _)| r).collect()),
+            Self::Complex64(v) => Self::F64(v.iter().map(|&(r, _)| f64::from(r)).collect()),
+            // For real types, real part is the value itself
+            _ => Self::F64(self.to_f64_vec()),
+        }
+    }
+
+    /// Extract imaginary part. Returns F64 storage.
+    #[must_use]
+    pub fn complex_imag(&self) -> Self {
+        match self {
+            Self::Complex128(v) => Self::F64(v.iter().map(|&(_, i)| i).collect()),
+            Self::Complex64(v) => Self::F64(v.iter().map(|&(_, i)| f64::from(i)).collect()),
+            // For real types, imaginary part is zero
+            _ => Self::F64(vec![0.0; self.len()]),
+        }
+    }
+
+    /// Element-wise complex exponential: exp(a+bi) = exp(a) * (cos(b) + i*sin(b)).
+    #[must_use]
+    pub fn complex_exp(&self) -> Self {
+        let pairs = self.to_complex128_vec();
+        Self::Complex128(
+            pairs
+                .iter()
+                .map(|&(r, i)| {
+                    let ea = r.exp();
+                    (ea * i.cos(), ea * i.sin())
+                })
+                .collect(),
+        )
+    }
+
+    /// Element-wise complex natural logarithm: log(a+bi) = log|z| + i*arg(z).
+    #[must_use]
+    pub fn complex_log(&self) -> Self {
+        let pairs = self.to_complex128_vec();
+        Self::Complex128(
+            pairs
+                .iter()
+                .map(|&(r, i)| {
+                    let mag = (r * r + i * i).sqrt();
+                    let ang = i.atan2(r);
+                    (mag.ln(), ang)
+                })
+                .collect(),
+        )
+    }
+
+    /// Element-wise complex square root.
+    #[must_use]
+    pub fn complex_sqrt(&self) -> Self {
+        let pairs = self.to_complex128_vec();
+        Self::Complex128(
+            pairs
+                .iter()
+                .map(|&(r, i)| {
+                    let mag = (r * r + i * i).sqrt();
+                    let re = ((mag + r) / 2.0).sqrt();
+                    let im = ((mag - r) / 2.0).sqrt();
+                    (re, if i >= 0.0 { im } else { -im })
+                })
+                .collect(),
+        )
+    }
+
+    /// Element-wise complex power: z^w = exp(w * log(z)).
+    #[must_use]
+    pub fn complex_pow(&self, exponent: &Self) -> Self {
+        let bases = self.to_complex128_vec();
+        let exps = exponent.to_complex128_vec();
+        let n = bases.len().min(exps.len());
+        Self::Complex128(
+            (0..n)
+                .map(|idx| {
+                    let (zr, zi) = bases[idx];
+                    let (wr, wi) = exps[idx];
+                    // z^w = exp(w * log(z))
+                    let mag = (zr * zr + zi * zi).sqrt();
+                    let ang = zi.atan2(zr);
+                    let log_r = mag.ln();
+                    let log_i = ang;
+                    // w * log(z)
+                    let prod_r = wr * log_r - wi * log_i;
+                    let prod_i = wr * log_i + wi * log_r;
+                    // exp(prod)
+                    let ea = prod_r.exp();
+                    (ea * prod_i.cos(), ea * prod_i.sin())
+                })
+                .collect(),
+        )
+    }
+
+    /// Element-wise complex sin: sin(a+bi) = sin(a)*cosh(b) + i*cos(a)*sinh(b).
+    #[must_use]
+    pub fn complex_sin(&self) -> Self {
+        let pairs = self.to_complex128_vec();
+        Self::Complex128(
+            pairs
+                .iter()
+                .map(|&(r, i)| (r.sin() * i.cosh(), r.cos() * i.sinh()))
+                .collect(),
+        )
+    }
+
+    /// Element-wise complex cos: cos(a+bi) = cos(a)*cosh(b) - i*sin(a)*sinh(b).
+    #[must_use]
+    pub fn complex_cos(&self) -> Self {
+        let pairs = self.to_complex128_vec();
+        Self::Complex128(
+            pairs
+                .iter()
+                .map(|&(r, i)| (r.cos() * i.cosh(), -(r.sin() * i.sinh())))
+                .collect(),
+        )
+    }
+
+    /// Element-wise complex sum reduction.
+    #[must_use]
+    pub fn complex_sum(&self) -> (f64, f64) {
+        let pairs = self.to_complex128_vec();
+        pairs.iter().fold((0.0, 0.0), |(sr, si), &(r, i)| {
+            (sr + r, si + i)
+        })
+    }
+
+    /// Element-wise complex product reduction.
+    #[must_use]
+    pub fn complex_prod(&self) -> (f64, f64) {
+        let pairs = self.to_complex128_vec();
+        pairs.iter().fold((1.0, 0.0), |(pr, pi), &(r, i)| {
+            (pr * r - pi * i, pr * i + pi * r)
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        ArrayStorage, DType, StorageError, can_cast, can_cast_lossless, common_type, finfo, iinfo,
-        min_scalar_type, promote, promote_for_mean_reduction, promote_for_sum_reduction,
-        result_type,
+        ArrayStorage, DType, StorageError, StructuredField, StructuredStorage, can_cast,
+        can_cast_lossless, common_type, finfo, iinfo, min_scalar_type, promote,
+        promote_for_mean_reduction, promote_for_sum_reduction, result_type,
     };
 
     fn all_numeric_dtypes() -> [DType; 13] {
@@ -1323,5 +1834,538 @@ mod tests {
         let storage = ArrayStorage::zeros(DType::F64, 0);
         assert!(storage.is_empty());
         assert_eq!(storage.len(), 0);
+    }
+
+    // ── Complex storage tests ──
+
+    #[test]
+    fn storage_from_complex128_vec() {
+        let s = ArrayStorage::from_complex128_vec(vec![(1.0, 2.0), (3.0, 4.0)]);
+        assert_eq!(s.dtype(), DType::Complex128);
+        assert_eq!(s.len(), 2);
+        assert!(s.is_complex());
+    }
+
+    #[test]
+    fn storage_from_complex64_vec() {
+        let s = ArrayStorage::from_complex64_vec(vec![(1.0_f32, 2.0), (3.0, 4.0)]);
+        assert_eq!(s.dtype(), DType::Complex64);
+        assert!(s.is_complex());
+    }
+
+    #[test]
+    fn storage_real_is_not_complex() {
+        let s = ArrayStorage::from_f64_vec(vec![1.0, 2.0]);
+        assert!(!s.is_complex());
+    }
+
+    #[test]
+    fn storage_get_set_complex128() {
+        let mut s = ArrayStorage::from_complex128_vec(vec![(1.0, 2.0), (3.0, 4.0)]);
+        assert_eq!(s.get_complex128(0).unwrap(), (1.0, 2.0));
+        assert_eq!(s.get_complex128(1).unwrap(), (3.0, 4.0));
+        s.set_complex128(0, 5.0, 6.0).unwrap();
+        assert_eq!(s.get_complex128(0).unwrap(), (5.0, 6.0));
+    }
+
+    #[test]
+    fn storage_get_complex128_from_real() {
+        let s = ArrayStorage::from_f64_vec(vec![7.0, 8.0]);
+        assert_eq!(s.get_complex128(0).unwrap(), (7.0, 0.0));
+        assert_eq!(s.get_complex128(1).unwrap(), (8.0, 0.0));
+    }
+
+    #[test]
+    fn storage_get_complex128_out_of_bounds() {
+        let s = ArrayStorage::from_complex128_vec(vec![(1.0, 2.0)]);
+        assert!(s.get_complex128(1).is_err());
+    }
+
+    #[test]
+    fn storage_to_complex128_vec() {
+        let s = ArrayStorage::from_complex128_vec(vec![(1.0, 2.0), (3.0, 4.0)]);
+        assert_eq!(s.to_complex128_vec(), vec![(1.0, 2.0), (3.0, 4.0)]);
+    }
+
+    #[test]
+    fn storage_to_complex128_vec_from_real() {
+        let s = ArrayStorage::from_f64_vec(vec![5.0, 6.0]);
+        assert_eq!(s.to_complex128_vec(), vec![(5.0, 0.0), (6.0, 0.0)]);
+    }
+
+    #[test]
+    fn storage_complex_add() {
+        let a = ArrayStorage::from_complex128_vec(vec![(1.0, 2.0), (3.0, 4.0)]);
+        let b = ArrayStorage::from_complex128_vec(vec![(5.0, 6.0), (7.0, 8.0)]);
+        let c = a.complex_add(&b).unwrap();
+        assert_eq!(c.to_complex128_vec(), vec![(6.0, 8.0), (10.0, 12.0)]);
+    }
+
+    #[test]
+    fn storage_complex_sub() {
+        let a = ArrayStorage::from_complex128_vec(vec![(5.0, 6.0), (7.0, 8.0)]);
+        let b = ArrayStorage::from_complex128_vec(vec![(1.0, 2.0), (3.0, 4.0)]);
+        let c = a.complex_sub(&b).unwrap();
+        assert_eq!(c.to_complex128_vec(), vec![(4.0, 4.0), (4.0, 4.0)]);
+    }
+
+    #[test]
+    fn storage_complex_mul() {
+        // (1+2i)*(3+4i) = (1*3-2*4) + (1*4+2*3)i = -5 + 10i
+        let a = ArrayStorage::from_complex128_vec(vec![(1.0, 2.0)]);
+        let b = ArrayStorage::from_complex128_vec(vec![(3.0, 4.0)]);
+        let c = a.complex_mul(&b).unwrap();
+        let v = c.to_complex128_vec();
+        assert!((v[0].0 - (-5.0)).abs() < 1e-10);
+        assert!((v[0].1 - 10.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn storage_complex_div() {
+        // (1+2i)/(3+4i) = (1*3+2*4)/(9+16) + (2*3-1*4)/(9+16)i = 11/25 + 2/25 i
+        let a = ArrayStorage::from_complex128_vec(vec![(1.0, 2.0)]);
+        let b = ArrayStorage::from_complex128_vec(vec![(3.0, 4.0)]);
+        let c = a.complex_div(&b).unwrap();
+        let v = c.to_complex128_vec();
+        assert!((v[0].0 - 11.0 / 25.0).abs() < 1e-10);
+        assert!((v[0].1 - 2.0 / 25.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn storage_complex_div_by_zero() {
+        let a = ArrayStorage::from_complex128_vec(vec![(1.0, 2.0)]);
+        let b = ArrayStorage::from_complex128_vec(vec![(0.0, 0.0)]);
+        let c = a.complex_div(&b).unwrap();
+        let v = c.to_complex128_vec();
+        assert!(v[0].0.is_nan());
+        assert!(v[0].1.is_nan());
+    }
+
+    #[test]
+    fn storage_complex_conjugate() {
+        let s = ArrayStorage::from_complex128_vec(vec![(1.0, 2.0), (3.0, -4.0)]);
+        let c = s.complex_conjugate();
+        assert_eq!(c.to_complex128_vec(), vec![(1.0, -2.0), (3.0, 4.0)]);
+    }
+
+    #[test]
+    fn storage_complex_conjugate_real_is_identity() {
+        let s = ArrayStorage::from_f64_vec(vec![5.0, 6.0]);
+        let c = s.complex_conjugate();
+        assert_eq!(c.to_f64_vec(), vec![5.0, 6.0]);
+    }
+
+    #[test]
+    fn storage_complex_abs() {
+        // |3+4i| = 5
+        let s = ArrayStorage::from_complex128_vec(vec![(3.0, 4.0), (0.0, 1.0)]);
+        let a = s.complex_abs();
+        let v = a.to_f64_vec();
+        assert!((v[0] - 5.0).abs() < 1e-10);
+        assert!((v[1] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn storage_complex_abs_real() {
+        let s = ArrayStorage::from_f64_vec(vec![-3.0, 4.0]);
+        let a = s.complex_abs();
+        let v = a.to_f64_vec();
+        assert!((v[0] - 3.0).abs() < 1e-10);
+        assert!((v[1] - 4.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn storage_complex_angle() {
+        // angle(1+1i) = pi/4
+        let s = ArrayStorage::from_complex128_vec(vec![(1.0, 1.0), (0.0, 1.0), (-1.0, 0.0)]);
+        let a = s.complex_angle();
+        let v = a.to_f64_vec();
+        assert!((v[0] - std::f64::consts::FRAC_PI_4).abs() < 1e-10);
+        assert!((v[1] - std::f64::consts::FRAC_PI_2).abs() < 1e-10);
+        assert!((v[2] - std::f64::consts::PI).abs() < 1e-10);
+    }
+
+    #[test]
+    fn storage_complex_angle_real() {
+        let s = ArrayStorage::from_f64_vec(vec![1.0, -1.0]);
+        let a = s.complex_angle();
+        let v = a.to_f64_vec();
+        assert!((v[0]).abs() < 1e-10); // positive → 0
+        assert!((v[1] - std::f64::consts::PI).abs() < 1e-10); // negative → pi
+    }
+
+    #[test]
+    fn storage_complex_real_imag() {
+        let s = ArrayStorage::from_complex128_vec(vec![(1.0, 2.0), (3.0, 4.0)]);
+        let re = s.complex_real();
+        let im = s.complex_imag();
+        assert_eq!(re.to_f64_vec(), vec![1.0, 3.0]);
+        assert_eq!(im.to_f64_vec(), vec![2.0, 4.0]);
+    }
+
+    #[test]
+    fn storage_complex_real_imag_from_real() {
+        let s = ArrayStorage::from_f64_vec(vec![5.0, 6.0]);
+        let re = s.complex_real();
+        let im = s.complex_imag();
+        assert_eq!(re.to_f64_vec(), vec![5.0, 6.0]);
+        assert_eq!(im.to_f64_vec(), vec![0.0, 0.0]);
+    }
+
+    #[test]
+    fn storage_complex_exp() {
+        // exp(0+0i) = 1+0i
+        let s = ArrayStorage::from_complex128_vec(vec![(0.0, 0.0)]);
+        let e = s.complex_exp();
+        let v = e.to_complex128_vec();
+        assert!((v[0].0 - 1.0).abs() < 1e-10);
+        assert!(v[0].1.abs() < 1e-10);
+    }
+
+    #[test]
+    fn storage_complex_exp_pure_imaginary() {
+        // exp(i*pi) = -1 + 0i (Euler's formula)
+        let s = ArrayStorage::from_complex128_vec(vec![(0.0, std::f64::consts::PI)]);
+        let e = s.complex_exp();
+        let v = e.to_complex128_vec();
+        assert!((v[0].0 - (-1.0)).abs() < 1e-10);
+        assert!(v[0].1.abs() < 1e-10);
+    }
+
+    #[test]
+    fn storage_complex_log() {
+        // log(1+0i) = 0+0i
+        let s = ArrayStorage::from_complex128_vec(vec![(1.0, 0.0)]);
+        let l = s.complex_log();
+        let v = l.to_complex128_vec();
+        assert!(v[0].0.abs() < 1e-10);
+        assert!(v[0].1.abs() < 1e-10);
+    }
+
+    #[test]
+    fn storage_complex_log_negative_real() {
+        // log(-1) = 0 + pi*i
+        let s = ArrayStorage::from_complex128_vec(vec![(-1.0, 0.0)]);
+        let l = s.complex_log();
+        let v = l.to_complex128_vec();
+        assert!(v[0].0.abs() < 1e-10);
+        assert!((v[0].1 - std::f64::consts::PI).abs() < 1e-10);
+    }
+
+    #[test]
+    fn storage_complex_sqrt() {
+        // sqrt(4+0i) = 2+0i
+        let s = ArrayStorage::from_complex128_vec(vec![(4.0, 0.0)]);
+        let r = s.complex_sqrt();
+        let v = r.to_complex128_vec();
+        assert!((v[0].0 - 2.0).abs() < 1e-10);
+        assert!(v[0].1.abs() < 1e-10);
+    }
+
+    #[test]
+    fn storage_complex_sqrt_negative() {
+        // sqrt(-1+0i) = 0+1i
+        let s = ArrayStorage::from_complex128_vec(vec![(-1.0, 0.0)]);
+        let r = s.complex_sqrt();
+        let v = r.to_complex128_vec();
+        assert!(v[0].0.abs() < 1e-10);
+        assert!((v[0].1 - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn storage_complex_pow() {
+        // (1+1i)^2 = 0+2i
+        let base = ArrayStorage::from_complex128_vec(vec![(1.0, 1.0)]);
+        let exp = ArrayStorage::from_complex128_vec(vec![(2.0, 0.0)]);
+        let r = base.complex_pow(&exp);
+        let v = r.to_complex128_vec();
+        assert!(v[0].0.abs() < 1e-10);
+        assert!((v[0].1 - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn storage_complex_sin() {
+        // sin(0+0i) = 0+0i
+        let s = ArrayStorage::from_complex128_vec(vec![(0.0, 0.0)]);
+        let r = s.complex_sin();
+        let v = r.to_complex128_vec();
+        assert!(v[0].0.abs() < 1e-10);
+        assert!(v[0].1.abs() < 1e-10);
+    }
+
+    #[test]
+    fn storage_complex_cos() {
+        // cos(0+0i) = 1+0i
+        let s = ArrayStorage::from_complex128_vec(vec![(0.0, 0.0)]);
+        let r = s.complex_cos();
+        let v = r.to_complex128_vec();
+        assert!((v[0].0 - 1.0).abs() < 1e-10);
+        assert!(v[0].1.abs() < 1e-10);
+    }
+
+    #[test]
+    fn storage_complex_sum() {
+        let s = ArrayStorage::from_complex128_vec(vec![(1.0, 2.0), (3.0, 4.0)]);
+        let (sr, si) = s.complex_sum();
+        assert!((sr - 4.0).abs() < 1e-10);
+        assert!((si - 6.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn storage_complex_prod() {
+        // (1+2i)*(3+4i) = -5+10i
+        let s = ArrayStorage::from_complex128_vec(vec![(1.0, 2.0), (3.0, 4.0)]);
+        let (pr, pi) = s.complex_prod();
+        assert!((pr - (-5.0)).abs() < 1e-10);
+        assert!((pi - 10.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn storage_complex_add_length_mismatch() {
+        let a = ArrayStorage::from_complex128_vec(vec![(1.0, 2.0)]);
+        let b = ArrayStorage::from_complex128_vec(vec![(1.0, 2.0), (3.0, 4.0)]);
+        assert!(a.complex_add(&b).is_err());
+    }
+
+    #[test]
+    fn storage_complex_mixed_types() {
+        // Add complex + real
+        let a = ArrayStorage::from_complex128_vec(vec![(1.0, 2.0)]);
+        let b = ArrayStorage::from_f64_vec(vec![3.0]);
+        let c = a.complex_add(&b).unwrap();
+        let v = c.to_complex128_vec();
+        assert!((v[0].0 - 4.0).abs() < 1e-10);
+        assert!((v[0].1 - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn storage_complex64_to_complex128_conversion() {
+        let s = ArrayStorage::from_complex64_vec(vec![(1.5_f32, 2.5)]);
+        let v = s.to_complex128_vec();
+        assert!((v[0].0 - 1.5).abs() < 1e-6);
+        assert!((v[0].1 - 2.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn storage_complex64_conjugate() {
+        let s = ArrayStorage::from_complex64_vec(vec![(1.0_f32, 2.0)]);
+        let c = s.complex_conjugate();
+        assert_eq!(c.dtype(), DType::Complex64);
+        let v = c.to_complex128_vec();
+        assert!((v[0].0 - 1.0).abs() < 1e-6);
+        assert!((v[0].1 - (-2.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn storage_complex_sin_pure_imaginary() {
+        // sin(i*y) = i*sinh(y); for y=1: sin(i) = i*sinh(1)
+        let s = ArrayStorage::from_complex128_vec(vec![(0.0, 1.0)]);
+        let r = s.complex_sin();
+        let v = r.to_complex128_vec();
+        assert!(v[0].0.abs() < 1e-10); // real part should be 0
+        assert!((v[0].1 - 1.0_f64.sinh()).abs() < 1e-10); // imag part = sinh(1)
+    }
+
+    #[test]
+    fn storage_complex_exp_log_roundtrip() {
+        let s = ArrayStorage::from_complex128_vec(vec![(2.0, 3.0)]);
+        let e = s.complex_exp();
+        let l = e.complex_log();
+        let v = l.to_complex128_vec();
+        assert!((v[0].0 - 2.0).abs() < 1e-10);
+        assert!((v[0].1 - 3.0).abs() < 1e-10);
+    }
+
+    // ── Structured storage tests ──
+
+    #[test]
+    fn structured_storage_empty() {
+        let s = StructuredStorage::empty();
+        assert!(s.is_empty());
+        assert_eq!(s.len(), 0);
+        assert_eq!(s.num_fields(), 0);
+        assert!(s.field_names().is_empty());
+    }
+
+    #[test]
+    fn structured_storage_new_basic() {
+        let fields = vec![
+            StructuredField { name: "x".into(), dtype: DType::F64, offset: 0 },
+            StructuredField { name: "y".into(), dtype: DType::I32, offset: 8 },
+        ];
+        let columns = vec![
+            ArrayStorage::F64(vec![1.0, 2.0, 3.0]),
+            ArrayStorage::I32(vec![10, 20, 30]),
+        ];
+        let s = StructuredStorage::new(fields, columns).unwrap();
+        assert_eq!(s.len(), 3);
+        assert_eq!(s.num_fields(), 2);
+        assert_eq!(s.field_names(), vec!["x", "y"]);
+    }
+
+    #[test]
+    fn structured_storage_field_access() {
+        let fields = vec![
+            StructuredField { name: "name".into(), dtype: DType::Str, offset: 0 },
+            StructuredField { name: "value".into(), dtype: DType::F64, offset: 0 },
+        ];
+        let columns = vec![
+            ArrayStorage::String(vec!["alice".into(), "bob".into()]),
+            ArrayStorage::F64(vec![42.0, 99.0]),
+        ];
+        let s = StructuredStorage::new(fields, columns).unwrap();
+        let name_col = s.get_field("name").unwrap();
+        assert_eq!(name_col.dtype(), DType::Str);
+        assert_eq!(name_col.len(), 2);
+        let val_col = s.get_field("value").unwrap();
+        assert_eq!(val_col.get_f64(0).unwrap(), 42.0);
+        assert_eq!(val_col.get_f64(1).unwrap(), 99.0);
+    }
+
+    #[test]
+    fn structured_storage_field_index() {
+        let fields = vec![
+            StructuredField { name: "a".into(), dtype: DType::F64, offset: 0 },
+            StructuredField { name: "b".into(), dtype: DType::I64, offset: 8 },
+        ];
+        let columns = vec![
+            ArrayStorage::F64(vec![1.0]),
+            ArrayStorage::I64(vec![2]),
+        ];
+        let s = StructuredStorage::new(fields, columns).unwrap();
+        assert_eq!(s.field_index("a"), Some(0));
+        assert_eq!(s.field_index("b"), Some(1));
+        assert_eq!(s.field_index("c"), None);
+    }
+
+    #[test]
+    fn structured_storage_field_by_index() {
+        let fields = vec![
+            StructuredField { name: "x".into(), dtype: DType::F64, offset: 0 },
+        ];
+        let columns = vec![ArrayStorage::F64(vec![7.0, 8.0])];
+        let s = StructuredStorage::new(fields, columns).unwrap();
+        let col = s.get_field_by_index(0).unwrap();
+        assert_eq!(col.get_f64(0).unwrap(), 7.0);
+        assert!(s.get_field_by_index(1).is_none());
+    }
+
+    #[test]
+    fn structured_storage_mismatched_column_lengths() {
+        let fields = vec![
+            StructuredField { name: "a".into(), dtype: DType::F64, offset: 0 },
+            StructuredField { name: "b".into(), dtype: DType::F64, offset: 8 },
+        ];
+        let columns = vec![
+            ArrayStorage::F64(vec![1.0, 2.0]),
+            ArrayStorage::F64(vec![3.0]), // wrong length
+        ];
+        assert!(StructuredStorage::new(fields, columns).is_err());
+    }
+
+    #[test]
+    fn structured_storage_mismatched_field_count() {
+        let fields = vec![
+            StructuredField { name: "a".into(), dtype: DType::F64, offset: 0 },
+        ];
+        let columns = vec![
+            ArrayStorage::F64(vec![1.0]),
+            ArrayStorage::F64(vec![2.0]),
+        ];
+        assert!(StructuredStorage::new(fields, columns).is_err());
+    }
+
+    #[test]
+    fn structured_storage_dtype_mismatch() {
+        let fields = vec![
+            StructuredField { name: "x".into(), dtype: DType::F64, offset: 0 },
+            StructuredField { name: "y".into(), dtype: DType::I64, offset: 8 },
+        ];
+        let columns = vec![
+            ArrayStorage::F64(vec![1.0]),
+            ArrayStorage::F64(vec![2.0]), // expected I64
+        ];
+        assert!(StructuredStorage::new(fields, columns).is_err());
+    }
+
+    #[test]
+    fn structured_storage_record_size() {
+        let fields = vec![
+            StructuredField { name: "x".into(), dtype: DType::F64, offset: 0 },
+            StructuredField { name: "y".into(), dtype: DType::I32, offset: 8 },
+            StructuredField { name: "z".into(), dtype: DType::Bool, offset: 12 },
+        ];
+        let columns = vec![
+            ArrayStorage::F64(vec![1.0]),
+            ArrayStorage::I32(vec![2]),
+            ArrayStorage::Bool(vec![true]),
+        ];
+        let s = StructuredStorage::new(fields, columns).unwrap();
+        assert_eq!(s.record_size(), 8 + 4 + 1); // f64 + i32 + bool = 13
+    }
+
+    #[test]
+    fn structured_storage_dtype_str() {
+        let fields = vec![
+            StructuredField { name: "x".into(), dtype: DType::F64, offset: 0 },
+            StructuredField { name: "y".into(), dtype: DType::I32, offset: 8 },
+        ];
+        let columns = vec![
+            ArrayStorage::F64(vec![1.0]),
+            ArrayStorage::I32(vec![2]),
+        ];
+        let s = StructuredStorage::new(fields, columns).unwrap();
+        assert_eq!(s.dtype_str(), "[('x', 'f64'), ('y', 'i32')]");
+    }
+
+    #[test]
+    fn structured_storage_as_array_storage() {
+        let fields = vec![
+            StructuredField { name: "v".into(), dtype: DType::F64, offset: 0 },
+        ];
+        let columns = vec![ArrayStorage::F64(vec![1.0, 2.0])];
+        let ss = StructuredStorage::new(fields, columns).unwrap();
+        let storage = ArrayStorage::Structured(ss);
+        assert_eq!(storage.dtype(), DType::Structured);
+        assert_eq!(storage.len(), 2);
+        // get_f64 returns NaN for structured
+        assert!(storage.get_f64(0).unwrap().is_nan());
+    }
+
+    #[test]
+    fn structured_dtype_name() {
+        assert_eq!(DType::Structured.name(), "void");
+    }
+
+    #[test]
+    fn structured_dtype_item_size() {
+        assert_eq!(DType::Structured.item_size(), 0);
+    }
+
+    #[test]
+    fn structured_storage_zeros() {
+        let s = ArrayStorage::zeros(DType::Structured, 0);
+        assert_eq!(s.dtype(), DType::Structured);
+        assert!(s.is_empty());
+    }
+
+    #[test]
+    fn structured_storage_mixed_types() {
+        let fields = vec![
+            StructuredField { name: "id".into(), dtype: DType::U32, offset: 0 },
+            StructuredField { name: "score".into(), dtype: DType::F64, offset: 4 },
+            StructuredField { name: "label".into(), dtype: DType::Str, offset: 12 },
+        ];
+        let columns = vec![
+            ArrayStorage::U32(vec![1, 2, 3]),
+            ArrayStorage::F64(vec![0.5, 0.8, 0.3]),
+            ArrayStorage::String(vec!["cat".into(), "dog".into(), "fish".into()]),
+        ];
+        let s = StructuredStorage::new(fields, columns).unwrap();
+        assert_eq!(s.len(), 3);
+        let ids = s.get_field("id").unwrap();
+        assert_eq!(ids.get_f64(2).unwrap(), 3.0);
+        let labels = s.get_field("label").unwrap();
+        assert_eq!(labels.dtype(), DType::Str);
     }
 }

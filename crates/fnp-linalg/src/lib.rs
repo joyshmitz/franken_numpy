@@ -1082,11 +1082,14 @@ pub fn qr_mxn(a: &[f64], m: usize, n: usize) -> Result<(Vec<f64>, Vec<f64>), Lin
     Ok((q, r))
 }
 
-/// SVD of an m×n rectangular matrix.
+/// SVD of an m×n rectangular matrix (singular values only).
 ///
 /// Input `a` is row-major with shape (m, n). Returns singular values in
-/// descending order. Uses the approach: compute A^T*A (n×n), find its
-/// eigenvalues via QR iteration, then take square roots.
+/// descending order.
+///
+/// Uses the Golub-Kahan bidiagonalization approach:
+/// 1. Bidiagonalize A using Householder reflections
+/// 2. Apply implicit QR (Golub-Reinsch) to find singular values
 ///
 /// For the full decomposition (U, S, V^T), use `svd_mxn_full`.
 pub fn svd_mxn(a: &[f64], m: usize, n: usize) -> Result<Vec<f64>, LinAlgError> {
@@ -1101,46 +1104,7 @@ pub fn svd_mxn(a: &[f64], m: usize, n: usize) -> Result<Vec<f64>, LinAlgError> {
         ));
     }
 
-    // Compute A^T * A (n×n)
-    let mut ata = vec![0.0; n * n];
-    for i in 0..n {
-        for j in 0..n {
-            let mut sum = 0.0;
-            for k in 0..m {
-                sum += a[k * n + i] * a[k * n + j];
-            }
-            ata[i * n + j] = sum;
-        }
-    }
-
-    // QR iteration on A^T A
-    let mut mat = ata;
-    for _ in 0..300 {
-        let (q, r) = qr_nxn(&mat, n)?;
-        let mut next = vec![0.0; n * n];
-        for i in 0..n {
-            for j in 0..n {
-                let mut sum = 0.0;
-                for k in 0..n {
-                    sum += r[i * n + k] * q[k * n + j];
-                }
-                next[i * n + j] = sum;
-            }
-        }
-        mat = next;
-    }
-
-    let k = m.min(n);
-    let mut sigmas: Vec<f64> = (0..k)
-        .map(|i| {
-            if i < n {
-                mat[i * n + i].max(0.0).sqrt()
-            } else {
-                0.0
-            }
-        })
-        .collect();
-    sigmas.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    let (_, sigmas, _) = svd_bidiag_full(a, m, n)?;
     Ok(sigmas)
 }
 
@@ -1150,8 +1114,10 @@ pub fn svd_mxn(a: &[f64], m: usize, n: usize) -> Result<Vec<f64>, LinAlgError> {
 /// - S: min(m,n) singular values in descending order
 /// - Vt: n×n orthogonal matrix (row-major, n*n elements)
 ///
-/// Uses the approach: QR-iterate on A^T*A to get V and sigma^2,
-/// then recover U = A*V*diag(1/sigma).
+/// Uses Golub-Kahan bidiagonalization + implicit QR (Golub-Reinsch):
+/// 1. Householder bidiagonalization: A = U1 * B * V1^T
+/// 2. Implicit QR on bidiagonal B to diagonalize: B = U2 * S * V2^T
+/// 3. Final: U = U1*U2, Vt = V2^T * V1^T
 pub fn svd_mxn_full(a: &[f64], m: usize, n: usize) -> Result<SvdFullResult, LinAlgError> {
     if a.len() != m * n || m == 0 || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
@@ -1164,114 +1130,283 @@ pub fn svd_mxn_full(a: &[f64], m: usize, n: usize) -> Result<SvdFullResult, LinA
         ));
     }
 
+    svd_bidiag_full(a, m, n)
+}
+
+// ── Golub-Kahan Bidiagonalization SVD ────────────────────────────────────
+
+/// Compute the smaller singular value of a 2×2 upper triangular matrix
+/// `[[f, g], [0, h]]`. Used for the Wilkinson shift in implicit QR.
+fn svd_shift_2x2(f: f64, g: f64, h: f64) -> f64 {
+    let fh = f * h;
+    if fh.abs() == 0.0 {
+        return 0.0;
+    }
+    let s = f * f + g * g + h * h;
+    let disc = (s * s - 4.0 * fh * fh).max(0.0).sqrt();
+    // σ_min² = 2·f²h² / (s + √(s²−4f²h²))  [numerically stable form]
+    let sigma_min_sq = 2.0 * fh * fh / (s + disc);
+    sigma_min_sq.sqrt()
+}
+
+/// Core SVD implementation using Golub-Kahan bidiagonalization + Golub-Reinsch QR.
+///
+/// Returns (U, sigmas, Vt) where U is m×m, sigmas has min(m,n) entries, Vt is n×n.
+fn svd_bidiag_full(a: &[f64], m: usize, n: usize) -> Result<SvdFullResult, LinAlgError> {
     let k = m.min(n);
 
-    // Compute A^T * A (n×n)
-    let mut ata = vec![0.0; n * n];
-    for i in 0..n {
-        for j in 0..n {
-            let mut sum = 0.0;
-            for row in 0..m {
-                sum += a[row * n + i] * a[row * n + j];
-            }
-            ata[i * n + j] = sum;
-        }
-    }
-
-    // QR iteration on A^T A to get eigenvalues and eigenvectors (V)
-    let mut mat = ata;
-    let mut v_accum = vec![0.0; n * n];
-    for i in 0..n {
-        v_accum[i * n + i] = 1.0;
-    }
-    for _ in 0..300 {
-        let (q, r) = qr_nxn(&mat, n)?;
-        // mat = R * Q
-        let mut next = vec![0.0; n * n];
-        for i in 0..n {
+    // Handle m < n by working with A^T and swapping U/V
+    if m < n {
+        // A^T is n×m row-major
+        let mut at = vec![0.0; n * m];
+        for i in 0..m {
             for j in 0..n {
-                let mut sum = 0.0;
-                for kk in 0..n {
-                    sum += r[i * n + kk] * q[kk * n + j];
-                }
-                next[i * n + j] = sum;
+                at[j * m + i] = a[i * n + j];
             }
         }
-        mat = next;
-        // Accumulate V = V * Q
-        let mut new_v = vec![0.0; n * n];
-        for i in 0..n {
-            for j in 0..n {
-                let mut sum = 0.0;
-                for kk in 0..n {
-                    sum += v_accum[i * n + kk] * q[kk * n + j];
-                }
-                new_v[i * n + j] = sum;
-            }
-        }
-        v_accum = new_v;
+        let (u_t, sigmas, vt_t) = svd_bidiag_full(&at, n, m)?;
+        // SVD(A^T) = U_t * S * Vt_t → SVD(A) = Vt_t^T * S * U_t^T
+        // So U = Vt_t^T (m×m), Vt = U_t^T (n×n)
+        let u = transpose_mat(&vt_t, m, m);
+        let vt = transpose_mat(&u_t, n, n);
+        return Ok((u, sigmas, vt));
     }
 
-    // Extract singular values and sort by descending order
-    let mut sigma_sq: Vec<(f64, usize)> = (0..n).map(|i| (mat[i * n + i].max(0.0), i)).collect();
-    sigma_sq.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    // Now m >= n. Bidiagonalize A into U1 * B * V1^T
+    // B is n×n upper bidiagonal: diagonal d[0..n], superdiagonal e[0..n-1]
+    let mut work = a.to_vec(); // m×n working copy
+    let mut d = vec![0.0; n]; // diagonal
+    let mut e = vec![0.0; n.saturating_sub(1)]; // superdiagonal
 
-    let sigmas: Vec<f64> = sigma_sq.iter().take(k).map(|(s, _)| s.sqrt()).collect();
-    let order: Vec<usize> = sigma_sq.iter().map(|(_, idx)| *idx).collect();
-
-    // Reorder V columns by sorted singular values -> Vt (n×n)
-    let mut vt = vec![0.0; n * n];
-    for (new_col, &old_col) in order.iter().enumerate() {
-        for row in 0..n {
-            vt[new_col * n + row] = v_accum[row * n + old_col];
-        }
-    }
-
-    // Recover U: for each singular value sigma_i > 0, u_i = A * v_i / sigma_i
-    // Start with identity for U
+    // U1 = product of left Householder reflections (m×m)
     let mut u = vec![0.0; m * m];
     for i in 0..m {
         u[i * m + i] = 1.0;
     }
+    // V1 = product of right Householder reflections (n×n)
+    let mut vt = vec![0.0; n * n];
+    for i in 0..n {
+        vt[i * n + i] = 1.0;
+    }
 
-    for j in 0..k {
-        if sigmas[j] > 1e-15 {
-            // u_j = A * v_j / sigma_j (v_j is row j of Vt, i.e. column j of V)
-            for i in 0..m {
-                let mut sum = 0.0;
-                for col in 0..n {
-                    sum += a[i * n + col] * vt[j * n + col];
+    for j in 0..n {
+        // Left Householder: zero out column j below diagonal
+        let col_norm = {
+            let mut s = 0.0;
+            for i in j..m {
+                s += work[i * n + j] * work[i * n + j];
+            }
+            s.sqrt()
+        };
+        if col_norm > 0.0 {
+            let sign = if work[j * n + j] >= 0.0 { 1.0 } else { -1.0 };
+            let mut v_house = vec![0.0; m];
+            for i in j..m {
+                v_house[i] = work[i * n + j];
+            }
+            v_house[j] += sign * col_norm;
+            let v_norm_sq: f64 = v_house[j..].iter().map(|x| x * x).sum();
+            if v_norm_sq > 0.0 {
+                let scale = 2.0 / v_norm_sq;
+                // Apply to work (left): work = (I - scale*v*v^T) * work
+                for col in j..n {
+                    let dot: f64 = (j..m).map(|i| v_house[i] * work[i * n + col]).sum();
+                    let f = scale * dot;
+                    for i in j..m {
+                        work[i * n + col] -= f * v_house[i];
+                    }
                 }
-                u[i * m + j] = sum / sigmas[j];
+                // Accumulate into U: U = U * (I - scale*v*v^T)
+                for row in 0..m {
+                    let dot: f64 = (j..m).map(|i| u[row * m + i] * v_house[i]).sum();
+                    let f = scale * dot;
+                    for i in j..m {
+                        u[row * m + i] -= f * v_house[i];
+                    }
+                }
+            }
+        }
+        d[j] = work[j * n + j];
+
+        // Right Householder: zero out row j to the right of superdiagonal
+        if j + 2 <= n {
+            let row_norm = {
+                let mut s = 0.0;
+                for col in (j + 1)..n {
+                    s += work[j * n + col] * work[j * n + col];
+                }
+                s.sqrt()
+            };
+            if row_norm > 0.0 {
+                let sign = if work[j * n + j + 1] >= 0.0 {
+                    1.0
+                } else {
+                    -1.0
+                };
+                let mut w_house = vec![0.0; n];
+                for col in (j + 1)..n {
+                    w_house[col] = work[j * n + col];
+                }
+                w_house[j + 1] += sign * row_norm;
+                let w_norm_sq: f64 = w_house[(j + 1)..].iter().map(|x| x * x).sum();
+                if w_norm_sq > 0.0 {
+                    let scale = 2.0 / w_norm_sq;
+                    // Apply to work (right): work = work * (I - scale*w*w^T)
+                    for row in j..m {
+                        let dot: f64 =
+                            ((j + 1)..n).map(|col| work[row * n + col] * w_house[col]).sum();
+                        let f = scale * dot;
+                        for col in (j + 1)..n {
+                            work[row * n + col] -= f * w_house[col];
+                        }
+                    }
+                    // Accumulate into Vt: Vt = (I - scale*w*w^T) * Vt
+                    for col in 0..n {
+                        let dot: f64 =
+                            ((j + 1)..n).map(|row| w_house[row] * vt[row * n + col]).sum();
+                        let f = scale * dot;
+                        for row in (j + 1)..n {
+                            vt[row * n + col] -= f * w_house[row];
+                        }
+                    }
+                }
+            }
+            if j < n - 1 {
+                e[j] = work[j * n + j + 1];
+            }
+        } else if j < n - 1 {
+            e[j] = work[j * n + j + 1];
+        }
+    }
+
+    // Phase 2: Golub-Reinsch implicit QR iteration directly on the bidiagonal.
+    // Works with (d, e) without forming B^T*B, avoiding condition-number squaring.
+    // Left rotations accumulate into U (column operations), right into Vt (row operations).
+    let eps_mach = f64::EPSILON;
+    let max_iter = 100 * n * n;
+
+    for _iter in 0..max_iter {
+        // Deflation: set small superdiagonal elements to zero
+        for i in 0..e.len() {
+            if e[i].abs() <= eps_mach * (d[i].abs() + d[i + 1].abs()) {
+                e[i] = 0.0;
+            }
+        }
+
+        // Find the largest unreduced block [lo..=hi]
+        let mut hi = n - 1;
+        while hi > 0 && e[hi - 1] == 0.0 {
+            hi -= 1;
+        }
+        if hi == 0 {
+            break; // Fully converged
+        }
+        let mut lo = hi - 1;
+        while lo > 0 && e[lo - 1] != 0.0 {
+            lo -= 1;
+        }
+
+        // Compute Wilkinson shift: smallest singular value of trailing 2×2 of B
+        // [[d[hi-1], e[hi-1]], [0, d[hi]]]
+        let shift = svd_shift_2x2(d[hi - 1], e[hi - 1], d[hi]);
+
+        // Initialize bulge chase: f = (d[lo]²-shift²)/d[lo], g = e[lo]
+        let (mut f, mut g) = if d[lo].abs() > 0.0 {
+            let sign_d = if d[lo] >= 0.0 { 1.0 } else { -1.0 };
+            (
+                (d[lo].abs() - shift) * (sign_d + shift / d[lo]),
+                e[lo],
+            )
+        } else {
+            (0.0, e[lo])
+        };
+
+        // Bulge chase (LAPACK dbdsqr pattern)
+        for kk in lo..hi {
+            // Right Givens rotation: zero g in [f, g]
+            let r = f.hypot(g);
+            let (cs, sn) = if r > 0.0 { (f / r, g / r) } else { (1.0, 0.0) };
+
+            if kk > lo {
+                e[kk - 1] = r;
+            }
+
+            f = cs * d[kk] + sn * e[kk];
+            e[kk] = cs * e[kk] - sn * d[kk];
+            g = sn * d[kk + 1];
+            d[kk + 1] *= cs;
+
+            // Accumulate right rotation into Vt (rows kk, kk+1)
+            for col in 0..n {
+                let t1 = vt[kk * n + col];
+                let t2 = vt[(kk + 1) * n + col];
+                vt[kk * n + col] = cs * t1 + sn * t2;
+                vt[(kk + 1) * n + col] = -sn * t1 + cs * t2;
+            }
+
+            // Left Givens rotation: zero g in [f, g]
+            let r = f.hypot(g);
+            let (cs, sn) = if r > 0.0 { (f / r, g / r) } else { (1.0, 0.0) };
+
+            d[kk] = r;
+            f = cs * e[kk] + sn * d[kk + 1];
+            d[kk + 1] = cs * d[kk + 1] - sn * e[kk];
+
+            if kk + 1 < hi {
+                g = sn * e[kk + 1];
+                e[kk + 1] *= cs;
+            }
+
+            // Accumulate left rotation into U (columns kk, kk+1)
+            for row in 0..m {
+                let t1 = u[row * m + kk];
+                let t2 = u[row * m + kk + 1];
+                u[row * m + kk] = cs * t1 + sn * t2;
+                u[row * m + kk + 1] = -sn * t1 + cs * t2;
+            }
+        }
+        e[hi - 1] = f;
+    }
+
+    // Make all singular values non-negative
+    for j in 0..n {
+        if d[j] < 0.0 {
+            d[j] = -d[j];
+            for col in 0..n {
+                vt[j * n + col] = -vt[j * n + col];
             }
         }
     }
 
-    // Orthogonalize remaining columns of U via Gram-Schmidt if m > k
-    for j in k..m {
-        // u_j is already e_j from identity; orthogonalize against previous columns
-        for prev in 0..j {
-            let mut dot = 0.0;
-            for i in 0..m {
-                dot += u[i * m + j] * u[i * m + prev];
-            }
-            for i in 0..m {
-                u[i * m + j] -= dot * u[i * m + prev];
-            }
+    // Sort descending by singular value and reorder U columns / Vt rows
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&a, &b| d[b].partial_cmp(&d[a]).unwrap_or(std::cmp::Ordering::Equal));
+
+    let sigmas: Vec<f64> = order.iter().take(k).map(|&i| d[i]).collect();
+
+    let u_old = u.clone();
+    let vt_old = vt.clone();
+    for (new_idx, &old_idx) in order.iter().enumerate() {
+        for row in 0..m {
+            u[row * m + new_idx] = u_old[row * m + old_idx];
         }
-        // Normalize
-        let norm: f64 = (0..m)
-            .map(|i| u[i * m + j] * u[i * m + j])
-            .sum::<f64>()
-            .sqrt();
-        if norm > 1e-15 {
-            for i in 0..m {
-                u[i * m + j] /= norm;
-            }
+        for col in 0..n {
+            vt[new_idx * n + col] = vt_old[old_idx * n + col];
         }
     }
 
     Ok((u, sigmas, vt))
+}
+
+/// Transpose an m×n matrix (row-major) to n×m.
+fn transpose_mat(a: &[f64], m: usize, n: usize) -> Vec<f64> {
+    let mut t = vec![0.0; m * n];
+    for i in 0..m {
+        for j in 0..n {
+            t[j * m + i] = a[i * n + j];
+        }
+    }
+    t
 }
 
 /// Frobenius norm of an NxN matrix (flat row-major).
@@ -1463,49 +1598,361 @@ pub fn matrix_rank_nxn(a: &[f64], n: usize, rcond: f64) -> Result<usize, LinAlgE
 /// Compute singular values of an NxN matrix via QR iteration on A^T A.
 /// Returns singular values in descending order.
 pub fn svd_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
-    if a.len() != n * n || n == 0 {
-        return Err(LinAlgError::ShapeContractViolation(
-            "svd_nxn: input must be n*n with n > 0",
-        ));
-    }
-    if a.iter().any(|v| !v.is_finite()) {
-        return Err(LinAlgError::NormDetRankPolicyViolation(
-            "matrix entries must be finite for SVD",
-        ));
-    }
+    svd_mxn(a, n, n)
+}
 
-    // Compute A^T A
-    let mut ata = vec![0.0; n * n];
+// ── Eigenvalue infrastructure ─────────────────────────────────────────
+
+/// Reduce symmetric n×n matrix to tridiagonal form via Householder similarity
+/// transformations.  Returns `(diagonal, off_diagonal, Q)` where `A = Q T Q^T`,
+/// `T` has diagonal `d` and off-diagonal `e`, and `Q` is orthogonal (n×n row-major).
+fn tridiag_reduce(a: &[f64], n: usize) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    let mut work = a.to_vec();
+    let mut q = vec![0.0; n * n];
     for i in 0..n {
-        for j in 0..n {
-            let mut sum = 0.0;
-            for k in 0..n {
-                sum += a[k * n + i] * a[k * n + j];
+        q[i * n + i] = 1.0;
+    }
+
+    for j in 0..n.saturating_sub(2) {
+        // Householder to zero column j below row j+1
+        let col_norm = {
+            let mut s = 0.0;
+            for i in (j + 1)..n {
+                s += work[i * n + j] * work[i * n + j];
             }
-            ata[i * n + j] = sum;
+            s.sqrt()
+        };
+        if col_norm < f64::EPSILON * work[j * n + j].abs().max(1.0) {
+            continue;
+        }
+
+        let sign = if work[(j + 1) * n + j] >= 0.0 {
+            1.0
+        } else {
+            -1.0
+        };
+        let mut v = vec![0.0; n];
+        for i in (j + 1)..n {
+            v[i] = work[i * n + j];
+        }
+        v[j + 1] += sign * col_norm;
+
+        let v_norm_sq: f64 = v[(j + 1)..].iter().map(|x| x * x).sum();
+        if v_norm_sq == 0.0 {
+            continue;
+        }
+        let scale = 2.0 / v_norm_sq;
+
+        // Similarity: work = H * work * H  where H = I - scale·v·v^T
+        // Left: work = H * work
+        for col in 0..n {
+            let dot: f64 = ((j + 1)..n).map(|i| v[i] * work[i * n + col]).sum();
+            let f = scale * dot;
+            for i in (j + 1)..n {
+                work[i * n + col] -= f * v[i];
+            }
+        }
+        // Right: work = work * H
+        for row in 0..n {
+            let dot: f64 = ((j + 1)..n).map(|i| v[i] * work[row * n + i]).sum();
+            let f = scale * dot;
+            for i in (j + 1)..n {
+                work[row * n + i] -= f * v[i];
+            }
+        }
+        // Accumulate: Q = Q * H
+        for row in 0..n {
+            let dot: f64 = ((j + 1)..n).map(|i| v[i] * q[row * n + i]).sum();
+            let f = scale * dot;
+            for i in (j + 1)..n {
+                q[row * n + i] -= f * v[i];
+            }
         }
     }
 
-    // QR iteration on A^T A to find eigenvalues (sigma^2)
-    let mut m = ata;
-    for _ in 0..300 {
-        let (q, r) = qr_nxn(&m, n)?;
-        let mut next = vec![0.0; n * n];
-        for i in 0..n {
-            for j in 0..n {
-                let mut sum = 0.0;
-                for k in 0..n {
-                    sum += r[i * n + k] * q[k * n + j];
+    let d: Vec<f64> = (0..n).map(|i| work[i * n + i]).collect();
+    let e: Vec<f64> = (0..n.saturating_sub(1))
+        .map(|i| work[i * n + (i + 1)])
+        .collect();
+    (d, e, q)
+}
+
+/// Implicit QR iteration on symmetric tridiagonal `(d, e)` to find eigenvalues.
+/// Modifies `d` and `e` in-place; eigenvalues end up on `d`.  If `q` is `Some`,
+/// accumulates the rotation product into the n×n matrix (for eigenvectors).
+fn tridiag_eig_qr(d: &mut [f64], e: &mut [f64], mut q: Option<&mut [f64]>, n: usize) {
+    let eps = f64::EPSILON;
+    let max_iter = 60 * n * n;
+
+    for _iter in 0..max_iter {
+        // Deflation: set small off-diagonals to zero
+        for i in 0..e.len() {
+            if e[i].abs() <= eps * (d[i].abs() + d[i + 1].abs()) {
+                e[i] = 0.0;
+            }
+        }
+
+        // Find largest unreduced block [lo..=hi]
+        let mut hi = n - 1;
+        while hi > 0 && e[hi - 1] == 0.0 {
+            hi -= 1;
+        }
+        if hi == 0 {
+            break; // Fully converged
+        }
+        let mut lo = hi - 1;
+        while lo > 0 && e[lo - 1] != 0.0 {
+            lo -= 1;
+        }
+
+        // Wilkinson shift from trailing 2×2  [[d[hi-1], e[hi-1]], [e[hi-1], d[hi]]]
+        let delta = (d[hi - 1] - d[hi]) / 2.0;
+        let shift = if delta == 0.0 {
+            d[hi] - e[hi - 1].abs()
+        } else {
+            let sign = if delta >= 0.0 { 1.0 } else { -1.0 };
+            d[hi] - e[hi - 1] * e[hi - 1]
+                / (delta + sign * (delta * delta + e[hi - 1] * e[hi - 1]).sqrt())
+        };
+
+        // Implicit QR step via Givens similarity chase on symmetric tridiagonal.
+        // Each Givens G_k on (k, k+1) is applied as G^T * T * G (similarity),
+        // which preserves eigenvalues and the trace.
+        let mut x = d[lo] - shift;
+        let mut z = e[lo];
+        let mut bulge = 0.0;
+
+        for kk in lo..hi {
+            // Givens to zero z in [x, z]
+            let r = x.hypot(z);
+            let (c, s) = if r > 0.0 { (x / r, z / r) } else { (1.0, 0.0) };
+
+            if kk > lo {
+                e[kk - 1] = r; // was the previous off-diagonal / bulge resultant
+            }
+
+            // Similarity on 2×2 block (kk, kk+1): T := G^T T G
+            let dk = d[kk];
+            let dk1 = d[kk + 1];
+            let ek = e[kk];
+
+            d[kk] = c * c * dk + 2.0 * c * s * ek + s * s * dk1;
+            d[kk + 1] = s * s * dk - 2.0 * c * s * ek + c * c * dk1;
+            e[kk] = c * s * (dk1 - dk) + (c * c - s * s) * ek;
+
+            if kk + 1 < hi {
+                bulge = s * e[kk + 1];
+                e[kk + 1] *= c;
+            }
+
+            // Next iteration: chase the bulge
+            x = e[kk];
+            z = bulge;
+
+            // Accumulate rotation into Q (columns kk, kk+1)
+            if let Some(ref mut q) = q {
+                for row in 0..n {
+                    let t1 = q[row * n + kk];
+                    let t2 = q[row * n + kk + 1];
+                    q[row * n + kk] = c * t1 + s * t2;
+                    q[row * n + kk + 1] = -s * t1 + c * t2;
                 }
-                next[i * n + j] = sum;
             }
         }
-        m = next;
+    }
+}
+
+/// Reduce general n×n matrix to upper Hessenberg form via Householder similarity.
+/// Returns `(H, Q)` where `A = Q H Q^T`, `H` is upper Hessenberg (n×n row-major).
+fn hessenberg_reduce(a: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
+    let mut h = a.to_vec();
+    let mut q = vec![0.0; n * n];
+    for i in 0..n {
+        q[i * n + i] = 1.0;
     }
 
-    let mut sigmas: Vec<f64> = (0..n).map(|i| m[i * n + i].max(0.0).sqrt()).collect();
-    sigmas.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-    Ok(sigmas)
+    for j in 0..n.saturating_sub(2) {
+        // Householder to zero column j below row j+1 (entries j+2..n)
+        let col_norm = {
+            let mut s = 0.0;
+            for i in (j + 1)..n {
+                s += h[i * n + j] * h[i * n + j];
+            }
+            s.sqrt()
+        };
+        if col_norm < f64::EPSILON {
+            continue;
+        }
+
+        let sign = if h[(j + 1) * n + j] >= 0.0 {
+            1.0
+        } else {
+            -1.0
+        };
+        let mut v = vec![0.0; n];
+        for i in (j + 1)..n {
+            v[i] = h[i * n + j];
+        }
+        v[j + 1] += sign * col_norm;
+
+        let v_norm_sq: f64 = v[(j + 1)..].iter().map(|x| x * x).sum();
+        if v_norm_sq == 0.0 {
+            continue;
+        }
+        let scale = 2.0 / v_norm_sq;
+
+        // Left: H = P * H
+        for col in 0..n {
+            let dot: f64 = ((j + 1)..n).map(|i| v[i] * h[i * n + col]).sum();
+            let f = scale * dot;
+            for i in (j + 1)..n {
+                h[i * n + col] -= f * v[i];
+            }
+        }
+        // Right: H = H * P
+        for row in 0..n {
+            let dot: f64 = ((j + 1)..n).map(|i| v[i] * h[row * n + i]).sum();
+            let f = scale * dot;
+            for i in (j + 1)..n {
+                h[row * n + i] -= f * v[i];
+            }
+        }
+        // Q = Q * P
+        for row in 0..n {
+            let dot: f64 = ((j + 1)..n).map(|i| v[i] * q[row * n + i]).sum();
+            let f = scale * dot;
+            for i in (j + 1)..n {
+                q[row * n + i] -= f * v[i];
+            }
+        }
+    }
+
+    (h, q)
+}
+
+/// Explicit single-shift QR iteration on upper Hessenberg form with deflation.
+/// Converges to quasi-upper-triangular (real Schur) form.
+/// If `z` is `Some`, accumulates the Schur vectors.
+fn hessenberg_qr_iter(h: &mut [f64], mut z: Option<&mut [f64]>, n: usize) {
+    let eps = f64::EPSILON;
+    let max_iter = 60 * n * n;
+    let mut p = n; // active upper bound (exclusive of converged tail)
+
+    for iter in 0..max_iter {
+        if p <= 1 {
+            break;
+        }
+
+        // Deflation from bottom: check if h[p-1, p-2] ≈ 0
+        while p > 1
+            && h[(p - 1) * n + (p - 2)].abs()
+                <= eps * (h[(p - 2) * n + (p - 2)].abs() + h[(p - 1) * n + (p - 1)].abs())
+        {
+            h[(p - 1) * n + (p - 2)] = 0.0;
+            p -= 1;
+        }
+        if p <= 1 {
+            break;
+        }
+
+        // Find start of active unreduced block
+        let mut lo = p - 1;
+        while lo > 0
+            && h[lo * n + (lo - 1)].abs()
+                > eps * (h[(lo - 1) * n + (lo - 1)].abs() + h[lo * n + lo].abs())
+        {
+            lo -= 1;
+        }
+        if lo > 0 {
+            h[lo * n + (lo - 1)] = 0.0;
+        }
+
+        if p - lo <= 1 {
+            continue; // 1x1 block, already converged
+        }
+
+        // Wilkinson shift from trailing 2×2 of active block
+        let a11 = h[(p - 2) * n + (p - 2)];
+        let a12 = h[(p - 2) * n + (p - 1)];
+        let a21 = h[(p - 1) * n + (p - 2)];
+        let a22 = h[(p - 1) * n + (p - 1)];
+        let trace = a11 + a22;
+        let det = a11 * a22 - a12 * a21;
+        let disc = trace * trace - 4.0 * det;
+        let mu = if disc >= 0.0 {
+            let sqrt_disc = disc.sqrt();
+            let lam1 = (trace + sqrt_disc) / 2.0;
+            let lam2 = (trace - sqrt_disc) / 2.0;
+            if (lam1 - a22).abs() < (lam2 - a22).abs() {
+                lam1
+            } else {
+                lam2
+            }
+        } else {
+            // Complex eigenvalue pair: use exceptional shift every 10 iterations
+            if iter % 10 == 0 {
+                a22 + h[(p - 1) * n + (p - 2)].abs()
+            } else {
+                trace / 2.0
+            }
+        };
+
+        // Subtract shift
+        for i in lo..p {
+            h[i * n + i] -= mu;
+        }
+
+        // QR factorization of H[lo..p, lo..p] using Givens rotations
+        let block = p - lo;
+        let mut cos_vals = vec![0.0; block.saturating_sub(1)];
+        let mut sin_vals = vec![0.0; block.saturating_sub(1)];
+
+        for k in lo..(p - 1) {
+            let ff = h[k * n + k];
+            let gg = h[(k + 1) * n + k];
+            let r = ff.hypot(gg);
+            let (c, s) = if r > 0.0 { (ff / r, gg / r) } else { (1.0, 0.0) };
+            cos_vals[k - lo] = c;
+            sin_vals[k - lo] = s;
+            // Apply left rotation to rows k, k+1 (columns k..n)
+            for j in k..n {
+                let t1 = c * h[k * n + j] + s * h[(k + 1) * n + j];
+                h[(k + 1) * n + j] = -s * h[k * n + j] + c * h[(k + 1) * n + j];
+                h[k * n + j] = t1;
+            }
+        }
+
+        // Form R * Q (right-multiply by G_lo .. G_{p-2})
+        for k in lo..(p - 1) {
+            let c = cos_vals[k - lo];
+            let s = sin_vals[k - lo];
+            // Apply right rotation to columns k, k+1 (rows 0..min(k+2, p))
+            let row_end = (k + 2).min(p);
+            for i in 0..row_end {
+                let t1 = c * h[i * n + k] + s * h[i * n + k + 1];
+                h[i * n + k + 1] = -s * h[i * n + k] + c * h[i * n + k + 1];
+                h[i * n + k] = t1;
+            }
+        }
+
+        // Add shift back
+        for i in lo..p {
+            h[i * n + i] += mu;
+        }
+
+        // Accumulate into Z: Z = Z * G_lo * ... * G_{p-2}
+        if let Some(ref mut z) = z {
+            for k in lo..(p - 1) {
+                let c = cos_vals[k - lo];
+                let s = sin_vals[k - lo];
+                for row in 0..n {
+                    let t1 = c * z[row * n + k] + s * z[row * n + k + 1];
+                    z[row * n + k + 1] = -s * z[row * n + k] + c * z[row * n + k + 1];
+                    z[row * n + k] = t1;
+                }
+            }
+        }
+    }
 }
 
 /// Compute eigenvalues of a symmetric NxN matrix via QR iteration.
@@ -1521,26 +1968,11 @@ pub fn eigvalsh_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
         return Err(LinAlgError::SpectralConvergenceFailed);
     }
 
-    // QR iteration with Wilkinson shift for faster convergence
-    let mut m = a.to_vec();
-    for _ in 0..300 {
-        let (q, r) = qr_nxn(&m, n)?;
-        let mut next = vec![0.0; n * n];
-        for i in 0..n {
-            for j in 0..n {
-                let mut sum = 0.0;
-                for k in 0..n {
-                    sum += r[i * n + k] * q[k * n + j];
-                }
-                next[i * n + j] = sum;
-            }
-        }
-        m = next;
-    }
+    let (mut d, mut e, _q) = tridiag_reduce(a, n);
+    tridiag_eig_qr(&mut d, &mut e, None, n);
 
-    let mut eigenvalues: Vec<f64> = (0..n).map(|i| m[i * n + i]).collect();
-    eigenvalues.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-    Ok(eigenvalues)
+    d.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(d)
 }
 
 /// Compute eigenvalues and eigenvectors of a symmetric NxN matrix via QR iteration.
@@ -1556,102 +1988,34 @@ pub fn eigh_nxn(a: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), LinAlgError
         return Err(LinAlgError::SpectralConvergenceFailed);
     }
 
-    // Accumulate Q matrices: V = Q1 * Q2 * ... * Qk
-    let mut m = a.to_vec();
-    let mut v = vec![0.0; n * n];
-    // Initialize V = I
-    for i in 0..n {
-        v[i * n + i] = 1.0;
-    }
-
-    for _ in 0..300 {
-        let (q, r) = qr_nxn(&m, n)?;
-        // M = R * Q
-        let mut next = vec![0.0; n * n];
-        for i in 0..n {
-            for j in 0..n {
-                let mut sum = 0.0;
-                for k in 0..n {
-                    sum += r[i * n + k] * q[k * n + j];
-                }
-                next[i * n + j] = sum;
-            }
-        }
-        // V = V * Q
-        let mut new_v = vec![0.0; n * n];
-        for i in 0..n {
-            for j in 0..n {
-                let mut sum = 0.0;
-                for k in 0..n {
-                    sum += v[i * n + k] * q[k * n + j];
-                }
-                new_v[i * n + j] = sum;
-            }
-        }
-        m = next;
-        v = new_v;
-    }
-
-    let mut eigenvalues: Vec<f64> = (0..n).map(|i| m[i * n + i]).collect();
+    let (mut d, mut e, mut q) = tridiag_reduce(a, n);
+    tridiag_eig_qr(&mut d, &mut e, Some(&mut q), n);
 
     // Sort eigenvalues descending and permute eigenvectors accordingly
     let mut indices: Vec<usize> = (0..n).collect();
     indices.sort_by(|&a, &b| {
-        eigenvalues[b]
-            .partial_cmp(&eigenvalues[a])
+        d[b].partial_cmp(&d[a])
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    let sorted_eigenvalues: Vec<f64> = indices.iter().map(|&i| eigenvalues[i]).collect();
+    let sorted_eigenvalues: Vec<f64> = indices.iter().map(|&i| d[i]).collect();
     let mut sorted_v = vec![0.0; n * n];
     for (col_out, &col_in) in indices.iter().enumerate() {
         for row in 0..n {
-            sorted_v[row * n + col_out] = v[row * n + col_in];
+            sorted_v[row * n + col_out] = q[row * n + col_in];
         }
     }
 
-    eigenvalues = sorted_eigenvalues;
-    Ok((eigenvalues, sorted_v))
+    Ok((sorted_eigenvalues, sorted_v))
 }
 
-/// Eigenvalues of a general (possibly non-symmetric) NxN matrix via QR iteration.
-/// Returns eigenvalues as interleaved (re, im) pairs: [re0, im0, re1, im1, ...].
-/// For real eigenvalues, the imaginary part is 0.
-/// The QR iteration converges to a quasi-upper-triangular (real Schur) form;
-/// 1x1 diagonal blocks give real eigenvalues, 2x2 blocks give complex conjugate pairs.
-pub fn eig_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
-    if a.len() != n * n || n == 0 {
-        return Err(LinAlgError::ShapeContractViolation(
-            "eig_nxn: input must be n*n with n > 0",
-        ));
-    }
-    if a.iter().any(|v| !v.is_finite()) {
-        return Err(LinAlgError::SpectralConvergenceFailed);
-    }
-
-    // QR iteration to get real Schur form
-    let mut m = a.to_vec();
-    for _ in 0..500 {
-        let (q, r) = qr_nxn(&m, n)?;
-        let mut next = vec![0.0; n * n];
-        for i in 0..n {
-            for j in 0..n {
-                let mut sum = 0.0;
-                for k in 0..n {
-                    sum += r[i * n + k] * q[k * n + j];
-                }
-                next[i * n + j] = sum;
-            }
-        }
-        m = next;
-    }
-
-    // Extract eigenvalues from quasi-upper-triangular form
+/// Extract eigenvalues from quasi-upper-triangular (real Schur) form.
+/// Returns interleaved `[re0, im0, re1, im1, ...]`.
+fn extract_schur_eigenvalues(m: &[f64], n: usize) -> Vec<f64> {
     let mut eigenvalues = Vec::with_capacity(n * 2);
     let mut i = 0;
     while i < n {
         if i + 1 < n && m[(i + 1) * n + i].abs() > 1e-10 {
-            // 2x2 block: eigenvalues are complex conjugate pair
             let a11 = m[i * n + i];
             let a12 = m[i * n + (i + 1)];
             let a21 = m[(i + 1) * n + i];
@@ -1675,13 +2039,35 @@ pub fn eig_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
             }
             i += 2;
         } else {
-            // 1x1 block: real eigenvalue
             eigenvalues.push(m[i * n + i]);
             eigenvalues.push(0.0);
             i += 1;
         }
     }
+    eigenvalues
+}
 
+/// Eigenvalues of a general (possibly non-symmetric) NxN matrix via QR iteration.
+/// Returns eigenvalues as interleaved (re, im) pairs: [re0, im0, re1, im1, ...].
+/// For real eigenvalues, the imaginary part is 0.
+/// The QR iteration converges to a quasi-upper-triangular (real Schur) form;
+/// 1x1 diagonal blocks give real eigenvalues, 2x2 blocks give complex conjugate pairs.
+pub fn eig_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
+    if a.len() != n * n || n == 0 {
+        return Err(LinAlgError::ShapeContractViolation(
+            "eig_nxn: input must be n*n with n > 0",
+        ));
+    }
+    if a.iter().any(|v| !v.is_finite()) {
+        return Err(LinAlgError::SpectralConvergenceFailed);
+    }
+
+    // Hessenberg reduction + implicit shifted QR
+    let (mut h, _q) = hessenberg_reduce(a, n);
+    hessenberg_qr_iter(&mut h, None, n);
+
+    // Extract eigenvalues from quasi-upper-triangular (real Schur) form
+    let eigenvalues = extract_schur_eigenvalues(&h, n);
     Ok(eigenvalues)
 }
 
@@ -1700,41 +2086,11 @@ pub fn schur_nxn(a: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), LinAlgErro
         return Err(LinAlgError::SpectralConvergenceFailed);
     }
 
-    let mut t = a.to_vec();
-    let mut z = vec![0.0; n * n];
-    for i in 0..n {
-        z[i * n + i] = 1.0;
-    }
+    // Hessenberg reduction + implicit shifted QR with Schur vector accumulation
+    let (mut h, mut q) = hessenberg_reduce(a, n);
+    hessenberg_qr_iter(&mut h, Some(&mut q), n);
 
-    for _ in 0..500 {
-        let (q, r) = qr_nxn(&t, n)?;
-        // T = R * Q
-        let mut next = vec![0.0; n * n];
-        for i in 0..n {
-            for j in 0..n {
-                let mut sum = 0.0;
-                for k in 0..n {
-                    sum += r[i * n + k] * q[k * n + j];
-                }
-                next[i * n + j] = sum;
-            }
-        }
-        // Z = Z * Q
-        let mut new_z = vec![0.0; n * n];
-        for i in 0..n {
-            for j in 0..n {
-                let mut sum = 0.0;
-                for k in 0..n {
-                    sum += z[i * n + k] * q[k * n + j];
-                }
-                new_z[i * n + j] = sum;
-            }
-        }
-        t = next;
-        z = new_z;
-    }
-
-    Ok((t, z))
+    Ok((h, q))
 }
 
 /// Cross product of two 3-element vectors (np.cross for 3-D).
@@ -1887,142 +2243,131 @@ pub fn eig_nxn_full(a: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), LinAlgE
         return Err(LinAlgError::SpectralConvergenceFailed);
     }
 
-    // QR iteration accumulating the product of Q matrices
-    let mut m = a.to_vec();
-    let mut v = vec![0.0; n * n];
-    for i in 0..n {
-        v[i * n + i] = 1.0;
-    }
-
-    for _ in 0..500 {
-        let (q, r) = qr_nxn(&m, n)?;
-        // M = R * Q
-        let mut next = vec![0.0; n * n];
-        for i in 0..n {
-            for j in 0..n {
-                let mut sum = 0.0;
-                for k in 0..n {
-                    sum += r[i * n + k] * q[k * n + j];
-                }
-                next[i * n + j] = sum;
-            }
-        }
-        // V = V * Q
-        let mut new_v = vec![0.0; n * n];
-        for i in 0..n {
-            for j in 0..n {
-                let mut sum = 0.0;
-                for k in 0..n {
-                    sum += v[i * n + k] * q[k * n + j];
-                }
-                new_v[i * n + j] = sum;
-            }
-        }
-        m = next;
-        v = new_v;
-    }
+    // Hessenberg reduction + implicit shifted QR accumulating Schur vectors
+    let (mut h, mut z) = hessenberg_reduce(a, n);
+    hessenberg_qr_iter(&mut h, Some(&mut z), n);
 
     // Extract eigenvalues from quasi-upper-triangular Schur form
-    let mut eigenvalues = Vec::with_capacity(n * 2);
-    // Build eigenvectors: for real eigenvalues the Schur vector is the eigenvector.
-    // For complex conjugate pairs from a 2x2 block we reconstruct the complex eigenvectors.
+    let eigenvalues = extract_schur_eigenvalues(&h, n);
+
+    // Build eigenvectors of T via back-substitution, then transform by Z.
+    // For each eigenvalue λ, solve (T - λI)x = 0 by back-substitution on the
+    // quasi-upper-triangular Schur form, then compute v = Z * x.
+    let mut vr_re = vec![0.0; n * n]; // eigenvectors of T in columns (real part)
+    let mut vr_im = vec![0.0; n * n]; // eigenvectors of T in columns (imag part)
+
+    let mut col = 0;
+    while col < n {
+        if col + 1 < n && h[(col + 1) * n + col].abs() > 1e-10 {
+            // 2x2 block → complex conjugate eigenvalue pair
+            let lam_re = eigenvalues[2 * col];
+            let lam_im = eigenvalues[2 * col + 1];
+
+            // Start with unit vector at block position
+            vr_re[col * n + col] = 1.0;
+            vr_im[col * n + col] = 0.0;
+            // Second component of the 2x2 Schur block eigenvector
+            let a11 = h[col * n + col];
+            let a12 = h[col * n + (col + 1)];
+            // (a11 - λ)*x1 + a12*x2 = 0, x1=1 → x2 = -(a11-λ)/a12
+            let denom = a12;
+            if denom.abs() > 1e-15 {
+                vr_re[(col + 1) * n + col] = -(a11 - lam_re) / denom;
+                vr_im[(col + 1) * n + col] = lam_im / denom;
+            }
+
+            // Back-substitute through rows above the block
+            for j in (0..col).rev() {
+                // Check if row j is part of a 2x2 block
+                if j > 0 && h[j * n + (j - 1)].abs() > 1e-10 {
+                    continue; // will handle as part of the 2x2 block starting at j-1
+                }
+                // 1x1 row: solve (T[j,j] - λ)*x[j] = -sum_{k=j+1..col+2} T[j,k]*x[k]
+                let mut sum_re = 0.0;
+                let mut sum_im = 0.0;
+                for k in (j + 1)..=(col + 1).min(n - 1) {
+                    sum_re += h[j * n + k] * vr_re[k * n + col] - 0.0 * vr_im[k * n + col];
+                    sum_im += h[j * n + k] * vr_im[k * n + col];
+                }
+                let d_re = h[j * n + j] - lam_re;
+                let d_im = -lam_im;
+                let d_sq = d_re * d_re + d_im * d_im;
+                if d_sq > 1e-30 {
+                    // x[j] = -sum / (T[j,j]-λ), complex division
+                    vr_re[j * n + col] = -(sum_re * d_re + sum_im * d_im) / d_sq;
+                    vr_im[j * n + col] = -(sum_im * d_re - sum_re * d_im) / d_sq;
+                }
+            }
+            // Conjugate eigenvector for the second eigenvalue
+            for row in 0..n {
+                vr_re[row * n + (col + 1)] = vr_re[row * n + col];
+                vr_im[row * n + (col + 1)] = -vr_im[row * n + col];
+            }
+            col += 2;
+        } else {
+            // 1x1 block → real eigenvalue
+            let lam = eigenvalues[2 * col];
+            vr_re[col * n + col] = 1.0;
+            // Back-substitute: for j = col-1 down to 0
+            for j in (0..col).rev() {
+                // Check if row j is part of a 2x2 block
+                if j > 0 && h[j * n + (j - 1)].abs() > 1e-10 {
+                    continue; // handle as 2x2
+                }
+                let mut sum = 0.0;
+                for k in (j + 1)..=col {
+                    sum += h[j * n + k] * vr_re[k * n + col];
+                }
+                let denom = h[j * n + j] - lam;
+                if denom.abs() > 1e-15 {
+                    vr_re[j * n + col] = -sum / denom;
+                } else {
+                    vr_re[j * n + col] = -sum / 1e-15;
+                }
+            }
+            col += 1;
+        }
+    }
+
+    // Transform: V = Z * VR (apply Schur vectors)
     let mut eigvecs_re = vec![0.0; n * n];
     let mut eigvecs_im = vec![0.0; n * n];
-
-    let mut i = 0;
-    while i < n {
-        if i + 1 < n && m[(i + 1) * n + i].abs() > 1e-10 {
-            // 2x2 block: complex conjugate eigenvalue pair
-            let a11 = m[i * n + i];
-            let a12 = m[i * n + (i + 1)];
-            let a21 = m[(i + 1) * n + i];
-            let a22 = m[(i + 1) * n + (i + 1)];
-            let trace = a11 + a22;
-            let det = a11 * a22 - a12 * a21;
-            let disc = trace * trace - 4.0 * det;
-            if disc < 0.0 {
-                let real = trace / 2.0;
-                let imag = (-disc).sqrt() / 2.0;
-                eigenvalues.push(real);
-                eigenvalues.push(imag);
-                eigenvalues.push(real);
-                eigenvalues.push(-imag);
-            } else {
-                let sqrt_disc = disc.sqrt();
-                eigenvalues.push((trace + sqrt_disc) / 2.0);
-                eigenvalues.push(0.0);
-                eigenvalues.push((trace - sqrt_disc) / 2.0);
-                eigenvalues.push(0.0);
+    for j in 0..n {
+        for i in 0..n {
+            let mut re = 0.0;
+            let mut im = 0.0;
+            for k in 0..n {
+                re += z[i * n + k] * vr_re[k * n + j];
+                im += z[i * n + k] * vr_im[k * n + j];
             }
-
-            // Reconstruct complex eigenvectors from Schur vectors
-            // For the 2x2 Schur block, eigenvector in Schur basis:
-            //   [1, (lambda - a11)/a12] for the first eigenvalue
-            // Then transform back: v_full = V * v_schur
-            if disc < 0.0 {
-                let imag = (-disc).sqrt() / 2.0;
-                // Schur-basis vector: [1, (imag_part) / a12 * j] for first eigenvalue
-                // s = (lambda - a11) / a12 = i*imag / a12
-                let s_im = imag / a12;
-                // First eigenvector (column i): V[:,i] + j * s_im * V[:,i+1]
-                // Second eigenvector (column i+1): conjugate
-                for row in 0..n {
-                    eigvecs_re[row * n + i] = v[row * n + i];
-                    eigvecs_im[row * n + i] = s_im * v[row * n + (i + 1)];
-                    eigvecs_re[row * n + (i + 1)] = v[row * n + i];
-                    eigvecs_im[row * n + (i + 1)] = -s_im * v[row * n + (i + 1)];
-                }
-            } else {
-                // Real distinct eigenvalues from 2x2 block
-                let sqrt_disc = disc.sqrt();
-                let lam1 = (trace + sqrt_disc) / 2.0;
-                // Schur-basis: [1, (lam1-a11)/a12]
-                let s = if a12.abs() > 1e-15 {
-                    (lam1 - a11) / a12
-                } else {
-                    0.0
-                };
-                for row in 0..n {
-                    eigvecs_re[row * n + i] = v[row * n + i] + s * v[row * n + (i + 1)];
-                    eigvecs_re[row * n + (i + 1)] = v[row * n + i]
-                        + ((trace - sqrt_disc) / 2.0 - a11) / a12.max(1e-15) * v[row * n + (i + 1)];
-                }
-            }
-            i += 2;
-        } else {
-            // 1x1 block: real eigenvalue, Schur vector = eigenvector
-            eigenvalues.push(m[i * n + i]);
-            eigenvalues.push(0.0);
-            for row in 0..n {
-                eigvecs_re[row * n + i] = v[row * n + i];
-            }
-            i += 1;
+            eigvecs_re[i * n + j] = re;
+            eigvecs_im[i * n + j] = im;
         }
     }
 
     // Normalize each eigenvector column
-    for col in 0..n {
+    for j in 0..n {
         let mut norm_sq = 0.0;
-        for row in 0..n {
-            let re = eigvecs_re[row * n + col];
-            let im = eigvecs_im[row * n + col];
+        for i in 0..n {
+            let re = eigvecs_re[i * n + j];
+            let im = eigvecs_im[i * n + j];
             norm_sq += re * re + im * im;
         }
         let norm = norm_sq.sqrt();
         if norm > 1e-15 {
-            for row in 0..n {
-                eigvecs_re[row * n + col] /= norm;
-                eigvecs_im[row * n + col] /= norm;
+            for i in 0..n {
+                eigvecs_re[i * n + j] /= norm;
+                eigvecs_im[i * n + j] /= norm;
             }
         }
     }
 
     // Interleave into output format: [re(v[0,0]), im(v[0,0]), re(v[1,0]), im(v[1,0]), ...]
     let mut eigvecs = Vec::with_capacity(2 * n * n);
-    for col in 0..n {
-        for row in 0..n {
-            eigvecs.push(eigvecs_re[row * n + col]);
-            eigvecs.push(eigvecs_im[row * n + col]);
+    for j in 0..n {
+        for i in 0..n {
+            eigvecs.push(eigvecs_re[i * n + j]);
+            eigvecs.push(eigvecs_im[i * n + j]);
         }
     }
 
@@ -3177,6 +3522,354 @@ pub fn validate_policy_metadata(mode: &str, class: &str) -> Result<(), LinAlgErr
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Batched linalg: stacked matrix support (NumPy-style leading batch dims)
+// ---------------------------------------------------------------------------
+
+/// Compute the total number of matrices in the batch (product of leading dims).
+fn batch_count(shape: &[usize]) -> usize {
+    if shape.len() <= 2 {
+        1
+    } else {
+        shape[..shape.len() - 2].iter().product()
+    }
+}
+
+/// Validate that shape has at least 2 dimensions and extract (batch_count, m, n).
+fn parse_batched_shape(shape: &[usize]) -> Result<(usize, usize, usize), LinAlgError> {
+    if shape.len() < 2 {
+        return Err(LinAlgError::ShapeContractViolation(
+            "batched linalg: input must have at least 2 dimensions",
+        ));
+    }
+    let m = shape[shape.len() - 2];
+    let n = shape[shape.len() - 1];
+    let batch = batch_count(shape);
+    Ok((batch, m, n))
+}
+
+/// Validate that shape represents stacked square matrices.
+fn parse_batched_square(shape: &[usize]) -> Result<(usize, usize), LinAlgError> {
+    let (batch, m, n) = parse_batched_shape(shape)?;
+    if m != n || m == 0 {
+        return Err(LinAlgError::ShapeContractViolation(
+            "batched linalg: last two dimensions must be equal and non-zero",
+        ));
+    }
+    Ok((batch, n))
+}
+
+/// Batched matrix inversion: inv on (..., n, n) → (..., n, n).
+pub fn batch_inv(data: &[f64], shape: &[usize]) -> Result<Vec<f64>, LinAlgError> {
+    let (batch, n) = parse_batched_square(shape)?;
+    let mat_size = n * n;
+    if data.len() != batch * mat_size {
+        return Err(LinAlgError::ShapeContractViolation(
+            "batch_inv: data length does not match shape",
+        ));
+    }
+    let mut result = Vec::with_capacity(batch * mat_size);
+    for b in 0..batch {
+        let sub = &data[b * mat_size..(b + 1) * mat_size];
+        let inv = inv_nxn(sub, n)?;
+        result.extend_from_slice(&inv);
+    }
+    Ok(result)
+}
+
+/// Batched determinant: det on (..., n, n) → (...).
+pub fn batch_det(data: &[f64], shape: &[usize]) -> Result<Vec<f64>, LinAlgError> {
+    let (batch, n) = parse_batched_square(shape)?;
+    let mat_size = n * n;
+    if data.len() != batch * mat_size {
+        return Err(LinAlgError::ShapeContractViolation(
+            "batch_det: data length does not match shape",
+        ));
+    }
+    let mut result = Vec::with_capacity(batch);
+    for b in 0..batch {
+        let sub = &data[b * mat_size..(b + 1) * mat_size];
+        result.push(det_nxn(sub, n)?);
+    }
+    Ok(result)
+}
+
+/// Batched slogdet: slogdet on (..., n, n) → (signs: ..., log_abs_dets: ...).
+pub fn batch_slogdet(
+    data: &[f64],
+    shape: &[usize],
+) -> Result<(Vec<f64>, Vec<f64>), LinAlgError> {
+    let (batch, n) = parse_batched_square(shape)?;
+    let mat_size = n * n;
+    if data.len() != batch * mat_size {
+        return Err(LinAlgError::ShapeContractViolation(
+            "batch_slogdet: data length does not match shape",
+        ));
+    }
+    let mut signs = Vec::with_capacity(batch);
+    let mut logabsdets = Vec::with_capacity(batch);
+    for b in 0..batch {
+        let sub = &data[b * mat_size..(b + 1) * mat_size];
+        let (sign, logabsdet) = slogdet_nxn(sub, n)?;
+        signs.push(sign);
+        logabsdets.push(logabsdet);
+    }
+    Ok((signs, logabsdets))
+}
+
+/// Batched solve: solve on A(..., n, n) × b(..., n) → x(..., n).
+pub fn batch_solve(
+    a: &[f64],
+    a_shape: &[usize],
+    b: &[f64],
+    b_shape: &[usize],
+) -> Result<Vec<f64>, LinAlgError> {
+    let (a_batch, n) = parse_batched_square(a_shape)?;
+    // b can be (..., n) or (..., n, m)
+    if b_shape.is_empty() {
+        return Err(LinAlgError::ShapeContractViolation(
+            "batch_solve: b must have at least 1 dimension",
+        ));
+    }
+    let b_last = b_shape[b_shape.len() - 1];
+    if b_last != n {
+        return Err(LinAlgError::ShapeContractViolation(
+            "batch_solve: last dimension of b must match n",
+        ));
+    }
+    let b_batch = if b_shape.len() <= 1 {
+        1
+    } else {
+        b_shape[..b_shape.len() - 1].iter().product()
+    };
+    let batch = a_batch.max(b_batch);
+    if (a_batch != 1 && a_batch != batch) || (b_batch != 1 && b_batch != batch) {
+        return Err(LinAlgError::ShapeContractViolation(
+            "batch_solve: batch dimensions are not broadcastable",
+        ));
+    }
+    let mat_size = n * n;
+    let mut result = Vec::with_capacity(batch * n);
+    for idx in 0..batch {
+        let a_idx = if a_batch == 1 { 0 } else { idx };
+        let b_idx = if b_batch == 1 { 0 } else { idx };
+        let a_sub = &a[a_idx * mat_size..(a_idx + 1) * mat_size];
+        let b_sub = &b[b_idx * n..(b_idx + 1) * n];
+        let x = solve_nxn(a_sub, b_sub, n)?;
+        result.extend_from_slice(&x);
+    }
+    Ok(result)
+}
+
+/// Batched eigenvalues: eigvalsh on (..., n, n) → (..., n).
+pub fn batch_eigvalsh(data: &[f64], shape: &[usize]) -> Result<Vec<f64>, LinAlgError> {
+    let (batch, n) = parse_batched_square(shape)?;
+    let mat_size = n * n;
+    if data.len() != batch * mat_size {
+        return Err(LinAlgError::ShapeContractViolation(
+            "batch_eigvalsh: data length does not match shape",
+        ));
+    }
+    let mut result = Vec::with_capacity(batch * n);
+    for b in 0..batch {
+        let sub = &data[b * mat_size..(b + 1) * mat_size];
+        let eigvals = eigvalsh_nxn(sub, n)?;
+        result.extend_from_slice(&eigvals);
+    }
+    Ok(result)
+}
+
+/// Batched eigh: eigh on (..., n, n) → (eigenvalues (..., n), eigenvectors (..., n, n)).
+pub fn batch_eigh(
+    data: &[f64],
+    shape: &[usize],
+) -> Result<(Vec<f64>, Vec<f64>), LinAlgError> {
+    let (batch, n) = parse_batched_square(shape)?;
+    let mat_size = n * n;
+    if data.len() != batch * mat_size {
+        return Err(LinAlgError::ShapeContractViolation(
+            "batch_eigh: data length does not match shape",
+        ));
+    }
+    let mut eigenvalues = Vec::with_capacity(batch * n);
+    let mut eigenvectors = Vec::with_capacity(batch * mat_size);
+    for b in 0..batch {
+        let sub = &data[b * mat_size..(b + 1) * mat_size];
+        let (vals, vecs) = eigh_nxn(sub, n)?;
+        eigenvalues.extend_from_slice(&vals);
+        eigenvectors.extend_from_slice(&vecs);
+    }
+    Ok((eigenvalues, eigenvectors))
+}
+
+/// Batched eig: eig on (..., n, n) → eigenvalues as interleaved (re,im) (..., n*2).
+pub fn batch_eig(data: &[f64], shape: &[usize]) -> Result<Vec<f64>, LinAlgError> {
+    let (batch, n) = parse_batched_square(shape)?;
+    let mat_size = n * n;
+    if data.len() != batch * mat_size {
+        return Err(LinAlgError::ShapeContractViolation(
+            "batch_eig: data length does not match shape",
+        ));
+    }
+    let mut result = Vec::with_capacity(batch * n * 2);
+    for b in 0..batch {
+        let sub = &data[b * mat_size..(b + 1) * mat_size];
+        let eigvals = eig_nxn(sub, n)?;
+        result.extend_from_slice(&eigvals);
+    }
+    Ok(result)
+}
+
+/// Batched SVD (singular values only): svd on (..., m, n) → (..., min(m,n)).
+pub fn batch_svd(data: &[f64], shape: &[usize]) -> Result<Vec<f64>, LinAlgError> {
+    let (batch, m, n) = parse_batched_shape(shape)?;
+    let mat_size = m * n;
+    let k = m.min(n);
+    if data.len() != batch * mat_size {
+        return Err(LinAlgError::ShapeContractViolation(
+            "batch_svd: data length does not match shape",
+        ));
+    }
+    let mut result = Vec::with_capacity(batch * k);
+    for b in 0..batch {
+        let sub = &data[b * mat_size..(b + 1) * mat_size];
+        let sigmas = svd_mxn(sub, m, n)?;
+        result.extend_from_slice(&sigmas);
+    }
+    Ok(result)
+}
+
+/// Batched full SVD: svd on (..., m, n) → (U (..., m, m), S (..., min(m,n)), Vt (..., n, n)).
+pub fn batch_svd_full(
+    data: &[f64],
+    shape: &[usize],
+) -> Result<SvdFullResult, LinAlgError> {
+    let (batch, m, n) = parse_batched_shape(shape)?;
+    let mat_size = m * n;
+    let k = m.min(n);
+    if data.len() != batch * mat_size {
+        return Err(LinAlgError::ShapeContractViolation(
+            "batch_svd_full: data length does not match shape",
+        ));
+    }
+    let mut all_u = Vec::with_capacity(batch * m * m);
+    let mut all_s = Vec::with_capacity(batch * k);
+    let mut all_vt = Vec::with_capacity(batch * n * n);
+    for b in 0..batch {
+        let sub = &data[b * mat_size..(b + 1) * mat_size];
+        let (u, s, vt) = svd_mxn_full(sub, m, n)?;
+        all_u.extend_from_slice(&u);
+        all_s.extend_from_slice(&s);
+        all_vt.extend_from_slice(&vt);
+    }
+    Ok((all_u, all_s, all_vt))
+}
+
+/// Batched QR: qr on (..., m, n) → (Q (..., m, m), R (..., m, n)).
+pub fn batch_qr(
+    data: &[f64],
+    shape: &[usize],
+) -> Result<(Vec<f64>, Vec<f64>), LinAlgError> {
+    let (batch, m, n) = parse_batched_shape(shape)?;
+    let mat_size = m * n;
+    if data.len() != batch * mat_size {
+        return Err(LinAlgError::ShapeContractViolation(
+            "batch_qr: data length does not match shape",
+        ));
+    }
+    let mut all_q = Vec::with_capacity(batch * m * m);
+    let mut all_r = Vec::with_capacity(batch * m * n);
+    for b in 0..batch {
+        let sub = &data[b * mat_size..(b + 1) * mat_size];
+        let (q, r) = qr_mxn(sub, m, n)?;
+        all_q.extend_from_slice(&q);
+        all_r.extend_from_slice(&r);
+    }
+    Ok((all_q, all_r))
+}
+
+/// Batched Cholesky: cholesky on (..., n, n) → (..., n, n).
+pub fn batch_cholesky(data: &[f64], shape: &[usize]) -> Result<Vec<f64>, LinAlgError> {
+    let (batch, n) = parse_batched_square(shape)?;
+    let mat_size = n * n;
+    if data.len() != batch * mat_size {
+        return Err(LinAlgError::ShapeContractViolation(
+            "batch_cholesky: data length does not match shape",
+        ));
+    }
+    let mut result = Vec::with_capacity(batch * mat_size);
+    for b in 0..batch {
+        let sub = &data[b * mat_size..(b + 1) * mat_size];
+        let chol = cholesky_nxn(sub, n)?;
+        result.extend_from_slice(&chol);
+    }
+    Ok(result)
+}
+
+/// Batched matrix norm: norm on (..., m, n) → (...).
+pub fn batch_matrix_norm(
+    data: &[f64],
+    shape: &[usize],
+    ord: &str,
+) -> Result<Vec<f64>, LinAlgError> {
+    let (batch, m, n) = parse_batched_shape(shape)?;
+    let mat_size = m * n;
+    if data.len() != batch * mat_size {
+        return Err(LinAlgError::ShapeContractViolation(
+            "batch_matrix_norm: data length does not match shape",
+        ));
+    }
+    let mut result = Vec::with_capacity(batch);
+    for b in 0..batch {
+        let sub = &data[b * mat_size..(b + 1) * mat_size];
+        result.push(matrix_norm_nxn(sub, m, n, ord)?);
+    }
+    Ok(result)
+}
+
+/// Batched matrix rank: rank on (..., m, n) → (...).
+pub fn batch_matrix_rank(
+    data: &[f64],
+    shape: &[usize],
+    rcond: f64,
+) -> Result<Vec<usize>, LinAlgError> {
+    let (batch, m, n) = parse_batched_shape(shape)?;
+    if m != n {
+        return Err(LinAlgError::ShapeContractViolation(
+            "batch_matrix_rank: currently requires square matrices",
+        ));
+    }
+    let mat_size = n * n;
+    if data.len() != batch * mat_size {
+        return Err(LinAlgError::ShapeContractViolation(
+            "batch_matrix_rank: data length does not match shape",
+        ));
+    }
+    let mut result = Vec::with_capacity(batch);
+    for b in 0..batch {
+        let sub = &data[b * mat_size..(b + 1) * mat_size];
+        result.push(matrix_rank_nxn(sub, n, rcond)?);
+    }
+    Ok(result)
+}
+
+/// Batched trace: trace on (..., n, n) → (...).
+pub fn batch_trace(data: &[f64], shape: &[usize]) -> Result<Vec<f64>, LinAlgError> {
+    let (batch, n) = parse_batched_square(shape)?;
+    let mat_size = n * n;
+    if data.len() != batch * mat_size {
+        return Err(LinAlgError::ShapeContractViolation(
+            "batch_trace: data length does not match shape",
+        ));
+    }
+    let mut result = Vec::with_capacity(batch);
+    for b in 0..batch {
+        let sub = &data[b * mat_size..(b + 1) * mat_size];
+        result.push(trace_nxn(sub, n)?);
+    }
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -3194,6 +3887,10 @@ mod tests {
         tensorinv, tensorsolve, trace_nxn, validate_backend_bridge, validate_cholesky_diagonal,
         validate_matrix_shape, validate_policy_metadata, validate_spectral_branch,
         validate_square_matrix, validate_tolerance_policy, vector_norm,
+        // Batched linalg
+        batch_cholesky, batch_det, batch_eig, batch_eigh, batch_eigvalsh, batch_inv,
+        batch_matrix_norm, batch_qr, batch_solve, batch_slogdet, batch_svd, batch_svd_full,
+        batch_trace,
     };
 
     fn packet008_artifacts() -> Vec<String> {
@@ -4237,6 +4934,222 @@ mod tests {
     }
 
     #[test]
+    fn eigvalsh_repeated_eigenvalues() {
+        // Matrix with repeated eigenvalue: diag(3, 3, 5)
+        let a = [3.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 5.0];
+        let eigvals = eigvalsh_nxn(&a, 3).expect("eigvalsh repeated");
+        let mut sorted = eigvals.clone();
+        sorted.sort_by(|a, b| b.partial_cmp(a).unwrap());
+        assert!((sorted[0] - 5.0).abs() < 1e-10, "eig0={}", sorted[0]);
+        assert!((sorted[1] - 3.0).abs() < 1e-10, "eig1={}", sorted[1]);
+        assert!((sorted[2] - 3.0).abs() < 1e-10, "eig2={}", sorted[2]);
+    }
+
+    #[test]
+    fn eigvalsh_10x10_residual_check() {
+        // Build symmetric 10x10 from A = M + M^T where M has known structure
+        let n = 10;
+        let mut a = vec![0.0; n * n];
+        for i in 0..n {
+            a[i * n + i] = (i + 1) as f64 * 2.0; // diagonal: 2, 4, 6, ..., 20
+            if i + 1 < n {
+                a[i * n + (i + 1)] = 1.0;
+                a[(i + 1) * n + i] = 1.0;
+            }
+        }
+        let (eigvals, eigvecs) = eigh_nxn(&a, n).expect("eigh 10x10");
+        // Check ||A*v - λ*v|| < eps * ||A|| for each eigenpair
+        let a_norm: f64 = a.iter().map(|x| x * x).sum::<f64>().sqrt();
+        for j in 0..n {
+            // A * v_j
+            let mut av = vec![0.0; n];
+            for i in 0..n {
+                for k in 0..n {
+                    av[i] += a[i * n + k] * eigvecs[k * n + j];
+                }
+            }
+            // λ * v_j
+            let lam = eigvals[j];
+            let mut residual_sq = 0.0;
+            for i in 0..n {
+                let diff = av[i] - lam * eigvecs[i * n + j];
+                residual_sq += diff * diff;
+            }
+            let residual = residual_sq.sqrt();
+            assert!(
+                residual < 1e-8 * a_norm,
+                "eigpair {j}: residual {residual}, a_norm {a_norm}"
+            );
+        }
+    }
+
+    #[test]
+    fn eig_nxn_complex_eigenvalues_rotation() {
+        // 2x2 rotation matrix: eigenvalues e^(±iθ) = cos(θ) ± i*sin(θ)
+        let theta = std::f64::consts::FRAC_PI_4; // 45 degrees
+        let c = theta.cos();
+        let s = theta.sin();
+        let a = [c, -s, s, c];
+        let eigs = eig_nxn(&a, 2).expect("eig rotation");
+        assert_eq!(eigs.len(), 4); // 2 eigenvalues × (re, im)
+        // Both real parts should be cos(θ)
+        assert!(
+            (eigs[0] - c).abs() < 1e-10,
+            "re0={}, expected {c}",
+            eigs[0]
+        );
+        assert!(
+            (eigs[2] - c).abs() < 1e-10,
+            "re1={}, expected {c}",
+            eigs[2]
+        );
+        // Imaginary parts should be ±sin(θ)
+        assert!(
+            (eigs[1].abs() - s).abs() < 1e-10,
+            "im0={}, expected ±{s}",
+            eigs[1]
+        );
+        assert!(
+            (eigs[3].abs() - s).abs() < 1e-10,
+            "im1={}, expected ±{s}",
+            eigs[3]
+        );
+        // Should be conjugate pair
+        assert!(
+            (eigs[1] + eigs[3]).abs() < 1e-10,
+            "not conjugate: im0={}, im1={}",
+            eigs[1],
+            eigs[3]
+        );
+    }
+
+    #[test]
+    fn eig_nxn_full_residual_check() {
+        // 4x4 non-symmetric matrix with known structure
+        // A has real eigenvalues at 1, 2, 3, 4
+        let a = [
+            1.0, 0.5, 0.0, 0.0, 0.0, 2.0, 0.3, 0.0, 0.0, 0.0, 3.0, 0.7, 0.0, 0.0, 0.0, 4.0,
+        ];
+        let n = 4;
+        let (eigs, vecs) = eig_nxn_full(&a, n).expect("eig_full 4x4");
+        let a_norm: f64 = a.iter().map(|x| x * x).sum::<f64>().sqrt();
+
+        for j in 0..n {
+            let lam_re = eigs[2 * j];
+            let lam_im = eigs[2 * j + 1];
+
+            // Extract eigenvector column j (complex)
+            let mut v_re = vec![0.0; n];
+            let mut v_im = vec![0.0; n];
+            for i in 0..n {
+                v_re[i] = vecs[j * n * 2 + i * 2];
+                v_im[i] = vecs[j * n * 2 + i * 2 + 1];
+            }
+
+            // Compute A * v (real matrix × complex vector)
+            let mut av_re = vec![0.0; n];
+            let mut av_im = vec![0.0; n];
+            for i in 0..n {
+                for k in 0..n {
+                    av_re[i] += a[i * n + k] * v_re[k];
+                    av_im[i] += a[i * n + k] * v_im[k];
+                }
+            }
+
+            // Compute λ * v
+            let mut lv_re = vec![0.0; n];
+            let mut lv_im = vec![0.0; n];
+            for i in 0..n {
+                lv_re[i] = lam_re * v_re[i] - lam_im * v_im[i];
+                lv_im[i] = lam_re * v_im[i] + lam_im * v_re[i];
+            }
+
+            // Residual ||A*v - λ*v||
+            let mut residual_sq = 0.0;
+            for i in 0..n {
+                residual_sq += (av_re[i] - lv_re[i]).powi(2) + (av_im[i] - lv_im[i]).powi(2);
+            }
+            let residual = residual_sq.sqrt();
+            assert!(
+                residual < 1e-8 * a_norm,
+                "eigpair {j}: λ=({lam_re},{lam_im}), residual={residual}"
+            );
+        }
+    }
+
+    #[test]
+    fn schur_20x20_reconstruction() {
+        // 20x20 upper Hessenberg matrix
+        let n = 20;
+        let mut a = vec![0.0; n * n];
+        for i in 0..n {
+            a[i * n + i] = (i as f64 + 1.0) * 1.5;
+            if i + 1 < n {
+                a[i * n + (i + 1)] = 0.8;
+                a[(i + 1) * n + i] = 0.4;
+            }
+        }
+        let (t, z) = schur_nxn(&a, n).expect("schur 20x20");
+        // Reconstruct: A ≈ Z * T * Z^T
+        let mut recon = vec![0.0; n * n];
+        // zt = Z * T
+        let mut zt = vec![0.0; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                for k in 0..n {
+                    zt[i * n + j] += z[i * n + k] * t[k * n + j];
+                }
+            }
+        }
+        // recon = zt * Z^T
+        for i in 0..n {
+            for j in 0..n {
+                for k in 0..n {
+                    recon[i * n + j] += zt[i * n + k] * z[j * n + k];
+                }
+            }
+        }
+        let a_norm: f64 = a.iter().map(|x| x * x).sum::<f64>().sqrt();
+        let mut err_sq = 0.0;
+        for i in 0..(n * n) {
+            err_sq += (a[i] - recon[i]).powi(2);
+        }
+        let err = err_sq.sqrt();
+        assert!(
+            err < 1e-10 * a_norm,
+            "Schur reconstruction error: {err} (norm={a_norm})"
+        );
+    }
+
+    #[test]
+    fn eigvalsh_50x50_tridiagonal() {
+        // 50x50 symmetric tridiagonal with known eigenvalue bounds
+        let n = 50;
+        let mut a = vec![0.0; n * n];
+        for i in 0..n {
+            a[i * n + i] = 2.0;
+            if i + 1 < n {
+                a[i * n + (i + 1)] = -1.0;
+                a[(i + 1) * n + i] = -1.0;
+            }
+        }
+        let eigvals = eigvalsh_nxn(&a, n).expect("eigvalsh 50x50");
+        assert_eq!(eigvals.len(), n);
+        // Known eigenvalues: 2 - 2*cos(k*π/(n+1)) for k=1..n
+        // All should be in (0, 4)
+        let mut sorted = eigvals.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        for (k, &val) in sorted.iter().enumerate() {
+            let expected =
+                2.0 - 2.0 * ((k + 1) as f64 * std::f64::consts::PI / (n + 1) as f64).cos();
+            assert!(
+                (val - expected).abs() < 1e-8,
+                "eigval {k}: got {val}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
     fn eigh_nxn_eigenvectors_reconstruct() {
         // Symmetric 3x3 identity: eigvals = [1,1,1], eigvecs = I
         let eye = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
@@ -5163,6 +6076,99 @@ mod tests {
         }
     }
 
+    #[test]
+    fn svd_high_condition_number_preserves_small_singular_values() {
+        // 4x3 matrix with cond(A) = 10^12, singular values [1e6, 1.0, 1e-6]
+        // Constructed from random orthogonal matrices (np.random.seed(42))
+        #[rustfmt::skip]
+        let a = [
+             379645.7743350327,  -225645.24435488618,  479553.25114605244,
+            -178966.65563490757,  106370.25818389589, -226063.73815110396,
+            -358826.2181453029,   213270.82822770457, -453254.4589148696,
+             184936.09609271045, -109917.40263701396,  233602.18131610617,
+        ];
+        let (u, s, vt) = svd_mxn_full(&a, 4, 3).unwrap();
+
+        // Singular values must be in descending order
+        assert!(s[0] >= s[1] && s[1] >= s[2]);
+
+        // The old A^T*A approach would square the condition number to 10^24,
+        // losing small singular values entirely (gave σ₂≈5e-4 instead of 1e-6).
+        // Golub-Reinsch QR on the bidiagonal preserves them to ~machine precision.
+        assert!(
+            (s[0] - 1e6).abs() / 1e6 < 1e-8,
+            "sigma_0 = {} (expected 1e6)",
+            s[0]
+        );
+        assert!(
+            (s[1] - 1.0).abs() < 1e-8,
+            "sigma_1 = {} (expected 1.0)",
+            s[1]
+        );
+        assert!(
+            (s[2] - 1e-6).abs() / 1e-6 < 1e-2,
+            "sigma_2 = {} (expected 1e-6)",
+            s[2]
+        );
+
+        // Reconstruction: ||A - U*S*Vt|| / ||A|| < eps * cond
+        let m = 4;
+        let n = 3;
+        let k = 3;
+        let mut recon = vec![0.0; m * n];
+        for i in 0..m {
+            for j in 0..n {
+                let mut sum = 0.0;
+                for l in 0..k {
+                    sum += u[i * m + l] * s[l] * vt[l * n + j];
+                }
+                recon[i * n + j] = sum;
+            }
+        }
+        let a_norm: f64 = a.iter().map(|&x| x * x).sum::<f64>().sqrt();
+        let err: f64 = a
+            .iter()
+            .zip(recon.iter())
+            .map(|(&ai, &ri)| (ai - ri) * (ai - ri))
+            .sum::<f64>()
+            .sqrt();
+        let rel_err = err / a_norm;
+        assert!(
+            rel_err < 1e-6,
+            "Relative reconstruction error = {rel_err:.2e} (must be < 1e-6)"
+        );
+
+        // U orthogonality: ||U^T U - I|| < eps
+        for i in 0..m {
+            for j in 0..m {
+                let mut dot = 0.0;
+                for r in 0..m {
+                    dot += u[r * m + i] * u[r * m + j];
+                }
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert!(
+                    (dot - expected).abs() < 1e-6,
+                    "U^T*U[{i},{j}] = {dot}, expected {expected}"
+                );
+            }
+        }
+
+        // Vt orthogonality: ||Vt Vt^T - I|| < eps
+        for i in 0..n {
+            for j in 0..n {
+                let mut dot = 0.0;
+                for c in 0..n {
+                    dot += vt[i * n + c] * vt[j * n + c];
+                }
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert!(
+                    (dot - expected).abs() < 1e-6,
+                    "Vt*Vt^T[{i},{j}] = {dot}, expected {expected}"
+                );
+            }
+        }
+    }
+
     // ── expm tests ──
 
     #[test]
@@ -5543,5 +6549,246 @@ mod tests {
                 via_expm[i],
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Batched linalg tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn batch_inv_3d_stack() {
+        // 3 stacked 2x2 identity-like matrices
+        let data = vec![
+            1.0, 0.0, 0.0, 1.0, // I
+            2.0, 0.0, 0.0, 0.5, // diag(2, 0.5)
+            1.0, 1.0, 0.0, 1.0, // upper triangular
+        ];
+        let shape = [3, 2, 2];
+        let inv = batch_inv(&data, &shape).expect("batch_inv");
+        assert_eq!(inv.len(), 12); // 3 * 2 * 2
+
+        // First: inv(I) = I
+        assert!((inv[0] - 1.0).abs() < 1e-12);
+        assert!((inv[3] - 1.0).abs() < 1e-12);
+
+        // Second: inv(diag(2, 0.5)) = diag(0.5, 2)
+        assert!((inv[4] - 0.5).abs() < 1e-12);
+        assert!((inv[7] - 2.0).abs() < 1e-12);
+
+        // Third: inv([[1,1],[0,1]]) = [[1,-1],[0,1]]
+        assert!((inv[8] - 1.0).abs() < 1e-12);
+        assert!((inv[9] - (-1.0)).abs() < 1e-12);
+        assert!((inv[10]).abs() < 1e-12);
+        assert!((inv[11] - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn batch_det_returns_scalar_per_matrix() {
+        // 4 stacked 3x3 matrices (4D shape: 2x2x3x3)
+        let n = 3;
+        let mut data = Vec::new();
+        let expected_dets = [1.0, -1.0, 8.0, 0.0];
+        // Identity
+        data.extend_from_slice(&[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+        // Permutation (det = -1)
+        data.extend_from_slice(&[0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+        // 2*I (det = 8)
+        data.extend_from_slice(&[2.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 2.0]);
+        // Singular (det = 0)
+        data.extend_from_slice(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+
+        let shape = [2, 2, n, n]; // 4D batch
+        let dets = batch_det(&data, &shape).expect("batch_det");
+        assert_eq!(dets.len(), 4);
+        for (i, (&got, &expected)) in dets.iter().zip(expected_dets.iter()).enumerate() {
+            assert!(
+                (got - expected).abs() < 1e-10,
+                "det[{i}]: got {got}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn batch_solve_broadcasts_single_a() {
+        // Single 2x2 system, batch of 3 rhs vectors
+        let a = vec![2.0, 0.0, 0.0, 3.0]; // diag(2, 3)
+        let b = vec![4.0, 9.0, 2.0, 6.0, 6.0, 3.0]; // 3 vectors
+        let a_shape = [1, 2, 2]; // batch=1
+        let b_shape = [3, 2]; // batch=3
+        let x = batch_solve(&a, &a_shape, &b, &b_shape).expect("batch_solve");
+        assert_eq!(x.len(), 6);
+        // x[0] = [2, 3], x[1] = [1, 2], x[2] = [3, 1]
+        assert!((x[0] - 2.0).abs() < 1e-12);
+        assert!((x[1] - 3.0).abs() < 1e-12);
+        assert!((x[2] - 1.0).abs() < 1e-12);
+        assert!((x[3] - 2.0).abs() < 1e-12);
+        assert!((x[4] - 3.0).abs() < 1e-12);
+        assert!((x[5] - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn batch_eigvalsh_stacked() {
+        // 2 stacked 3x3 symmetric matrices
+        let a1 = [2.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 5.0]; // eigs: 5, 3, 2
+        let a2 = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]; // eigs: 1, 1, 1
+        let mut data = Vec::new();
+        data.extend_from_slice(&a1);
+        data.extend_from_slice(&a2);
+        let shape = [2, 3, 3];
+        let eigvals = batch_eigvalsh(&data, &shape).expect("batch_eigvalsh");
+        assert_eq!(eigvals.len(), 6); // 2 × 3
+        // First matrix: sorted descending [5, 3, 2]
+        assert!((eigvals[0] - 5.0).abs() < 1e-10);
+        assert!((eigvals[1] - 3.0).abs() < 1e-10);
+        assert!((eigvals[2] - 2.0).abs() < 1e-10);
+        // Second matrix: [1, 1, 1]
+        for i in 3..6 {
+            assert!((eigvals[i] - 1.0).abs() < 1e-10, "eig[{i}]={}", eigvals[i]);
+        }
+    }
+
+    #[test]
+    fn batch_svd_stacked_rectangular() {
+        // 2 stacked 3x2 matrices
+        let a1 = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]; // sigmas: 1, 1
+        let a2 = [3.0, 0.0, 0.0, 4.0, 0.0, 0.0]; // sigmas: 4, 3
+        let mut data = Vec::new();
+        data.extend_from_slice(&a1);
+        data.extend_from_slice(&a2);
+        let shape = [2, 3, 2];
+        let sigmas = batch_svd(&data, &shape).expect("batch_svd");
+        assert_eq!(sigmas.len(), 4); // 2 × min(3,2)
+        // First: [1, 1] (sorted descending)
+        assert!((sigmas[0] - 1.0).abs() < 1e-10);
+        assert!((sigmas[1] - 1.0).abs() < 1e-10);
+        // Second: [4, 3]
+        assert!((sigmas[2] - 4.0).abs() < 1e-10);
+        assert!((sigmas[3] - 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn batch_qr_stacked() {
+        // 2 stacked 3x2 matrices
+        let a1 = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+        let a2 = [1.0, 1.0, 1.0, 0.0, 0.0, 0.0];
+        let mut data = Vec::new();
+        data.extend_from_slice(&a1);
+        data.extend_from_slice(&a2);
+        let shape = [2, 3, 2];
+        let (all_q, all_r) = batch_qr(&data, &shape).expect("batch_qr");
+        let m = 3;
+        let n = 2;
+        // Q is m×m, R is m×n
+        assert_eq!(all_q.len(), 2 * m * m);
+        assert_eq!(all_r.len(), 2 * m * n);
+
+        // Verify reconstruction: Q*R ≈ A for each
+        for b in 0..2 {
+            let q = &all_q[b * m * m..(b + 1) * m * m];
+            let r = &all_r[b * m * n..(b + 1) * m * n];
+            let a_sub = &data[b * m * n..(b + 1) * m * n];
+            for i in 0..m {
+                for j in 0..n {
+                    let mut val = 0.0;
+                    for l in 0..m {
+                        val += q[i * m + l] * r[l * n + j];
+                    }
+                    assert!(
+                        (val - a_sub[i * n + j]).abs() < 1e-10,
+                        "batch {b}, [{i},{j}]: {val} vs {}",
+                        a_sub[i * n + j]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn batch_cholesky_stacked() {
+        // 2 stacked 2x2 positive definite matrices
+        let a1 = [4.0, 2.0, 2.0, 5.0];
+        let a2 = [9.0, 0.0, 0.0, 4.0];
+        let mut data = Vec::new();
+        data.extend_from_slice(&a1);
+        data.extend_from_slice(&a2);
+        let shape = [2, 2, 2];
+        let chol = batch_cholesky(&data, &shape).expect("batch_cholesky");
+        assert_eq!(chol.len(), 8); // 2 × 2 × 2
+        // Verify L*L^T ≈ A for each
+        for b in 0..2 {
+            let l = &chol[b * 4..(b + 1) * 4];
+            let a_sub = &data[b * 4..(b + 1) * 4];
+            for i in 0..2 {
+                for j in 0..2 {
+                    let mut val = 0.0;
+                    for k in 0..2 {
+                        val += l[i * 2 + k] * l[j * 2 + k];
+                    }
+                    assert!(
+                        (val - a_sub[i * 2 + j]).abs() < 1e-10,
+                        "batch {b}, [{i},{j}]: {val} vs {}",
+                        a_sub[i * 2 + j]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn batch_trace_and_slogdet() {
+        let data = vec![
+            1.0, 0.0, 0.0, 2.0, // diag(1, 2), trace=3, det=2
+            3.0, 0.0, 0.0, 4.0, // diag(3, 4), trace=7, det=12
+        ];
+        let shape = [2, 2, 2];
+        let traces = batch_trace(&data, &shape).expect("batch_trace");
+        assert_eq!(traces.len(), 2);
+        assert!((traces[0] - 3.0).abs() < 1e-12);
+        assert!((traces[1] - 7.0).abs() < 1e-12);
+
+        let (signs, logabsdets) = batch_slogdet(&data, &shape).expect("batch_slogdet");
+        assert_eq!(signs.len(), 2);
+        assert!((signs[0] - 1.0).abs() < 1e-12);
+        assert!((signs[1] - 1.0).abs() < 1e-12);
+        assert!((logabsdets[0] - 2.0_f64.ln()).abs() < 1e-12);
+        assert!((logabsdets[1] - 12.0_f64.ln()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn batch_eig_complex_pairs() {
+        // Stack a rotation matrix (complex eigs) and a diagonal (real eigs)
+        let theta = std::f64::consts::FRAC_PI_3; // 60 degrees
+        let c = theta.cos();
+        let s = theta.sin();
+        let mut data = Vec::new();
+        data.extend_from_slice(&[c, -s, s, c]); // rotation
+        data.extend_from_slice(&[5.0, 0.0, 0.0, 7.0]); // diagonal
+        let shape = [2, 2, 2];
+        let eigs = batch_eig(&data, &shape).expect("batch_eig");
+        assert_eq!(eigs.len(), 8); // 2 matrices × 2 eigenvalues × 2 (re, im)
+
+        // First matrix: eigenvalues cos(θ) ± i*sin(θ)
+        assert!((eigs[0] - c).abs() < 1e-10, "re0={}", eigs[0]);
+        assert!((eigs[1].abs() - s).abs() < 1e-10, "im0={}", eigs[1]);
+        assert!((eigs[2] - c).abs() < 1e-10, "re1={}", eigs[2]);
+        assert!((eigs[1] + eigs[3]).abs() < 1e-10, "conjugate");
+
+        // Second matrix: eigenvalues 5, 7 (sorted may vary)
+        let re0 = eigs[4];
+        let re1 = eigs[6];
+        assert!(eigs[5].abs() < 1e-10, "should be real");
+        assert!(eigs[7].abs() < 1e-10, "should be real");
+        let mut real_eigs = [re0, re1];
+        real_eigs.sort_by(|a, b| b.partial_cmp(a).unwrap());
+        assert!((real_eigs[0] - 7.0).abs() < 1e-10);
+        assert!((real_eigs[1] - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn batch_rejects_1d_input() {
+        let data = vec![1.0, 2.0, 3.0];
+        let shape = [3]; // 1D - should fail
+        assert!(batch_inv(&data, &shape).is_err());
+        assert!(batch_det(&data, &shape).is_err());
     }
 }

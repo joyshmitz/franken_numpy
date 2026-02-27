@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+mod ziggurat;
+
 const GOLDEN_GAMMA: u64 = 0x9E37_79B9_7F4A_7C15;
 const MIX_CONST1: u64 = 0xBF58_476D_1CE4_E5B9;
 const MIX_CONST2: u64 = 0x94D0_49BB_1331_11EB;
@@ -319,11 +321,350 @@ impl DeterministicRng {
     }
 }
 
+// PCG64-DXSM constants (from Melissa O'Neill's PCG family)
+// DEFAULT_MULTIPLIER_128: used during seeding (pcg_setseq_128_srandom_r)
+const PCG_DEFAULT_MULTIPLIER_128: u128 = 0x2360_ed05_1fc6_5da4_4385_df64_9fcc_f645;
+// CHEAP_MULTIPLIER: used during generation (pcg_cm_step_r), only 64-bit
+const PCG_CHEAP_MULTIPLIER: u64 = 0xda94_2042_e4dd_58b5;
+
+/// NumPy-compatible PCG64-DXSM bit generator.
+///
+/// Implements the PCG-XSL-DXSM-128/64 variant used by `numpy.random.PCG64DXSM`
+/// and `numpy.random.PCG64` (same state, different output for the XSL-RR variant).
+/// State is 128-bit with a 128-bit increment (stream selector).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pcg64DxsmRng {
+    state: u128,
+    inc: u128,
+}
+
+impl Pcg64DxsmRng {
+    /// Create from a SeedSequence (NumPy-compatible initialization).
+    ///
+    /// Draws 4 u64 words from the SeedSequence:
+    /// - words[0..2] → initstate (big-endian: words[0] is high)
+    /// - words[2..4] → initseq (big-endian: words[2] is high)
+    ///
+    /// Then applies the standard PCG seeding:
+    /// ```text
+    /// state = 0
+    /// inc = (initseq << 1) | 1
+    /// state = state * DEFAULT_MULT + inc
+    /// state += initstate
+    /// state = state * DEFAULT_MULT + inc
+    /// ```
+    pub fn from_seed_sequence(ss: &SeedSequence) -> Result<Self, SeedSequenceError> {
+        let words = ss.generate_state_u64(4)?;
+        let initstate = (u128::from(words[0]) << 64) | u128::from(words[1]);
+        let initseq = (u128::from(words[2]) << 64) | u128::from(words[3]);
+        Ok(Self::seed(initstate, initseq))
+    }
+
+    /// Create from a u64 seed by constructing a SeedSequence internally.
+    pub fn from_u64_seed(seed: u64) -> Result<Self, SeedSequenceError> {
+        // NumPy converts seed to u32 words for SeedSequence
+        let entropy = if seed <= u64::from(u32::MAX) {
+            vec![seed as u32]
+        } else {
+            vec![seed as u32, (seed >> 32) as u32]
+        };
+        let ss = SeedSequence::new(&entropy)?;
+        Self::from_seed_sequence(&ss)
+    }
+
+    /// Create from explicit 128-bit state and initseq.
+    /// Applies the standard PCG seeding procedure.
+    #[must_use]
+    pub fn seed(initstate: u128, initseq: u128) -> Self {
+        let inc = (initseq << 1) | 1;
+        let mut state: u128 = 0;
+        // First step with DEFAULT_MULTIPLIER
+        state = state
+            .wrapping_mul(PCG_DEFAULT_MULTIPLIER_128)
+            .wrapping_add(inc);
+        // Add initstate
+        state = state.wrapping_add(initstate);
+        // Second step with DEFAULT_MULTIPLIER
+        state = state
+            .wrapping_mul(PCG_DEFAULT_MULTIPLIER_128)
+            .wrapping_add(inc);
+        Self { state, inc }
+    }
+
+    /// Create from raw state and increment (no seeding, direct construction).
+    /// Use this for restoring a previously saved state.
+    #[must_use]
+    pub const fn from_raw_state(state: u128, inc: u128) -> Self {
+        Self { state, inc }
+    }
+
+    /// Get the current raw state as (state, inc).
+    #[must_use]
+    pub const fn raw_state(&self) -> (u128, u128) {
+        (self.state, self.inc)
+    }
+
+    /// PCG-CM step: advance state using the cheap multiplier.
+    fn step(&mut self) {
+        self.state = self
+            .state
+            .wrapping_mul(u128::from(PCG_CHEAP_MULTIPLIER))
+            .wrapping_add(self.inc);
+    }
+
+    /// DXSM output function applied to the current state.
+    #[must_use]
+    fn dxsm_output(&self) -> u64 {
+        let mut hi = (self.state >> 64) as u64;
+        let lo = (self.state as u64) | 1; // lo |= 1
+        hi ^= hi >> 32;
+        hi = hi.wrapping_mul(PCG_CHEAP_MULTIPLIER);
+        hi ^= hi >> 48;
+        hi = hi.wrapping_mul(lo);
+        hi
+    }
+
+    /// Generate the next random u64.
+    /// Outputs DXSM of current state, then advances.
+    #[must_use]
+    pub fn next_u64(&mut self) -> u64 {
+        let output = self.dxsm_output();
+        self.step();
+        output
+    }
+
+    /// Generate the next random f64 in [0, 1).
+    /// Uses the high 53 bits for IEEE754 mantissa precision.
+    #[must_use]
+    pub fn next_f64(&mut self) -> f64 {
+        let sample = self.next_u64() >> 11;
+        sample as f64 / (1u64 << 53) as f64
+    }
+
+    /// Generate a bounded random u64 in [0, upper_bound) using rejection sampling.
+    pub fn bounded_u64(&mut self, upper_bound: u64) -> Result<u64, RandomError> {
+        if upper_bound == 0 {
+            return Err(RandomError::InvalidUpperBound);
+        }
+        let threshold = u64::MAX - u64::MAX % upper_bound;
+        loop {
+            let candidate = self.next_u64();
+            if candidate < threshold {
+                return Ok(candidate % upper_bound);
+            }
+        }
+    }
+
+    /// Fill a vector with `len` random u64 values.
+    #[must_use]
+    pub fn fill_u64(&mut self, len: usize) -> Vec<u64> {
+        (0..len).map(|_| self.next_u64()).collect()
+    }
+
+    /// Advance the state by `delta` steps (jump-ahead).
+    /// Uses the standard PCG advance formula: O(log(delta)) multiplications.
+    pub fn advance(&mut self, delta: u128) {
+        self.state =
+            pcg_advance_128(self.state, delta, u128::from(PCG_CHEAP_MULTIPLIER), self.inc);
+    }
+}
+
+/// PCG advance formula: compute state after `delta` steps.
+/// state_{n+delta} = mult^delta * state_n + (mult^delta - 1) / (mult - 1) * inc
+/// Implemented via repeated squaring in O(log(delta)) time.
+fn pcg_advance_128(state: u128, mut delta: u128, mult: u128, inc: u128) -> u128 {
+    let mut cur_mult: u128 = mult;
+    let mut cur_plus: u128 = inc;
+    let mut acc_mult: u128 = 1;
+    let mut acc_plus: u128 = 0;
+
+    while delta > 0 {
+        if delta & 1 != 0 {
+            acc_mult = acc_mult.wrapping_mul(cur_mult);
+            acc_plus = acc_plus.wrapping_mul(cur_mult).wrapping_add(cur_plus);
+        }
+        cur_plus = cur_mult.wrapping_add(1).wrapping_mul(cur_plus);
+        cur_mult = cur_mult.wrapping_mul(cur_mult);
+        delta >>= 1;
+    }
+    acc_mult.wrapping_mul(state).wrapping_add(acc_plus)
+}
+
+// ── MT19937 Mersenne Twister ─────────────────────────────────────────────
+
+const MT_N: usize = 624;
+const MT_M: usize = 397;
+const MT_MATRIX_A: u32 = 0x9908_b0df;
+const MT_UPPER_MASK: u32 = 0x8000_0000;
+const MT_LOWER_MASK: u32 = 0x7fff_ffff;
+const MT_INIT_MULT: u32 = 1_812_433_253;
+
+/// NumPy-compatible MT19937 (Mersenne Twister) PRNG.
+///
+/// Supports two seeding modes:
+/// - **Classic** (`from_u32_seed`): NumPy's `RandomState(seed)` — `init_genrand(seed)`
+/// - **Modern** (`from_seed_sequence`): NumPy's `MT19937(seed)` — SeedSequence-based
+///
+/// Produces the same u32 stream as NumPy for both modes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mt19937Rng {
+    mt: Vec<u32>,
+    pos: usize,
+}
+
+impl Mt19937Rng {
+    /// Classic `init_genrand` seeding (NumPy's `RandomState(seed)`).
+    ///
+    /// After seeding, `pos = N` (624) meaning a twist is required before first output.
+    #[must_use]
+    pub fn from_u32_seed(seed: u32) -> Self {
+        let mut mt = vec![0u32; MT_N];
+        mt[0] = seed;
+        for i in 1..MT_N {
+            mt[i] = MT_INIT_MULT
+                .wrapping_mul(mt[i - 1] ^ (mt[i - 1] >> 30))
+                .wrapping_add(i as u32);
+        }
+        Self { mt, pos: MT_N }
+    }
+
+    /// Modern SeedSequence-based seeding (NumPy's `MT19937(seed)`).
+    ///
+    /// Fills the 624-element state from `SeedSequence.generate_state(624, u32)`,
+    /// sets `mt[0] = UPPER_MASK`, and `pos = N-1` (623).
+    pub fn from_seed_sequence(ss: &SeedSequence) -> Result<Self, SeedSequenceError> {
+        let mut mt = ss.generate_state_u32(MT_N)?;
+        mt[0] = MT_UPPER_MASK;
+        Ok(Self {
+            mt,
+            pos: MT_N - 1,
+        })
+    }
+
+    /// Create from a u64 seed using classic seeding (low 32 bits).
+    #[must_use]
+    pub fn from_u64_seed_classic(seed: u64) -> Self {
+        Self::from_u32_seed(seed as u32)
+    }
+
+    /// Create from explicit state and position (for state restoration).
+    pub fn from_raw_state(mt: &[u32], pos: usize) -> Result<Self, BitGeneratorError> {
+        if mt.len() != MT_N {
+            return Err(BitGeneratorError::StateSchemaInvalid(
+                "MT19937 state vector must have exactly 624 elements",
+            ));
+        }
+        if pos > MT_N {
+            return Err(BitGeneratorError::StateSchemaInvalid(
+                "MT19937 position must be <= 624",
+            ));
+        }
+        Ok(Self {
+            mt: mt.to_vec(),
+            pos,
+        })
+    }
+
+    /// Get the raw state as (state_vector, position).
+    #[must_use]
+    pub fn raw_state(&self) -> (&[u32], usize) {
+        (&self.mt, self.pos)
+    }
+
+    /// The Mersenne Twister twist operation.
+    /// Regenerates the entire 624-element state vector.
+    fn twist(&mut self) {
+        for kk in 0..(MT_N - MT_M) {
+            let y = (self.mt[kk] & MT_UPPER_MASK) | (self.mt[kk + 1] & MT_LOWER_MASK);
+            self.mt[kk] = self.mt[kk + MT_M] ^ (y >> 1) ^ if y & 1 != 0 { MT_MATRIX_A } else { 0 };
+        }
+        for kk in (MT_N - MT_M)..(MT_N - 1) {
+            let y = (self.mt[kk] & MT_UPPER_MASK) | (self.mt[kk + 1] & MT_LOWER_MASK);
+            self.mt[kk] =
+                self.mt[kk + MT_M - MT_N] ^ (y >> 1) ^ if y & 1 != 0 { MT_MATRIX_A } else { 0 };
+        }
+        let y = (self.mt[MT_N - 1] & MT_UPPER_MASK) | (self.mt[0] & MT_LOWER_MASK);
+        self.mt[MT_N - 1] =
+            self.mt[MT_M - 1] ^ (y >> 1) ^ if y & 1 != 0 { MT_MATRIX_A } else { 0 };
+    }
+
+    /// The MT19937 tempering transformation.
+    #[must_use]
+    fn temper(mut y: u32) -> u32 {
+        y ^= y >> 11;
+        y ^= (y << 7) & 0x9D2C_5680;
+        y ^= (y << 15) & 0xEFC6_0000;
+        y ^= y >> 18;
+        y
+    }
+
+    /// Generate the next random u32.
+    #[must_use]
+    pub fn next_u32(&mut self) -> u32 {
+        if self.pos >= MT_N {
+            self.twist();
+            self.pos = 0;
+        }
+        let y = self.mt[self.pos];
+        self.pos += 1;
+        Self::temper(y)
+    }
+
+    /// Generate the next random u64 by combining two u32 values.
+    #[must_use]
+    pub fn next_u64(&mut self) -> u64 {
+        let hi = u64::from(self.next_u32());
+        let lo = u64::from(self.next_u32());
+        (hi << 32) | lo
+    }
+
+    /// Generate a random f64 in [0, 1) using NumPy's `genrand_res53` algorithm.
+    ///
+    /// `a = u32 >> 5` (27 bits), `b = u32 >> 6` (26 bits) → 53-bit mantissa.
+    /// `result = (a * 2^26 + b) / 2^53`
+    #[must_use]
+    pub fn next_f64(&mut self) -> f64 {
+        let a = f64::from(self.next_u32() >> 5);
+        let b = f64::from(self.next_u32() >> 6);
+        (a * 67_108_864.0 + b) * (1.0 / 9_007_199_254_740_992.0)
+    }
+
+    /// Generate a bounded random u32 in [0, upper_bound) using rejection sampling.
+    pub fn bounded_u32(&mut self, upper_bound: u32) -> Result<u32, RandomError> {
+        if upper_bound == 0 {
+            return Err(RandomError::InvalidUpperBound);
+        }
+        let threshold = u32::MAX - u32::MAX % upper_bound;
+        loop {
+            let candidate = self.next_u32();
+            if candidate < threshold {
+                return Ok(candidate % upper_bound);
+            }
+        }
+    }
+
+    /// Fill a vector with `len` random u32 values.
+    #[must_use]
+    pub fn fill_u32(&mut self, len: usize) -> Vec<u32> {
+        (0..len).map(|_| self.next_u32()).collect()
+    }
+}
+
+// NumPy-compatible SeedSequence constants (from Melissa O'Neill's seed_seq design)
+const SS_INIT_A: u32 = 0x43b0_d7e5;
+const SS_MULT_A: u32 = 0x931e_8875;
+const SS_INIT_B: u32 = 0x8b51_f9dd;
+const SS_MULT_B: u32 = 0x58f3_8ded;
+const SS_MIX_MULT_L: u32 = 0xca01_f9dd;
+const SS_MIX_MULT_R: u32 = 0x4973_f715;
+const SS_XSHIFT: u32 = 16;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeedSequence {
     entropy: Vec<u32>,
     spawn_key: Vec<u32>,
     pool_size: usize,
+    pool: Vec<u32>,
     spawn_counter: u64,
 }
 
@@ -346,14 +687,27 @@ impl SeedSequence {
         pool_size: usize,
         spawn_counter: u64,
     ) -> Result<Self, SeedSequenceError> {
-        if entropy.is_empty() || pool_size == 0 || pool_size > MAX_SEED_SEQUENCE_POOL_SIZE {
+        if entropy.is_empty() || !(DEFAULT_SEED_SEQUENCE_POOL_SIZE..=MAX_SEED_SEQUENCE_POOL_SIZE).contains(&pool_size) {
             return Err(SeedSequenceError::GenerateStateContractViolation);
         }
+
+        // Assemble entropy: run_entropy + spawn_key
+        // NumPy (since 1.19): when spawn_key is present and run_entropy < pool_size,
+        // pad run_entropy with zeros to pool_size to avoid position conflicts.
+        let mut assembled: Vec<u32> = entropy.to_vec();
+        if !spawn_key.is_empty() && assembled.len() < pool_size {
+            assembled.resize(pool_size, 0);
+        }
+        assembled.extend_from_slice(spawn_key);
+
+        // Mix entropy into pool (NumPy algorithm)
+        let pool = mix_entropy_pool(&assembled, pool_size);
 
         Ok(Self {
             entropy: entropy.to_vec(),
             spawn_key: spawn_key.to_vec(),
             pool_size,
+            pool,
             spawn_counter,
         })
     }
@@ -371,6 +725,11 @@ impl SeedSequence {
     #[must_use]
     pub const fn pool_size(&self) -> usize {
         self.pool_size
+    }
+
+    #[must_use]
+    pub fn pool(&self) -> &[u32] {
+        &self.pool
     }
 
     #[must_use]
@@ -397,6 +756,8 @@ impl SeedSequence {
         )
     }
 
+    /// Generate `words` u32 values from the pool (NumPy algorithm).
+    /// Cycles through pool elements applying hash transformation.
     pub fn generate_state_u32(&self, words: usize) -> Result<Vec<u32>, SeedSequenceError> {
         if words > MAX_SEED_SEQUENCE_WORDS {
             return Err(SeedSequenceError::GenerateStateContractViolation);
@@ -405,24 +766,23 @@ impl SeedSequence {
             return Ok(Vec::new());
         }
 
-        let mut state = seed_material_to_u64(&self.entropy);
-        state ^= splitmix64(seed_material_to_u64(&self.spawn_key));
-        let pool_size_u64 = u64::try_from(self.pool_size)
-            .map_err(|_| SeedSequenceError::GenerateStateContractViolation)?;
-        state ^= pool_size_u64.wrapping_mul(GOLDEN_GAMMA);
+        let mut hash_const: u32 = SS_INIT_B;
+        let mut state = vec![0u32; words];
+        let pool_len = self.pool.len();
 
-        let mut generated = Vec::with_capacity(words);
-        for idx in 0..words {
-            let idx_u64 = u64::try_from(idx)
-                .map_err(|_| SeedSequenceError::GenerateStateContractViolation)?;
-            state = splitmix64(state.wrapping_add((idx_u64 + 1).wrapping_mul(GOLDEN_GAMMA)));
-            let bytes = state.to_le_bytes();
-            generated.push(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]));
+        for (i, slot) in state.iter_mut().enumerate() {
+            let mut data_val: u32 = self.pool[i % pool_len];
+            data_val ^= hash_const;
+            hash_const = hash_const.wrapping_mul(SS_MULT_B);
+            data_val = data_val.wrapping_mul(hash_const);
+            data_val ^= data_val >> SS_XSHIFT;
+            *slot = data_val;
         }
 
-        Ok(generated)
+        Ok(state)
     }
 
+    /// Generate `words` u64 values by drawing 2*words u32 values and pairing them.
     pub fn generate_state_u64(&self, words: usize) -> Result<Vec<u64>, SeedSequenceError> {
         let doubled_words = words
             .checked_mul(2)
@@ -442,6 +802,8 @@ impl SeedSequence {
         Ok(generated)
     }
 
+    /// Spawn child SeedSequences by extending the spawn_key.
+    /// Matches NumPy: child gets spawn_key + (child_index,).
     pub fn spawn(&mut self, n_children: usize) -> Result<Vec<Self>, SeedSequenceError> {
         if n_children == 0 || n_children > MAX_SEED_SEQUENCE_CHILDREN {
             return Err(SeedSequenceError::SpawnContractViolation);
@@ -455,11 +817,12 @@ impl SeedSequence {
             .ok_or(SeedSequenceError::SpawnContractViolation)?;
 
         let mut children = Vec::with_capacity(n_children);
-        for child_counter in self.spawn_counter..end {
+        for i in self.spawn_counter..end {
             let mut child_spawn_key = self.spawn_key.clone();
-            let bytes = child_counter.to_le_bytes();
-            child_spawn_key.push(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]));
-            child_spawn_key.push(u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]));
+            // NumPy appends child index as a single u32 value
+            let child_idx = u32::try_from(i)
+                .map_err(|_| SeedSequenceError::SpawnContractViolation)?;
+            child_spawn_key.push(child_idx);
             children.push(Self::with_spawn_key_and_counter(
                 &self.entropy,
                 &child_spawn_key,
@@ -471,6 +834,57 @@ impl SeedSequence {
         self.spawn_counter = end;
         Ok(children)
     }
+}
+
+/// NumPy-compatible entropy mixing into a pool of u32 words.
+/// Implements the hash-pool algorithm from Melissa O'Neill's seed_seq.
+fn mix_entropy_pool(entropy: &[u32], pool_size: usize) -> Vec<u32> {
+    let mut hash_const: u32 = SS_INIT_A;
+    let mut pool = vec![0u32; pool_size];
+
+    /// Hash a value using the evolving hash constant.
+    fn ss_hash(value: u32, hash_const: &mut u32) -> u32 {
+        let mut v = value ^ *hash_const;
+        *hash_const = hash_const.wrapping_mul(SS_MULT_A);
+        v = v.wrapping_mul(*hash_const);
+        v ^= v >> SS_XSHIFT;
+        v
+    }
+
+    /// Mix two values using the L/R multiply-XOR-shift pattern.
+    fn ss_mix(x: u32, y: u32) -> u32 {
+        let result = SS_MIX_MULT_L.wrapping_mul(x).wrapping_sub(SS_MIX_MULT_R.wrapping_mul(y));
+        result ^ (result >> SS_XSHIFT)
+    }
+
+    // Step 1: Hash entropy into pool positions (up to pool_size).
+    for i in 0..pool_size {
+        if i < entropy.len() {
+            pool[i] = ss_hash(entropy[i], &mut hash_const);
+        } else {
+            pool[i] = ss_hash(0, &mut hash_const);
+        }
+    }
+
+    // Step 2: Mix all bits together so late bits can affect earlier bits.
+    for i_src in 0..pool_size {
+        for i_dst in 0..pool_size {
+            if i_src != i_dst {
+                pool[i_dst] = ss_mix(pool[i_dst], ss_hash(pool[i_src], &mut hash_const));
+            }
+        }
+    }
+
+    // Step 3: Add any remaining entropy, mixing each word with each pool word.
+    if entropy.len() > pool_size {
+        for &ent_val in &entropy[pool_size..] {
+            for slot in pool.iter_mut() {
+                *slot = ss_mix(*slot, ss_hash(ent_val, &mut hash_const));
+            }
+        }
+    }
+
+    pool
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -611,10 +1025,65 @@ pub struct GeneratorPicklePayload {
     pub seed_sequence: Option<SeedSequenceSnapshot>,
 }
 
+/// RNG backend enum: dispatches to either the built-in DeterministicRng
+/// or a real PCG64-DXSM for NumPy-compatible distribution output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RngBackend {
+    Deterministic(DeterministicRng),
+    Pcg64Dxsm(Pcg64DxsmRng),
+}
+
+impl RngBackend {
+    fn next_u64(&mut self) -> u64 {
+        match self {
+            Self::Deterministic(rng) => rng.next_u64(),
+            Self::Pcg64Dxsm(rng) => rng.next_u64(),
+        }
+    }
+
+    fn next_f64(&mut self) -> f64 {
+        match self {
+            Self::Deterministic(rng) => rng.next_f64(),
+            Self::Pcg64Dxsm(rng) => rng.next_f64(),
+        }
+    }
+
+    fn bounded_u64(&mut self, upper_bound: u64) -> Result<u64, RandomError> {
+        match self {
+            Self::Deterministic(rng) => rng.bounded_u64(upper_bound),
+            Self::Pcg64Dxsm(rng) => rng.bounded_u64(upper_bound),
+        }
+    }
+
+    fn fill_u64(&mut self, len: usize) -> Vec<u64> {
+        match self {
+            Self::Deterministic(rng) => rng.fill_u64(len),
+            Self::Pcg64Dxsm(rng) => rng.fill_u64(len),
+        }
+    }
+
+    fn jump_ahead(&mut self, steps: u64) {
+        match self {
+            Self::Deterministic(rng) => rng.jump_ahead(steps),
+            Self::Pcg64Dxsm(rng) => rng.advance(u128::from(steps)),
+        }
+    }
+
+    fn state(&self) -> (u64, u64) {
+        match self {
+            Self::Deterministic(rng) => rng.state(),
+            Self::Pcg64Dxsm(rng) => {
+                let (state, inc) = rng.raw_state();
+                (state as u64, inc as u64)
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BitGenerator {
     kind: BitGeneratorKind,
-    rng: DeterministicRng,
+    rng: RngBackend,
 }
 
 impl BitGenerator {
@@ -633,7 +1102,7 @@ impl BitGenerator {
         };
         Ok(Self {
             kind,
-            rng: DeterministicRng::from_state(stream_seed, counter),
+            rng: RngBackend::Deterministic(DeterministicRng::from_state(stream_seed, counter)),
         })
     }
 
@@ -647,8 +1116,17 @@ impl BitGenerator {
         let (seed, counter) = rng.state();
         Ok(Self {
             kind,
-            rng: DeterministicRng::from_state(splitmix64(seed ^ kind.stream_tag()), counter),
+            rng: RngBackend::Deterministic(DeterministicRng::from_state(splitmix64(seed ^ kind.stream_tag()), counter)),
         })
+    }
+
+    /// Create a BitGenerator backed by a real PCG64-DXSM PRNG.
+    /// Distribution methods on Generator will produce NumPy-identical sequences.
+    pub fn from_pcg64_dxsm(pcg: Pcg64DxsmRng) -> Self {
+        Self {
+            kind: BitGeneratorKind::Pcg64,
+            rng: RngBackend::Pcg64Dxsm(pcg),
+        }
     }
 
     #[must_use]
@@ -735,7 +1213,7 @@ impl BitGenerator {
             );
             children.push(Self {
                 kind: self.kind,
-                rng: DeterministicRng::from_state(child_seed, child_counter),
+                rng: RngBackend::Deterministic(DeterministicRng::from_state(child_seed, child_counter)),
             });
         }
 
@@ -762,7 +1240,7 @@ impl BitGenerator {
             ));
         }
         state.validate()?;
-        self.rng = DeterministicRng::from_state(state.seed, state.counter);
+        self.rng = RngBackend::Deterministic(DeterministicRng::from_state(state.seed, state.counter));
         Ok(())
     }
 }
@@ -921,10 +1399,14 @@ impl RandomState {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Generator {
     bit_generator: BitGenerator,
     seed_sequence: Option<SeedSequence>,
+    /// Internal buffer for NumPy-compatible `next_uint32` buffering.
+    /// Each u64 produces two u32 values (low first, then high).
+    u32_buf: u32,
+    u32_buf_ready: bool,
 }
 
 impl Generator {
@@ -933,7 +1415,20 @@ impl Generator {
         Self {
             bit_generator,
             seed_sequence: None,
+            u32_buf: 0,
+            u32_buf_ready: false,
         }
+    }
+
+    /// Create a Generator backed by PCG64-DXSM, matching `numpy.random.Generator(PCG64DXSM(seed))`.
+    pub fn from_pcg64_dxsm(seed: u64) -> Result<Self, SeedSequenceError> {
+        let pcg = Pcg64DxsmRng::from_u64_seed(seed)?;
+        Ok(Self {
+            bit_generator: BitGenerator::from_pcg64_dxsm(pcg),
+            seed_sequence: None,
+            u32_buf: 0,
+            u32_buf_ready: false,
+        })
     }
 
     pub fn from_seed_sequence(
@@ -944,6 +1439,8 @@ impl Generator {
         Ok(Self {
             bit_generator,
             seed_sequence: Some(seed_sequence.clone()),
+            u32_buf: 0,
+            u32_buf_ready: false,
         })
     }
 
@@ -965,6 +1462,8 @@ impl Generator {
         Ok(Self {
             bit_generator,
             seed_sequence: Some(seed_sequence.clone()),
+            u32_buf: 0,
+            u32_buf_ready: false,
         })
     }
 
@@ -1000,6 +1499,8 @@ impl Generator {
         Ok(Self {
             bit_generator: self.bit_generator.jumped(jumps)?,
             seed_sequence: self.seed_sequence.clone(),
+            u32_buf: 0,
+            u32_buf_ready: false,
         })
     }
 
@@ -1029,6 +1530,8 @@ impl Generator {
                 children.push(Self {
                     bit_generator,
                     seed_sequence: Some(child_sequence),
+                    u32_buf: 0,
+                    u32_buf_ready: false,
                 });
             }
             return Ok(children);
@@ -1099,6 +1602,8 @@ impl Generator {
         Ok(Self {
             bit_generator,
             seed_sequence,
+            u32_buf: 0,
+            u32_buf_ready: false,
         })
     }
 
@@ -1163,27 +1668,15 @@ impl Generator {
         Ok(result)
     }
 
-    /// Generate standard normal (Gaussian, mean=0, std=1) samples using Box-Muller.
+    /// Generate standard normal (Gaussian, mean=0, std=1) samples using
+    /// the Ziggurat method (matching NumPy's Generator.standard_normal).
     ///
     /// Mimics `rng.standard_normal(size)`.
     #[must_use]
     pub fn standard_normal(&mut self, size: usize) -> Vec<f64> {
-        let mut result = Vec::with_capacity(size);
-        let mut spare: Option<f64> = None;
-        for _ in 0..size {
-            if let Some(val) = spare.take() {
-                result.push(val);
-            } else {
-                // Box-Muller transform
-                let u1 = self.next_f64().max(f64::MIN_POSITIVE); // avoid log(0)
-                let u2 = self.next_f64();
-                let r = (-2.0 * u1.ln()).sqrt();
-                let theta = 2.0 * std::f64::consts::PI * u2;
-                result.push(r * theta.cos());
-                spare = Some(r * theta.sin());
-            }
-        }
-        result
+        (0..size)
+            .map(|_| self.sample_ziggurat_normal())
+            .collect()
     }
 
     /// Generate normal (Gaussian) samples with given mean and standard deviation.
@@ -1203,10 +1696,7 @@ impl Generator {
     #[must_use]
     pub fn exponential(&mut self, scale: f64, size: usize) -> Vec<f64> {
         (0..size)
-            .map(|_| {
-                let u = self.next_f64().max(f64::MIN_POSITIVE);
-                -scale * u.ln()
-            })
+            .map(|_| scale * self.sample_ziggurat_exponential())
             .collect()
     }
 
@@ -1216,10 +1706,7 @@ impl Generator {
     #[must_use]
     pub fn standard_exponential(&mut self, size: usize) -> Vec<f64> {
         (0..size)
-            .map(|_| {
-                let u = self.next_f64().max(f64::MIN_POSITIVE);
-                -u.ln()
-            })
+            .map(|_| self.sample_ziggurat_exponential())
             .collect()
     }
 
@@ -1460,10 +1947,75 @@ impl Generator {
     }
 
     fn sample_standard_normal_single(&mut self) -> f64 {
-        // Box-Muller transform for a single value
-        let u1 = self.next_f64();
-        let u2 = self.next_f64();
-        (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
+        self.sample_ziggurat_normal()
+    }
+
+    /// Ziggurat method for standard normal, matching NumPy's
+    /// `random_standard_normal` in distributions.c exactly.
+    fn sample_ziggurat_normal(&mut self) -> f64 {
+        use crate::ziggurat::*;
+        loop {
+            let r = self.next_u64();
+            let idx = (r & 0xff) as usize;
+            let r = r >> 8;
+            let sign = r & 0x1;
+            let rabs = (r >> 1) & 0x000f_ffff_ffff_ffff;
+            let x = rabs as f64 * ZIGGURAT_NOR_W[idx];
+            let x = if sign & 0x1 != 0 { -x } else { x };
+            if rabs < ZIGGURAT_NOR_K[idx] {
+                return x;
+            }
+            if idx == 0 {
+                // Tail: Marsaglia's method
+                loop {
+                    let xx =
+                        -ZIGGURAT_NOR_INV_R * (-self.next_f64()).ln_1p();
+                    let yy = -(-self.next_f64()).ln_1p();
+                    if yy + yy > xx * xx {
+                        return if (rabs >> 8) & 0x1 != 0 {
+                            -(ZIGGURAT_NOR_R + xx)
+                        } else {
+                            ZIGGURAT_NOR_R + xx
+                        };
+                    }
+                }
+            } else {
+                // Wedge test
+                let f_diff =
+                    ZIGGURAT_NOR_F[idx - 1] - ZIGGURAT_NOR_F[idx];
+                if f_diff * self.next_f64() + ZIGGURAT_NOR_F[idx]
+                    < (-0.5 * x * x).exp()
+                {
+                    return x;
+                }
+            }
+        }
+    }
+
+    /// Ziggurat method for standard exponential, matching NumPy's
+    /// `random_standard_exponential` in distributions.c exactly.
+    fn sample_ziggurat_exponential(&mut self) -> f64 {
+        use crate::ziggurat::*;
+        loop {
+            let ri = self.next_u64();
+            let ri = ri >> 3;
+            let idx = (ri & 0xFF) as usize;
+            let ri = ri >> 8;
+            let x = ri as f64 * ZIGGURAT_EXP_W[idx];
+            if ri < ZIGGURAT_EXP_K[idx] {
+                return x;
+            }
+            // Unlikely path
+            if idx == 0 {
+                return ZIGGURAT_EXP_R - (-self.next_f64()).ln_1p();
+            }
+            let f_diff =
+                ZIGGURAT_EXP_F[idx - 1] - ZIGGURAT_EXP_F[idx];
+            if f_diff * self.next_f64() + ZIGGURAT_EXP_F[idx] < (-x).exp() {
+                return x;
+            }
+            // Reject and retry
+        }
     }
 
     /// Beta distribution via gamma sampling.
@@ -1478,11 +2030,35 @@ impl Generator {
     }
 
     /// Geometric distribution: number of trials until first success.
+    /// For p >= 1/3, uses search method; otherwise uses inversion via
+    /// standard_exponential (matching NumPy's algorithm).
     pub fn geometric(&mut self, p: f64, size: usize) -> Vec<u64> {
         (0..size)
             .map(|_| {
-                let u = self.next_f64();
-                (u.ln() / (1.0 - p).ln()).ceil() as u64
+                if p >= 1.0 / 3.0 {
+                    // Search method
+                    let q = 1.0 - p;
+                    let u = self.next_f64();
+                    let mut x = 1u64;
+                    let mut sum = p;
+                    let mut prod = p;
+                    while u > sum {
+                        prod *= q;
+                        sum += prod;
+                        x += 1;
+                    }
+                    x
+                } else {
+                    // Inversion via standard exponential
+                    let z =
+                        (-self.sample_ziggurat_exponential() / (-p).ln_1p())
+                            .ceil();
+                    if z >= 9.223_372_036_854_776e18 {
+                        i64::MAX as u64
+                    } else {
+                        z as u64
+                    }
+                }
             })
             .collect()
     }
@@ -1503,57 +2079,76 @@ impl Generator {
         self.gamma(df / 2.0, 2.0, size)
     }
 
-    /// Standard Cauchy distribution.
+    /// Standard Cauchy distribution (matching NumPy: ratio of two normals).
     pub fn standard_cauchy(&mut self, size: usize) -> Vec<f64> {
         (0..size)
             .map(|_| {
-                let u = self.next_f64();
-                (std::f64::consts::PI * (u - 0.5)).tan()
+                let n1 = self.sample_ziggurat_normal();
+                let n2 = self.sample_ziggurat_normal();
+                n1 / n2
             })
             .collect()
     }
 
-    /// Triangular distribution.
+    /// Triangular distribution (matching NumPy's exact formula).
     pub fn triangular(&mut self, left: f64, mode: f64, right: f64, size: usize) -> Vec<f64> {
-        let fc = (mode - left) / (right - left);
+        let base = right - left;
+        let leftbase = mode - left;
+        let ratio = leftbase / base;
+        let leftprod = leftbase * base;
+        let rightprod = (right - mode) * base;
         (0..size)
             .map(|_| {
                 let u = self.next_f64();
-                if u < fc {
-                    left + ((right - left) * (mode - left) * u).sqrt()
+                if u <= ratio {
+                    left + (u * leftprod).sqrt()
                 } else {
-                    right - ((right - left) * (right - mode) * (1.0 - u)).sqrt()
+                    right - ((1.0 - u) * rightprod).sqrt()
                 }
             })
             .collect()
     }
 
-    /// Laplace (double exponential) distribution.
+    /// Laplace (double exponential) distribution (matching NumPy's algorithm).
     pub fn laplace(&mut self, loc: f64, scale: f64, size: usize) -> Vec<f64> {
         (0..size)
             .map(|_| {
-                let u = self.next_f64() - 0.5;
-                loc - scale * u.signum() * (1.0 - 2.0 * u.abs()).ln()
+                loop {
+                    let u = self.next_f64();
+                    if u >= 0.5 {
+                        return loc - scale * (2.0 - u - u).ln();
+                    } else if u > 0.0 {
+                        return loc + scale * (u + u).ln();
+                    }
+                    // u == 0.0: retry (matches NumPy's recursive call)
+                }
             })
             .collect()
     }
 
-    /// Gumbel distribution.
+    /// Gumbel distribution (matching NumPy: uses 1-u to avoid log(0)).
     pub fn gumbel(&mut self, loc: f64, scale: f64, size: usize) -> Vec<f64> {
         (0..size)
             .map(|_| {
-                let u = self.next_f64();
-                loc - scale * (-(-u.ln()).ln())
+                loop {
+                    let u = 1.0 - self.next_f64();
+                    if u < 1.0 {
+                        return loc - scale * (-u.ln()).ln();
+                    }
+                    // u == 1.0 (i.e., next_f64 returned 0.0): retry
+                }
             })
             .collect()
     }
 
-    /// Weibull distribution.
+    /// Weibull distribution (matching NumPy: uses standard_exponential).
     pub fn weibull(&mut self, a: f64, size: usize) -> Vec<f64> {
         (0..size)
             .map(|_| {
-                let u = self.next_f64();
-                (-(-u).ln_1p()).powf(1.0 / a)
+                if a == 0.0 {
+                    return 0.0;
+                }
+                self.sample_ziggurat_exponential().powf(1.0 / a)
             })
             .collect()
     }
@@ -1801,9 +2396,15 @@ impl Generator {
             .collect()
     }
 
-    /// Power distribution on [0, 1).  CDF = x^a, inverse-CDF = u^(1/a).
+    /// Power distribution (matching NumPy: uses standard_exponential).
     pub fn power(&mut self, a: f64, size: usize) -> Vec<f64> {
-        (0..size).map(|_| self.next_f64().powf(1.0 / a)).collect()
+        (0..size)
+            .map(|_| {
+                (-(-self.sample_ziggurat_exponential()).exp_m1()).powf(
+                    1.0 / a,
+                )
+            })
+            .collect()
     }
 
     /// Von Mises circular distribution (Best-Fisher algorithm).
@@ -1832,22 +2433,20 @@ impl Generator {
             .collect()
     }
 
-    /// Rayleigh distribution.
+    /// Rayleigh distribution (matching NumPy: uses standard_exponential).
     pub fn rayleigh(&mut self, scale: f64, size: usize) -> Vec<f64> {
         (0..size)
             .map(|_| {
-                let u = self.next_f64();
-                scale * (-2.0 * (1.0 - u).ln()).sqrt()
+                scale * (2.0 * self.sample_ziggurat_exponential()).sqrt()
             })
             .collect()
     }
 
-    /// Pareto distribution (Lomax).  CDF = 1 - (1+x)^(-a) for x >= 0.
+    /// Pareto distribution (matching NumPy: uses expm1 of standard_exponential).
     pub fn pareto(&mut self, a: f64, size: usize) -> Vec<f64> {
         (0..size)
             .map(|_| {
-                let u = self.next_f64();
-                (1.0 - u).powf(-1.0 / a) - 1.0
+                (self.sample_ziggurat_exponential() / a).exp_m1()
             })
             .collect()
     }
@@ -1906,40 +2505,47 @@ impl Generator {
             .collect()
     }
 
-    /// Wald (inverse Gaussian) distribution with given `mean` and `scale`.
-    /// Uses the Michael-Schucany-Haas algorithm.
+    /// Wald (inverse Gaussian) distribution (matching NumPy's algorithm).
     pub fn wald(&mut self, mean: f64, scale: f64, size: usize) -> Vec<f64> {
         (0..size)
             .map(|_| {
-                let z = self.sample_standard_normal_single();
-                let v = z * z;
-                let mu = mean;
-                let lam = scale;
-                let x = mu + (mu * mu * v) / (2.0 * lam)
-                    - (mu / (2.0 * lam)) * (4.0 * mu * lam * v + mu * mu * v * v).sqrt();
+                let y = self.sample_ziggurat_normal();
+                let y = mean * y * y;
+                let d = 1.0 + (1.0 + 4.0 * scale / y).sqrt();
+                let x = mean * (1.0 - 2.0 / d);
                 let u = self.next_f64();
-                if u <= mu / (mu + x) { x } else { mu * mu / x }
+                if u <= mean / (mean + x) {
+                    x
+                } else {
+                    mean * mean / x
+                }
             })
             .collect()
     }
 
-    /// Logarithmic (log-series) distribution with parameter `p` in (0, 1).
-    /// Uses Kemp's algorithm.
+    /// Logarithmic (log-series) distribution (matching NumPy's algorithm).
     pub fn logseries(&mut self, p: f64, size: usize) -> Vec<u64> {
-        let log_q = (1.0 - p).ln();
+        let r = (-p).ln_1p(); // log1p(-p) = ln(1 - p)
         (0..size)
             .map(|_| {
-                let u = self.next_f64();
-                let v = self.next_f64();
-                if u < -p / ((1.0 - p) * log_q) {
-                    1
-                } else {
-                    let y = 1.0 - (v.ln() / log_q).exp().min(1.0);
-                    if y <= 0.0 {
-                        1
-                    } else {
-                        1 + (v.ln() / y.ln()).floor() as u64
+                loop {
+                    let v = self.next_f64();
+                    if v >= p {
+                        return 1;
                     }
+                    let u = self.next_f64();
+                    let q = -(r * u).exp_m1(); // -expm1(r * u)
+                    if v <= q * q {
+                        let result = (1.0 + v.ln() / q.ln()).floor() as i64;
+                        if result < 1 || v == 0.0 {
+                            continue;
+                        }
+                        return result as u64;
+                    }
+                    if v >= q {
+                        return 1;
+                    }
+                    return 2;
                 }
             })
             .collect()
@@ -2262,10 +2868,11 @@ mod tests {
         BIT_GENERATOR_STATE_SCHEMA_VERSION, BitGenerator, BitGeneratorError, BitGeneratorKind,
         DEFAULT_RNG_SEED, DeterministicRng, Generator, GeneratorPicklePayload,
         MAX_RNG_JUMP_OPERATIONS, MAX_SEED_SEQUENCE_CHILDREN, MAX_SEED_SEQUENCE_WORDS, Mt19937,
-        Pcg64, Philox, RANDOM_PACKET_REASON_CODES, RNG_CORE_REASON_CODES, RandomError,
-        RandomLogRecord, RandomPolicyError, RandomRuntimeMode, RandomState, SeedMaterial,
-        SeedSequence, SeedSequenceError, SeedSequenceSnapshot, Sfc64, default_rng,
-        generator_from_seed_sequence, validate_rng_policy_metadata,
+        Mt19937Rng, Pcg64, Pcg64DxsmRng, Philox, RANDOM_PACKET_REASON_CODES,
+        RNG_CORE_REASON_CODES, RandomError, RandomLogRecord, RandomPolicyError,
+        RandomRuntimeMode, RandomState, SeedMaterial, SeedSequence, SeedSequenceError,
+        SeedSequenceSnapshot, Sfc64, default_rng, generator_from_seed_sequence,
+        validate_rng_policy_metadata,
     };
 
     fn packet007_artifacts() -> Vec<String> {
@@ -3726,5 +4333,743 @@ mod tests {
         let mut rng = test_generator();
         let x = vec![1.0, 2.0, 3.0];
         assert!(rng.permuted(&x, &[3], 1).is_err());
+    }
+
+    // ── NumPy-oracle SeedSequence validation tests ──
+
+    #[test]
+    fn seed_sequence_pool_matches_numpy_seed_42() {
+        // np.random.SeedSequence(42).pool
+        let ss = SeedSequence::new(&[42]).expect("seed");
+        assert_eq!(
+            ss.pool(),
+            &[1_662_858_758, 128_880_814, 1_875_164_712, 753_753_205]
+        );
+    }
+
+    #[test]
+    fn seed_sequence_generate_state_matches_numpy_seed_42() {
+        // np.random.SeedSequence(42).generate_state(4, np.uint32)
+        let ss = SeedSequence::new(&[42]).expect("seed");
+        let state = ss.generate_state_u32(4).expect("state");
+        assert_eq!(state, vec![3_444_837_047, 2_669_555_309, 2_046_530_742, 3_581_440_988]);
+    }
+
+    #[test]
+    fn seed_sequence_generate_state_u64_matches_numpy_seed_42() {
+        // np.random.SeedSequence(42).generate_state(4, np.uint64)
+        let ss = SeedSequence::new(&[42]).expect("seed");
+        let state = ss.generate_state_u64(4).expect("state");
+        assert_eq!(
+            state,
+            vec![
+                11_465_652_750_463_011_511,
+                15_382_171_918_060_459_190,
+                9_018_504_550_953_525_431,
+                3_703_499_796_004_394_495
+            ]
+        );
+    }
+
+    #[test]
+    fn seed_sequence_pool_matches_numpy_seed_0() {
+        // np.random.SeedSequence(0).pool
+        let ss = SeedSequence::new(&[0]).expect("seed");
+        assert_eq!(
+            ss.pool(),
+            &[4_265_667_335, 1_328_953_910, 1_320_288_413, 3_365_567_143]
+        );
+    }
+
+    #[test]
+    fn seed_sequence_generate_state_matches_numpy_seed_0() {
+        // np.random.SeedSequence(0).generate_state(4, np.uint32)
+        let ss = SeedSequence::new(&[0]).expect("seed");
+        let state = ss.generate_state_u32(4).expect("state");
+        assert_eq!(state, vec![2_968_811_710, 3_677_149_159, 745_650_761, 2_884_920_346]);
+    }
+
+    #[test]
+    fn seed_sequence_spawn_child0_matches_numpy() {
+        // np.random.SeedSequence(42).spawn(2)[0].generate_state(4, np.uint32)
+        let mut ss = SeedSequence::new(&[42]).expect("seed");
+        let children = ss.spawn(2).expect("spawn");
+        let state = children[0].generate_state_u32(4).expect("state");
+        assert_eq!(state, vec![2_684_470_948, 3_757_501_821, 1_691_896_351, 1_126_406_280]);
+    }
+
+    #[test]
+    fn seed_sequence_spawn_child1_matches_numpy() {
+        // np.random.SeedSequence(42).spawn(2)[1].generate_state(4, np.uint32)
+        let mut ss = SeedSequence::new(&[42]).expect("seed");
+        let children = ss.spawn(2).expect("spawn");
+        let state = children[1].generate_state_u32(4).expect("state");
+        assert_eq!(state, vec![4_091_952_314, 31_242_083, 366_899_054, 1_794_014_678]);
+    }
+
+    #[test]
+    fn seed_sequence_large_seed_matches_numpy() {
+        // np.random.SeedSequence(12345678901234567890)
+        // int_to_uint32: 12345678901234567890 >> 0x AB54_A98C_EB1F_0AD2
+        // as u32 words: [0xEB1F0AD2, 0xAB54A98C, 2] = [3944651474, 2874329484, 2]
+        let big_seed: u128 = 12_345_678_901_234_567_890;
+        let w0 = (big_seed & 0xFFFF_FFFF) as u32;
+        let w1 = ((big_seed >> 32) & 0xFFFF_FFFF) as u32;
+        let w2 = ((big_seed >> 64) & 0xFFFF_FFFF) as u32;
+        let mut words = vec![w0, w1];
+        if w2 > 0 {
+            words.push(w2);
+        }
+        let ss = SeedSequence::new(&words).expect("seed");
+        assert_eq!(
+            ss.pool(),
+            &[3_436_620_908, 2_934_369_251, 723_718_028, 663_245_011]
+        );
+        let state = ss.generate_state_u32(4).expect("state");
+        assert_eq!(state, vec![879_039_660, 987_554_174, 2_298_115_603, 1_508_490_435]);
+    }
+
+    // ── PCG64-DXSM oracle tests ──────────────────────────────────────────
+
+    #[test]
+    fn pcg64_dxsm_seed_42_state_matches_numpy() {
+        // np.random.PCG64DXSM(42).state
+        let rng = Pcg64DxsmRng::from_u64_seed(42).expect("seed");
+        let (state, inc) = rng.raw_state();
+        assert_eq!(state, 274_674_114_334_540_486_603_088_602_300_644_985_544);
+        assert_eq!(inc, 332_724_090_758_049_132_448_979_897_138_935_081_983);
+    }
+
+    #[test]
+    fn pcg64_dxsm_seed_42_first_10_raw_u64_match_numpy() {
+        // np.random.PCG64DXSM(42): raw_u64 values
+        let mut rng = Pcg64DxsmRng::from_u64_seed(42).expect("seed");
+        let expected: [u64; 10] = [
+            12_329_818_062_196_000_797,
+            125_530_269_004_142_706,
+            12_137_922_674_892_001_441,
+            6_848_431_486_601_849_532,
+            3_812_337_789_277_959_813,
+            3_575_850_668_235_994_163,
+            14_001_613_239_349_552_815,
+            17_422_012_400_209_074_598,
+            18_351_825_975_941_195_139,
+            4_178_940_177_906_521_234,
+        ];
+        for (i, &exp) in expected.iter().enumerate() {
+            let got = rng.next_u64();
+            assert_eq!(got, exp, "mismatch at index {i}");
+        }
+    }
+
+    #[test]
+    fn pcg64_dxsm_seed_42_state_after_10_matches_numpy() {
+        // State after drawing 10 values
+        let mut rng = Pcg64DxsmRng::from_u64_seed(42).expect("seed");
+        for _ in 0..10 {
+            let _ = rng.next_u64();
+        }
+        let (state, _) = rng.raw_state();
+        assert_eq!(state, 288_129_388_986_518_204_794_732_611_361_733_560_794);
+    }
+
+    #[test]
+    fn pcg64_dxsm_seed_0_state_matches_numpy() {
+        // np.random.PCG64DXSM(0).state
+        let rng = Pcg64DxsmRng::from_u64_seed(0).expect("seed");
+        let (state, inc) = rng.raw_state();
+        assert_eq!(state, 35_399_562_948_360_463_058_890_781_895_381_311_971);
+        assert_eq!(inc, 87_136_372_517_582_989_555_478_159_403_783_844_777);
+    }
+
+    #[test]
+    fn pcg64_dxsm_seed_0_first_10_raw_u64_match_numpy() {
+        let mut rng = Pcg64DxsmRng::from_u64_seed(0).expect("seed");
+        let expected: [u64; 10] = [
+            15_672_045_205_194_312_304,
+            10_230_625_629_676_741_203,
+            1_393_141_542_142_426_128,
+            6_186_804_329_743_392_408,
+            11_731_200_791_580_184_074,
+            593_908_079_603_723_752,
+            16_906_657_996_318_114_573,
+            4_942_292_156_362_687_787,
+            6_282_811_449_723_952_844,
+            11_452_040_163_060_472_522,
+        ];
+        for (i, &exp) in expected.iter().enumerate() {
+            let got = rng.next_u64();
+            assert_eq!(got, exp, "mismatch at index {i}");
+        }
+    }
+
+    #[test]
+    fn pcg64_dxsm_seed_12345_state_matches_numpy() {
+        // np.random.PCG64DXSM(12345).state
+        let rng = Pcg64DxsmRng::from_u64_seed(12345).expect("seed");
+        let (state, inc) = rng.raw_state();
+        assert_eq!(state, 33_261_208_707_367_790_463_622_745_601_869_196_757);
+        assert_eq!(inc, 268_209_174_141_567_072_605_526_753_992_732_310_247);
+    }
+
+    #[test]
+    fn pcg64_dxsm_seed_12345_first_10_raw_u64_match_numpy() {
+        let mut rng = Pcg64DxsmRng::from_u64_seed(12345).expect("seed");
+        let expected: [u64; 10] = [
+            17_193_872_397_121_361_007,
+            6_225_879_447_261_284_483,
+            4_002_610_872_796_635_837,
+            6_506_281_922_641_356_830,
+            10_147_648_032_342_742_849,
+            16_291_563_099_318_681_940,
+            16_386_928_929_934_799_094,
+            5_595_252_491_649_564_630,
+            8_117_175_315_690_381_675,
+            6_073_746_230_066_033_075,
+        ];
+        for (i, &exp) in expected.iter().enumerate() {
+            let got = rng.next_u64();
+            assert_eq!(got, exp, "mismatch at index {i}");
+        }
+    }
+
+    #[test]
+    fn pcg64_dxsm_from_seed_sequence_matches_from_u64_seed() {
+        // Both paths should produce identical state
+        let rng1 = Pcg64DxsmRng::from_u64_seed(42).expect("seed");
+        let ss = SeedSequence::new(&[42]).expect("ss");
+        let rng2 = Pcg64DxsmRng::from_seed_sequence(&ss).expect("ss_seed");
+        assert_eq!(rng1.raw_state(), rng2.raw_state());
+    }
+
+    #[test]
+    fn pcg64_dxsm_from_raw_state_roundtrip() {
+        let mut rng = Pcg64DxsmRng::from_u64_seed(42).expect("seed");
+        let (state, inc) = rng.raw_state();
+        let v1 = rng.next_u64();
+        // Restore and get same value
+        let mut rng2 = Pcg64DxsmRng::from_raw_state(state, inc);
+        let v2 = rng2.next_u64();
+        assert_eq!(v1, v2);
+    }
+
+    #[test]
+    fn pcg64_dxsm_advance_matches_sequential() {
+        let mut rng1 = Pcg64DxsmRng::from_u64_seed(42).expect("seed");
+        let mut rng2 = Pcg64DxsmRng::from_u64_seed(42).expect("seed");
+        // Advance rng1 by 1000 steps sequentially
+        for _ in 0..1000 {
+            let _ = rng1.next_u64();
+        }
+        // Advance rng2 by 1000 steps via jump
+        rng2.advance(1000);
+        // Both should now produce the same output
+        assert_eq!(rng1.next_u64(), rng2.next_u64());
+        assert_eq!(rng1.raw_state(), rng2.raw_state());
+    }
+
+    #[test]
+    fn pcg64_dxsm_fill_u64_matches_sequential() {
+        let mut rng1 = Pcg64DxsmRng::from_u64_seed(42).expect("seed");
+        let mut rng2 = Pcg64DxsmRng::from_u64_seed(42).expect("seed");
+        let filled = rng1.fill_u64(5);
+        let sequential: Vec<u64> = (0..5).map(|_| rng2.next_u64()).collect();
+        assert_eq!(filled, sequential);
+    }
+
+    #[test]
+    fn pcg64_dxsm_next_f64_in_unit_interval() {
+        let mut rng = Pcg64DxsmRng::from_u64_seed(42).expect("seed");
+        for _ in 0..1000 {
+            let v = rng.next_f64();
+            assert!((0.0..1.0).contains(&v), "f64 out of [0,1): {v}");
+        }
+    }
+
+    #[test]
+    fn pcg64_dxsm_bounded_u64_within_range() {
+        let mut rng = Pcg64DxsmRng::from_u64_seed(42).expect("seed");
+        for bound in [1, 2, 10, 100, 1000, u64::MAX] {
+            let val = rng.bounded_u64(bound).expect("bounded");
+            assert!(val < bound, "bounded({bound}) gave {val}");
+        }
+    }
+
+    #[test]
+    fn pcg64_dxsm_bounded_u64_rejects_zero() {
+        let mut rng = Pcg64DxsmRng::from_u64_seed(42).expect("seed");
+        assert!(rng.bounded_u64(0).is_err());
+    }
+
+    // ── MT19937 oracle tests ─────────────────────────────────────────────
+
+    #[test]
+    fn mt19937_classic_seed_42_first_20_u32_match_numpy() {
+        // np.random.RandomState(42): first 20 randint(0, 2^32)
+        let mut rng = Mt19937Rng::from_u32_seed(42);
+        let expected: [u32; 20] = [
+            1_608_637_542, 3_421_126_067, 4_083_286_876, 787_846_414,
+            3_143_890_026, 3_348_747_335, 2_571_218_620, 2_563_451_924,
+            670_094_950, 1_914_837_113, 669_991_378, 429_389_014,
+            249_467_210, 1_972_458_954, 3_720_198_231, 1_433_267_572,
+            2_581_769_315, 613_608_295, 3_041_148_567, 2_795_544_706,
+        ];
+        for (i, &exp) in expected.iter().enumerate() {
+            let got = rng.next_u32();
+            assert_eq!(got, exp, "classic seed=42 mismatch at index {i}");
+        }
+    }
+
+    #[test]
+    fn mt19937_classic_seed_42_rand_10_match_numpy() {
+        // np.random.RandomState(42).rand(10) uses genrand_res53
+        let mut rng = Mt19937Rng::from_u32_seed(42);
+        let expected: [f64; 10] = [
+            0.374_540_118_847_362_5,
+            0.950_714_306_409_916_2,
+            0.731_993_941_811_405_1,
+            0.598_658_484_197_036_6,
+            0.156_018_640_442_436_52,
+            0.155_994_520_336_202_65,
+            0.058_083_612_168_199_46,
+            0.866_176_145_774_935_2,
+            0.601_115_011_743_208_8,
+            0.708_072_577_796_045_5,
+        ];
+        for (i, &exp) in expected.iter().enumerate() {
+            let got = rng.next_f64();
+            assert!(
+                (got - exp).abs() < 1e-15,
+                "classic seed=42 rand mismatch at {i}: got {got}, expected {exp}"
+            );
+        }
+    }
+
+    #[test]
+    fn mt19937_modern_seed_42_first_20_u32_match_numpy() {
+        // np.random.MT19937(42).random_raw() x 20
+        let ss = SeedSequence::new(&[42]).expect("ss");
+        let mut rng = Mt19937Rng::from_seed_sequence(&ss).expect("seed");
+        let expected: [u32; 20] = [
+            2_327_846_034, 3_904_886_566, 2_661_450_408, 1_733_955_692,
+            246_401_338, 3_249_250_296, 3_487_099_619, 1_498_159_427,
+            3_694_075_699, 3_512_848_995, 2_695_531_450, 296_751_540,
+            2_928_881_423, 1_121_898_314, 2_900_273_415, 3_780_017_243,
+            2_064_865_906, 852_217_197, 3_155_620_539, 3_977_451_023,
+        ];
+        for (i, &exp) in expected.iter().enumerate() {
+            let got = rng.next_u32();
+            assert_eq!(got, exp, "modern seed=42 mismatch at index {i}");
+        }
+    }
+
+    #[test]
+    fn mt19937_modern_seed_0_first_20_u32_match_numpy() {
+        // np.random.MT19937(0).random_raw() x 20
+        let ss = SeedSequence::new(&[0]).expect("ss");
+        let mut rng = Mt19937Rng::from_seed_sequence(&ss).expect("seed");
+        let expected: [u32; 20] = [
+            2_058_676_884, 2_606_108_953, 1_230_491_694, 2_111_045_058,
+            95_419_988, 1_510_044_700, 2_342_423_583, 3_663_458_586,
+            5_280_294, 1_692_592_663, 2_194_070_197, 3_828_360_469,
+            2_174_269_555, 3_287_063_170, 2_191_392_552, 1_383_654_479,
+            2_571_795_756, 4_056_454_040, 2_939_149_804, 581_682_926,
+        ];
+        for (i, &exp) in expected.iter().enumerate() {
+            let got = rng.next_u32();
+            assert_eq!(got, exp, "modern seed=0 mismatch at index {i}");
+        }
+    }
+
+    #[test]
+    fn mt19937_raw_state_roundtrip() {
+        let mut rng = Mt19937Rng::from_u32_seed(42);
+        // Advance a bit
+        for _ in 0..100 {
+            let _ = rng.next_u32();
+        }
+        let (state, pos) = rng.raw_state();
+        let state_owned = state.to_vec();
+        let v1 = rng.next_u32();
+        // Restore
+        let mut rng2 = Mt19937Rng::from_raw_state(&state_owned, pos).expect("restore");
+        let v2 = rng2.next_u32();
+        assert_eq!(v1, v2);
+    }
+
+    #[test]
+    fn mt19937_next_f64_in_unit_interval() {
+        let mut rng = Mt19937Rng::from_u32_seed(42);
+        for _ in 0..1000 {
+            let v = rng.next_f64();
+            assert!((0.0..1.0).contains(&v), "f64 out of [0,1): {v}");
+        }
+    }
+
+    #[test]
+    fn mt19937_fill_u32_matches_sequential() {
+        let mut rng1 = Mt19937Rng::from_u32_seed(42);
+        let mut rng2 = Mt19937Rng::from_u32_seed(42);
+        let filled = rng1.fill_u32(100);
+        let sequential: Vec<u32> = (0..100).map(|_| rng2.next_u32()).collect();
+        assert_eq!(filled, sequential);
+    }
+
+    #[test]
+    fn mt19937_bounded_u32_within_range() {
+        let mut rng = Mt19937Rng::from_u32_seed(42);
+        for bound in [1, 2, 10, 100, 1000, u32::MAX] {
+            let val = rng.bounded_u32(bound).expect("bounded");
+            assert!(val < bound, "bounded({bound}) gave {val}");
+        }
+    }
+
+    #[test]
+    fn mt19937_bounded_u32_rejects_zero() {
+        let mut rng = Mt19937Rng::from_u32_seed(42);
+        assert!(rng.bounded_u32(0).is_err());
+    }
+
+    #[test]
+    fn mt19937_from_raw_state_invalid_length_rejected() {
+        let short_state = vec![0u32; 100];
+        assert!(Mt19937Rng::from_raw_state(&short_state, 0).is_err());
+    }
+
+    #[test]
+    fn mt19937_from_raw_state_invalid_pos_rejected() {
+        let state = vec![0u32; 624];
+        assert!(Mt19937Rng::from_raw_state(&state, 625).is_err());
+    }
+
+    // ── Distribution Oracle Tests (NumPy PCG64DXSM(12345) reference) ─────
+
+    /// Helper: assert f64 slices match to full precision (bit-identical).
+    fn assert_f64_seq(label: &str, got: &[f64], expected: &[f64]) {
+        assert_eq!(got.len(), expected.len(), "{label}: length mismatch");
+        for (i, (&g, &e)) in got.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (g - e).abs() < 1e-12,
+                "{label}[{i}]: got {g}, expected {e}, diff {}",
+                (g - e).abs()
+            );
+        }
+    }
+
+    fn assert_u64_seq(label: &str, got: &[u64], expected: &[u64]) {
+        assert_eq!(got.len(), expected.len(), "{label}: length mismatch");
+        for (i, (&g, &e)) in got.iter().zip(expected.iter()).enumerate() {
+            assert_eq!(g, e, "{label}[{i}]: got {g}, expected {e}");
+        }
+    }
+
+    fn oracle_gen() -> Generator {
+        Generator::from_pcg64_dxsm(12345).expect("seed")
+    }
+
+    #[test]
+    fn oracle_random() {
+        let mut g = oracle_gen();
+        let vals = g.random(10);
+        let expected = [
+            0.9320816903198763, 0.3375056011176768, 0.21698197019501064,
+            0.3527062497665462, 0.5501051021142127, 0.8831674052732996,
+            0.8883371973100436, 0.3033192453525694, 0.4400329555858611,
+            0.32925844288816175,
+        ];
+        assert_f64_seq("random", &vals, &expected);
+    }
+
+    #[test]
+    fn oracle_uniform() {
+        let mut g = oracle_gen();
+        let vals = g.uniform(2.0, 5.0, 10);
+        let expected = [
+            4.796245070959629, 3.0125168033530305, 2.650945910585032,
+            3.0581187492996387, 3.6503153063426383, 4.649502215819899,
+            4.6650115919301305, 2.909957736057708, 3.3200988667575833,
+            2.987775328664485,
+        ];
+        assert_f64_seq("uniform", &vals, &expected);
+    }
+
+    #[test]
+    fn oracle_standard_normal() {
+        let mut g = oracle_gen();
+        let vals = g.standard_normal(10);
+        let expected = [
+            0.648970595720087, 1.089083499221345, 1.4703372914093853,
+            0.6605483574733667, -0.44234454827889136, -0.08094864935117092,
+            0.3087957082495461, -0.9638571574827081, -0.7254609073102689,
+            -1.2118074194203396,
+        ];
+        assert_f64_seq("standard_normal", &vals, &expected);
+    }
+
+    #[test]
+    fn oracle_normal() {
+        let mut g = oracle_gen();
+        let vals = g.normal(5.0, 2.0, 10);
+        let expected = [
+            6.297941191440174, 7.1781669984426895, 7.940674582818771,
+            6.321096714946734, 4.115310903442217, 4.838102701297658,
+            5.617591416499092, 3.0722856850345837, 3.549078185379462,
+            2.5763851611593207,
+        ];
+        assert_f64_seq("normal", &vals, &expected);
+    }
+
+    #[test]
+    fn oracle_standard_exponential() {
+        let mut g = oracle_gen();
+        let vals = g.standard_exponential(10);
+        let expected = [
+            1.714034816202212, 0.1304857330479185, 0.2596812762587198,
+            0.04842832490161937, 2.1864510761713536, 0.6275885179904133,
+            0.5074780068833896, 1.7187312558502839, 0.32741607613953083,
+            0.27740364655423955,
+        ];
+        assert_f64_seq("standard_exponential", &vals, &expected);
+    }
+
+    #[test]
+    fn oracle_exponential() {
+        let mut g = oracle_gen();
+        let vals = g.exponential(2.5, 10);
+        let expected = [
+            4.28508704050553, 0.32621433261979627, 0.6492031906467994,
+            0.12107081225404842, 5.466127690428384, 1.5689712949760333,
+            1.268695017208474, 4.29682813962571, 0.8185401903488271,
+            0.6935091163855989,
+        ];
+        assert_f64_seq("exponential", &vals, &expected);
+    }
+
+    #[test]
+    fn oracle_integers() {
+        let mut g = oracle_gen();
+        let vals = g.integers(0, 100, 10).expect("integers");
+        let expected: Vec<i64> = vec![12, 93, 1, 33, 80, 21, 84, 35, 94, 55];
+        assert_eq!(vals, expected, "integers oracle mismatch");
+    }
+
+    #[test]
+    fn oracle_laplace() {
+        let mut g = oracle_gen();
+        let vals = g.laplace(0.0, 1.0, 10);
+        let expected = [
+            1.9963024436527586, -0.39302599234309016, -0.834793834992557,
+            -0.3489725415567814, 0.10559410319107608, 1.4538660025183756,
+            1.4991244586404344, -0.4998222325505851, -0.12775847525590414,
+            -0.41776511533892585,
+        ];
+        assert_f64_seq("laplace", &vals, &expected);
+    }
+
+    #[test]
+    fn oracle_gumbel() {
+        let mut g = oracle_gen();
+        let vals = g.gumbel(0.0, 1.0, 10);
+        let expected = [
+            -0.9893365720157541, 0.8873554840149915, 1.408132868136375,
+            0.832512543783072, 0.2247181857117213, -0.7640776591098938,
+            -0.7849382844008232, 1.0176924248162385, 0.5449386697962436,
+            0.9178635255883896,
+        ];
+        assert_f64_seq("gumbel", &vals, &expected);
+    }
+
+    #[test]
+    fn oracle_logistic() {
+        let mut g = oracle_gen();
+        let vals = g.logistic(0.0, 1.0, 10);
+        let expected = [
+            2.6191148066328793, -0.6744299972282881, -1.2833414588669285,
+            -0.6071646535080572, 0.2010953594922383, 2.0227726736767893,
+            2.073867757832975, -0.8315414121966367, -0.2410283095707554,
+            -0.711540918907822,
+        ];
+        assert_f64_seq("logistic", &vals, &expected);
+    }
+
+    #[test]
+    fn oracle_lognormal() {
+        let mut g = oracle_gen();
+        let vals = g.lognormal(0.0, 1.0, 10);
+        let expected = [
+            1.9135699776616077, 2.9715493968340625, 4.350702348137479,
+            1.9358535831832708, 0.6425282153220304, 0.9222410479048919,
+            1.3617841408185067, 0.38141885243216656, 0.48410139165696314,
+            0.2976587986528511,
+        ];
+        assert_f64_seq("lognormal", &vals, &expected);
+    }
+
+    #[test]
+    fn oracle_weibull() {
+        let mut g = oracle_gen();
+        let vals = g.weibull(2.0, 10);
+        let expected = [
+            1.3092115246216756, 0.3612280900593398, 0.5095893211780638,
+            0.2200643653607266, 1.4786653022815386, 0.7922048459776129,
+            0.7123749061297637, 1.3110039114549903, 0.5722028277975659,
+            0.5266912250590848,
+        ];
+        assert_f64_seq("weibull", &vals, &expected);
+    }
+
+    #[test]
+    fn oracle_rayleigh() {
+        let mut g = oracle_gen();
+        let vals = g.rayleigh(1.0, 10);
+        let expected = [
+            1.8515046941351307, 0.5108536640720481, 0.7206681292505168,
+            0.3112180100881675, 2.091148524697064, 1.120346837359229,
+            1.0074502537429724, 1.8540395119038233, 0.8092169994995543,
+            0.7448538736614579,
+        ];
+        assert_f64_seq("rayleigh", &vals, &expected);
+    }
+
+    #[test]
+    fn oracle_pareto() {
+        let mut g = oracle_gen();
+        let vals = g.pareto(3.0, 10);
+        let expected = [
+            0.7706468622745504, 0.044455027236940385, 0.09041725464725865,
+            0.016273773503058895, 1.072627291394015, 0.23268679426427932,
+            0.18430882648161737, 0.773420945135703, 0.11531702521584737,
+            0.09687791167243072,
+        ];
+        assert_f64_seq("pareto", &vals, &expected);
+    }
+
+    #[test]
+    fn oracle_power() {
+        let mut g = oracle_gen();
+        let vals = g.power(5.0, 10);
+        let expected = [
+            0.9610549152494955, 0.6569121505771804, 0.7444820463934245,
+            0.5431567259656599, 0.9764540513247876, 0.8584202987597479,
+            0.8317139954376589, 0.9612527086874139, 0.7747973537703587,
+            0.7531010773400103,
+        ];
+        assert_f64_seq("power", &vals, &expected);
+    }
+
+    #[test]
+    fn oracle_triangular() {
+        let mut g = oracle_gen();
+        let vals = g.triangular(-1.0, 0.0, 1.0, 10);
+        let expected = [
+            0.6314398022571518, -0.1784093463072054, -0.3412406050840555,
+            -0.1601116148361782, 0.05142749577505956, 0.5166107267911288,
+            0.5274266137625683, -0.22112999113771314, -0.06188171792053743,
+            -0.18850946661324297,
+        ];
+        assert_f64_seq("triangular", &vals, &expected);
+    }
+
+    #[test]
+    fn oracle_standard_cauchy() {
+        let mut g = oracle_gen();
+        let vals = g.standard_cauchy(10);
+        let expected = [
+            0.5958869050757608, 2.2259343691860884, 5.464508077953408,
+            -0.3203749703493653, 0.5986602290793768, 0.1310774619296665,
+            0.01082150363099386, 2.6511792597164083, -14.184214453507638,
+            -0.023788035645022024,
+        ];
+        assert_f64_seq("standard_cauchy", &vals, &expected);
+    }
+
+    #[test]
+    fn oracle_geometric() {
+        let mut g = oracle_gen();
+        let vals = g.geometric(0.3, 10);
+        let expected: Vec<u64> = vec![5, 1, 1, 1, 7, 2, 2, 5, 1, 1];
+        assert_u64_seq("geometric", &vals, &expected);
+    }
+
+    #[test]
+    fn oracle_standard_gamma() {
+        let mut g = oracle_gen();
+        let vals = g.standard_gamma(3.0, 10);
+        let expected = [
+            3.8730178986382064, 5.860442600894906, 2.007580882434013,
+            3.203380706017545, 1.648765619968363, 2.72481060071336,
+            2.661129359850849, 3.887845119149194, 13.61058714233652,
+            2.6281160439916977,
+        ];
+        assert_f64_seq("standard_gamma", &vals, &expected);
+    }
+
+    #[test]
+    fn oracle_gamma() {
+        let mut g = oracle_gen();
+        let vals = g.gamma(2.0, 3.0, 10);
+        let expected = [
+            7.958138981245406, 13.130063396284479, 3.475026335965074,
+            6.293849659854425, 2.6837349405954196, 5.138163583416871,
+            4.986869533913612, 7.995528829118353, 35.00081178275254,
+            4.908686593272669,
+        ];
+        assert_f64_seq("gamma", &vals, &expected);
+    }
+
+    #[test]
+    fn oracle_chisquare() {
+        let mut g = oracle_gen();
+        let vals = g.chisquare(5.0, 10);
+        let expected = [
+            6.538380773318506, 10.26311385719701, 3.1571964002088624,
+            5.307454924305685, 2.5292828476704683, 4.438236370161119,
+            4.323351568092394, 6.565802771078493, 25.301773085230973,
+            4.263872078966991,
+        ];
+        assert_f64_seq("chisquare", &vals, &expected);
+    }
+
+    #[test]
+    fn oracle_beta() {
+        let mut g = oracle_gen();
+        let vals = g.beta(2.0, 5.0, 10);
+        let expected = [
+            0.23536154859916344, 0.17754074164377456, 0.1586686788060632,
+            0.21056377129012013, 0.7165302874074536, 0.17181153381629066,
+            0.31765174585585376, 0.1379429581403801, 0.2718552779844278,
+            0.10894170824615793,
+        ];
+        assert_f64_seq("beta", &vals, &expected);
+    }
+
+    #[test]
+    fn oracle_wald() {
+        let mut g = oracle_gen();
+        let vals = g.wald(3.0, 2.0, 10);
+        let expected = [
+            1.3817490656886038, 0.5946945995263678, 5.1241047841309015,
+            2.0598532428152385, 1.267450207084615, 2.87289685181097,
+            2.987558305897547, 6.566074359042968, 0.14489404392407723,
+            3.088435618658114,
+        ];
+        assert_f64_seq("wald", &vals, &expected);
+    }
+
+    #[test]
+    fn oracle_logseries() {
+        let mut g = oracle_gen();
+        let vals = g.logseries(0.6, 10);
+        let expected: Vec<u64> = vec![1, 1, 2, 1, 1, 2, 1, 2, 2, 1];
+        assert_u64_seq("logseries", &vals, &expected);
+    }
+
+    #[test]
+    fn oracle_permutation() {
+        let mut g = oracle_gen();
+        let arr: Vec<f64> = (0..10).map(|i| i as f64).collect();
+        let perm = g.permutation(&arr).expect("permutation");
+        let expected = [4.0, 8.0, 0.0, 2.0, 6.0, 1.0, 5.0, 7.0, 3.0, 9.0];
+        assert_f64_seq("permutation", &perm, &expected);
     }
 }
