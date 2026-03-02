@@ -81,6 +81,7 @@ Notes:
 - Oracle capture prefers legacy NumPy import, then system NumPy.
 - Oracle interpreter is configurable with `FNP_ORACLE_PYTHON` (defaults to `python3`).
 - If neither is importable in the environment, it uses `pure_python_fallback` and records this in the oracle artifact.
+- Set `FNP_REQUIRE_REAL_NUMPY_ORACLE=1` to fail fast instead of accepting `pure_python_fallback` (recommended for parity-critical local runs).
 - `scripts/e2e/run_ci_gate_topology.sh` runs oracle capture before G3 differential and fails in CI when fallback is used (`FNP_REQUIRE_REAL_NUMPY_ORACLE=1`, auto-enabled for `CI=1`/`GITHUB_ACTIONS=true`).
 - Packet contract schema lock is versioned as `phase2c-contract-v1` in `artifacts/contracts/`.
 - Security threat controls are machine-mapped in `artifacts/contracts/security_control_checks_v1.yaml`.

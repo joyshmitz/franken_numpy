@@ -38,12 +38,35 @@ jobs:
   g3-differential:
     name: "G3: differential"
     runs-on: ubuntu-latest
+    env:
+      FNP_REQUIRE_REAL_NUMPY_ORACLE: "1"
+      FNP_ORACLE_PYTHON: "python3"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt, clippy
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip numpy
       - uses: Swatinem/rust-cache@v2
+      - run: cargo run -p fnp-conformance --bin capture_numpy_oracle
+      - name: Verify oracle uses real NumPy
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          oracle_path = Path("crates/fnp-conformance/fixtures/oracle_outputs/ufunc_oracle_output.json")
+          payload = json.loads(oracle_path.read_text(encoding="utf-8"))
+          source = payload.get("oracle_source", "")
+          if source == "pure_python_fallback":
+              raise SystemExit(
+                  "G3 failure: oracle capture used pure_python_fallback; configure NumPy-backed FNP_ORACLE_PYTHON"
+              )
+          print(f"G3 oracle_source={source}")
+          PY
       - run: cargo run -p fnp-conformance --bin run_ufunc_differential
 
   g4-adversarial-security:

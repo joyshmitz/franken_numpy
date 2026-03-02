@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 
-use fnp_dtype::{DType, promote, promote_for_mean_reduction, promote_for_sum_reduction};
+use fnp_dtype::{
+    ArrayStorage, DType, promote, promote_for_mean_reduction, promote_for_sum_reduction,
+};
 use fnp_ndarray::{ShapeError, broadcast_shape, element_count, fix_unknown_dimension};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -639,6 +641,42 @@ impl UFuncArray {
             values,
             dtype,
         })
+    }
+
+    /// Build an array from typed storage while preserving storage dtype metadata.
+    ///
+    /// This is a migration bridge for phased transition from `Vec<f64>` internals to
+    /// polymorphic `ArrayStorage`-backed construction APIs.
+    pub fn from_storage(shape: Vec<usize>, storage: ArrayStorage) -> Result<Self, UFuncError> {
+        let expected = element_count(&shape).map_err(UFuncError::Shape)?;
+        let actual = storage.len();
+        if actual != expected {
+            return Err(UFuncError::InvalidInputLength { expected, actual });
+        }
+        Ok(Self {
+            shape,
+            values: storage.to_f64_vec(),
+            dtype: storage.dtype(),
+        })
+    }
+
+    /// Build an array from typed storage after casting into `dtype`.
+    pub fn from_storage_with_dtype(
+        shape: Vec<usize>,
+        storage: ArrayStorage,
+        dtype: DType,
+    ) -> Result<Self, UFuncError> {
+        let casted = storage
+            .cast_to(dtype)
+            .map_err(|err| UFuncError::Msg(format!("storage cast failed: {err}")))?;
+        Self::from_storage(shape, casted)
+    }
+
+    /// Export this array into typed storage using its dtype as the cast target.
+    pub fn to_storage(&self) -> Result<ArrayStorage, UFuncError> {
+        ArrayStorage::from_f64_vec(self.values.clone())
+            .cast_to(self.dtype)
+            .map_err(|err| UFuncError::Msg(format!("storage cast failed: {err}")))
     }
 
     #[must_use]
@@ -6721,7 +6759,11 @@ impl UFuncArray {
         if degree == 0 {
             // Constant polynomial — no roots (just trailing zeros if any)
             let mut values: Vec<f64> = vec![0.0; trailing_zeros];
-            values.sort_by(|a, b| b.abs().partial_cmp(&a.abs()).unwrap_or(std::cmp::Ordering::Equal));
+            values.sort_by(|a, b| {
+                b.abs()
+                    .partial_cmp(&a.abs())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
             return Ok(Self {
                 shape: vec![values.len()],
                 values,
@@ -6775,9 +6817,8 @@ impl UFuncArray {
         }
 
         // Compute eigenvalues
-        let eigenvalues = fnp_linalg::eig_nxn(&comp, d).map_err(|e| {
-            UFuncError::Msg(format!("roots: eigenvalue computation failed: {e}"))
-        })?;
+        let eigenvalues = fnp_linalg::eig_nxn(&comp, d)
+            .map_err(|e| UFuncError::Msg(format!("roots: eigenvalue computation failed: {e}")))?;
 
         // eigenvalues are interleaved (real, imag) pairs
         let mut values: Vec<f64> = Vec::with_capacity(d + trailing_zeros);
@@ -8002,8 +8043,7 @@ impl UFuncArray {
             };
 
             let pair_sub = format!("{sub_a},{sub_b}->{inter_str}");
-            let result =
-                Self::einsum(&pair_sub, &[&current_ops[best_lo], &current_ops[best_hi]])?;
+            let result = Self::einsum(&pair_sub, &[&current_ops[best_lo], &current_ops[best_hi]])?;
 
             // Remove hi first (larger index), then lo
             current_ops.remove(best_hi);
@@ -8044,11 +8084,7 @@ impl UFuncArray {
 
     /// Pick the optimal pair by trying all pairs and choosing the one that
     /// minimizes intermediate result size (accounts for shared indices).
-    fn pick_optimal_pair(
-        ops: &[Self],
-        subs: &[String],
-        output_labels: &[char],
-    ) -> (usize, usize) {
+    fn pick_optimal_pair(ops: &[Self], subs: &[String], output_labels: &[char]) -> (usize, usize) {
         let mut best_lo = 0;
         let mut best_hi = 1;
         let mut best_inter_size = usize::MAX;
@@ -10949,7 +10985,12 @@ fn heapsort_f64(data: &mut [f64]) {
     }
 }
 
-fn sift_down(data: &mut [f64], mut root: usize, end: usize, cmp: &dyn Fn(&f64, &f64) -> std::cmp::Ordering) {
+fn sift_down(
+    data: &mut [f64],
+    mut root: usize,
+    end: usize,
+    cmp: &dyn Fn(&f64, &f64) -> std::cmp::Ordering,
+) {
     loop {
         let left = 2 * root + 1;
         if left >= end {
@@ -10992,7 +11033,12 @@ fn heapsort_indices_by(indices: &mut [usize], values: &dyn Fn(usize) -> f64) {
     }
 }
 
-fn sift_down_idx(data: &mut [usize], mut root: usize, end: usize, cmp: &dyn Fn(&usize, &usize) -> std::cmp::Ordering) {
+fn sift_down_idx(
+    data: &mut [usize],
+    mut root: usize,
+    end: usize,
+    cmp: &dyn Fn(&usize, &usize) -> std::cmp::Ordering,
+) {
     loop {
         let left = 2 * root + 1;
         if left >= end {
@@ -16579,21 +16625,19 @@ mod tests {
         UnaryOp, bitwise_count, busday_count, busday_offset, cheb2poly, chebadd, chebder, chebfit,
         chebint, chebmul, chebsub, chebval, divmod_arrays, financial_fv, financial_ipmt,
         financial_irr, financial_mirr, financial_nper, financial_npv, financial_pmt,
-        financial_ppmt, financial_pv, financial_rate, frexp, gcd_arrays, hermder, hermeval,
-        herm2poly, hermadd, hermdiv, herme2poly, hermeadd, hermediv, hermefromroots, hermemul,
-        hermeroots, hermesub, hermfromroots, hermint, hermmul, hermroots, hermsub, hermval,
-        is_busday, isneginf, isposinf, lag2poly, lagadd, lagder, lagdiv, lagfromroots, lagmul,
-        lagroots, lagsub, lagval, lcm_arrays,
-        leg2poly, legadd, legder, legdiv, legfit, legfromroots, legint, legmul, legroots, legsub,
-        legval, ma_is_mask, ma_is_masked, ma_make_mask, ma_mask_or, modf,
-        normalize_signature_keywords, pad_empty, pad_linear_ramp, pad_stat, parse_gufunc_signature,
-        plan_binary_dispatch, poly2cheb, poly2herm, poly2herme, poly2lag, poly2leg,
-        register_custom_loop, scimath_arccos, scimath_arcsin,
+        financial_ppmt, financial_pv, financial_rate, frexp, gcd_arrays, herm2poly, hermadd,
+        hermder, herme2poly, hermeadd, hermemul, hermeroots, hermeval, hermfromroots, hermint,
+        hermmul, hermroots, hermsub, hermval, is_busday, isneginf, isposinf, lag2poly, lagadd,
+        lagder, lagfromroots, lagmul, lagroots, lagsub, lagval, lcm_arrays, leg2poly, legadd,
+        legder, legdiv, legfit, legfromroots, legint, legmul, legroots, legsub, legval, ma_is_mask,
+        ma_is_masked, ma_make_mask, ma_mask_or, modf, normalize_signature_keywords, pad_empty,
+        pad_linear_ramp, pad_stat, parse_gufunc_signature, plan_binary_dispatch, poly2cheb,
+        poly2herm, poly2lag, poly2leg, register_custom_loop, scimath_arccos, scimath_arcsin,
         scimath_arctanh, scimath_log, scimath_log2, scimath_log10, scimath_power, scimath_sqrt,
         sort_complex, unique_all, unique_counts, unique_inverse, unique_values,
         validate_override_payload_class, where_nonzero,
     };
-    use fnp_dtype::{DType, promote};
+    use fnp_dtype::{ArrayStorage, DType, promote};
     use fnp_ndarray::broadcast_shape;
 
     fn packet005_artifacts() -> Vec<String> {
@@ -16628,6 +16672,47 @@ mod tests {
 
         assert_eq!(out.shape(), &[2, 2]);
         assert_eq!(out.values(), &[0.5, 1.0, 1.5, 2.0]);
+    }
+
+    #[test]
+    fn from_storage_sets_dtype_and_values() {
+        let arr = UFuncArray::from_storage(vec![2, 2], ArrayStorage::I64(vec![1, -2, 3, -4]))
+            .expect("from_storage");
+        assert_eq!(arr.shape(), &[2, 2]);
+        assert_eq!(arr.dtype(), DType::I64);
+        assert_eq!(arr.values(), &[1.0, -2.0, 3.0, -4.0]);
+    }
+
+    #[test]
+    fn from_storage_with_dtype_casts_values() {
+        let arr = UFuncArray::from_storage_with_dtype(
+            vec![3],
+            ArrayStorage::F64(vec![0.0, 2.0, -3.5]),
+            DType::Bool,
+        )
+        .expect("from_storage_with_dtype");
+        assert_eq!(arr.dtype(), DType::Bool);
+        assert_eq!(arr.values(), &[0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn to_storage_uses_array_dtype_cast() {
+        let arr = UFuncArray::new(vec![3], vec![0.0, 2.0, -3.5], DType::Bool).expect("array");
+        let storage = arr.to_storage().expect("to_storage");
+        assert_eq!(storage, ArrayStorage::Bool(vec![false, true, true]));
+    }
+
+    #[test]
+    fn from_storage_rejects_length_mismatch() {
+        let err = UFuncArray::from_storage(vec![2, 2], ArrayStorage::F64(vec![1.0, 2.0, 3.0]))
+            .expect_err("length mismatch should fail");
+        assert!(matches!(
+            err,
+            UFuncError::InvalidInputLength {
+                expected: 4,
+                actual: 3
+            }
+        ));
     }
 
     #[test]
@@ -18580,8 +18665,8 @@ mod tests {
 
     #[test]
     fn sort_kind_heapsort_with_axis() {
-        let arr = UFuncArray::new(vec![2, 3], vec![5.0, 1.0, 3.0, 2.0, 4.0, 0.0], DType::F64)
-            .unwrap();
+        let arr =
+            UFuncArray::new(vec![2, 3], vec![5.0, 1.0, 3.0, 2.0, 4.0, 0.0], DType::F64).unwrap();
         let out = arr.sort(Some(1), Some("heapsort")).unwrap();
         assert_eq!(out.shape(), &[2, 3]);
         assert_eq!(out.values(), &[1.0, 3.0, 5.0, 0.0, 2.0, 4.0]);
@@ -18605,8 +18690,7 @@ mod tests {
     fn sort_kind_stable_preserves_order() {
         // Stable sort preserves relative order of equal elements
         // Use argsort to verify stability: for equal values, earlier indices come first
-        let arr = UFuncArray::new(vec![6], vec![2.0, 1.0, 2.0, 1.0, 2.0, 1.0], DType::F64)
-            .unwrap();
+        let arr = UFuncArray::new(vec![6], vec![2.0, 1.0, 2.0, 1.0, 2.0, 1.0], DType::F64).unwrap();
         let indices = arr.argsort(None, Some("stable")).unwrap();
         // All 1.0s first (indices 1, 3, 5), then all 2.0s (indices 0, 2, 4)
         assert_eq!(indices.values(), &[1.0, 3.0, 5.0, 0.0, 2.0, 4.0]);
@@ -22010,8 +22094,8 @@ mod tests {
         // np.trapezoid([[1, 2], [3, 4], [5, 6]], dx=1.0, axis=0)
         // Along axis 0: column 0: trap([1,3,5], dx=1) = (1+3)/2 + (3+5)/2 = 6.0
         //               column 1: trap([2,4,6], dx=1) = (2+4)/2 + (4+6)/2 = 8.0
-        let a = UFuncArray::new(vec![3, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64)
-            .unwrap();
+        let a =
+            UFuncArray::new(vec![3, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
         let r = a.trapezoid(1.0, Some(0)).unwrap();
         assert_eq!(r.shape(), &[2]);
         assert!((r.values()[0] - 6.0).abs() < 1e-10);
@@ -22023,8 +22107,8 @@ mod tests {
         // np.trapezoid([[1, 2, 3], [4, 5, 6]], dx=1.0, axis=1)
         // Along axis 1: row 0: trap([1,2,3]) = 4.0
         //               row 1: trap([4,5,6]) = 10.0
-        let a = UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64)
-            .unwrap();
+        let a =
+            UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
         let r = a.trapezoid(1.0, Some(1)).unwrap();
         assert_eq!(r.shape(), &[2]);
         assert!((r.values()[0] - 4.0).abs() < 1e-10);
@@ -22034,8 +22118,8 @@ mod tests {
     #[test]
     fn trapezoid_2d_axis_neg1() {
         // axis=-1 is same as axis=1 for 2-D
-        let a = UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64)
-            .unwrap();
+        let a =
+            UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
         let r = a.trapezoid(1.0, Some(-1)).unwrap();
         assert_eq!(r.shape(), &[2]);
         assert!((r.values()[0] - 4.0).abs() < 1e-10);
@@ -22074,8 +22158,8 @@ mod tests {
     #[test]
     fn trapezoid_none_axis_defaults_to_last() {
         // For 2-D array, axis=None defaults to last axis
-        let a = UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64)
-            .unwrap();
+        let a =
+            UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
         let r = a.trapezoid(1.0, None).unwrap();
         assert_eq!(r.shape(), &[2]);
         assert!((r.values()[0] - 4.0).abs() < 1e-10);
@@ -22568,8 +22652,14 @@ mod tests {
     #[test]
     fn einsum_implicit_output() {
         // No '->' → implicit: "ij,jk" should produce "ik" (j appears twice, i and k once)
-        let a = UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
-        let b = UFuncArray::new(vec![3, 2], vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0], DType::F64).unwrap();
+        let a =
+            UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
+        let b = UFuncArray::new(
+            vec![3, 2],
+            vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+            DType::F64,
+        )
+        .unwrap();
         let c = UFuncArray::einsum("ij,jk", &[&a, &b]).unwrap();
         // Should be same as "ij,jk->ik" (matrix multiply)
         let expected = UFuncArray::einsum("ij,jk->ik", &[&a, &b]).unwrap();
@@ -22582,7 +22672,8 @@ mod tests {
     #[test]
     fn einsum_three_operands() {
         // Matrix chain: A(2x3) @ B(3x4) @ C(4x2)
-        let a = UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
+        let a =
+            UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
         let b = UFuncArray::new(vec![3, 4], vec![1.0; 12], DType::F64).unwrap();
         let c = UFuncArray::new(vec![4, 2], vec![1.0; 8], DType::F64).unwrap();
         let r = UFuncArray::einsum("ij,jk,kl->il", &[&a, &b, &c]).unwrap();
@@ -22598,7 +22689,12 @@ mod tests {
     #[test]
     fn einsum_implicit_trace() {
         // "ii" with implicit output → all labels appear twice → output is scalar
-        let a = UFuncArray::new(vec![3, 3], vec![1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 3.0], DType::F64).unwrap();
+        let a = UFuncArray::new(
+            vec![3, 3],
+            vec![1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 3.0],
+            DType::F64,
+        )
+        .unwrap();
         let t = UFuncArray::einsum("ii", &[&a]).unwrap();
         assert_eq!(t.shape(), &[] as &[usize]);
         assert!((t.values()[0] - 6.0).abs() < 1e-10);
@@ -22607,7 +22703,8 @@ mod tests {
     #[test]
     fn einsum_optimized_three_chain_greedy() {
         // Matrix chain A(2x3) @ B(3x4) @ C(4x2) via greedy optimization
-        let a = UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
+        let a =
+            UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
         let b = UFuncArray::new(vec![3, 4], vec![1.0; 12], DType::F64).unwrap();
         let c = UFuncArray::new(vec![4, 2], vec![1.0; 8], DType::F64).unwrap();
 
@@ -22623,14 +22720,28 @@ mod tests {
     #[test]
     fn einsum_optimized_matches_brute_force() {
         // 4-operand chain: A(2x3) @ B(3x2) @ C(2x4) @ D(4x2)
-        let a = UFuncArray::new(vec![2, 3], vec![1.0, 0.0, 2.0, 0.0, 1.0, 0.0], DType::F64).unwrap();
-        let b = UFuncArray::new(vec![3, 2], vec![1.0, 0.0, 0.0, 1.0, 1.0, 1.0], DType::F64).unwrap();
-        let c = UFuncArray::new(vec![2, 4], vec![1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0], DType::F64).unwrap();
-        let d = UFuncArray::new(vec![4, 2], vec![1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0], DType::F64).unwrap();
+        let a =
+            UFuncArray::new(vec![2, 3], vec![1.0, 0.0, 2.0, 0.0, 1.0, 0.0], DType::F64).unwrap();
+        let b =
+            UFuncArray::new(vec![3, 2], vec![1.0, 0.0, 0.0, 1.0, 1.0, 1.0], DType::F64).unwrap();
+        let c = UFuncArray::new(
+            vec![2, 4],
+            vec![1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            DType::F64,
+        )
+        .unwrap();
+        let d = UFuncArray::new(
+            vec![4, 2],
+            vec![1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0],
+            DType::F64,
+        )
+        .unwrap();
 
         let brute = UFuncArray::einsum("ij,jk,kl,lm->im", &[&a, &b, &c, &d]).unwrap();
-        let greedy = UFuncArray::einsum_optimized("ij,jk,kl,lm->im", &[&a, &b, &c, &d], "greedy").unwrap();
-        let optimal = UFuncArray::einsum_optimized("ij,jk,kl,lm->im", &[&a, &b, &c, &d], "optimal").unwrap();
+        let greedy =
+            UFuncArray::einsum_optimized("ij,jk,kl,lm->im", &[&a, &b, &c, &d], "greedy").unwrap();
+        let optimal =
+            UFuncArray::einsum_optimized("ij,jk,kl,lm->im", &[&a, &b, &c, &d], "optimal").unwrap();
 
         assert_eq!(brute.shape(), greedy.shape());
         assert_eq!(brute.shape(), optimal.shape());
@@ -22653,12 +22764,14 @@ mod tests {
             vec![2, 2, 3],
             vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 2.0, 0.0, 0.0, 0.0, 2.0, 0.0],
             DType::F64,
-        ).unwrap();
+        )
+        .unwrap();
         let b = UFuncArray::new(
             vec![2, 3, 2],
             vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
             DType::F64,
-        ).unwrap();
+        )
+        .unwrap();
         let r = UFuncArray::einsum("bij,bjk->bik", &[&a, &b]).unwrap();
         assert_eq!(r.shape(), &[2, 2, 2]);
         // Batch 0: I(2x3) @ [[1,0],[0,1],[0,0]] = [[1,0],[0,1]]
@@ -25066,7 +25179,8 @@ mod tests {
     #[test]
     fn vectorize_binary_broadcasting() {
         // [2,3] + [3] -> [2,3]
-        let a = UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
+        let a =
+            UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
         let b = UFuncArray::new(vec![3], vec![10.0, 20.0, 30.0], DType::F64).unwrap();
         let result = UFuncArray::vectorize_binary(&a, &b, |x, y| x * y).unwrap();
         assert_eq!(result.shape(), &[2, 3]);
@@ -25078,11 +25192,9 @@ mod tests {
         let a = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
         let b = UFuncArray::new(vec![3], vec![4.0, 5.0, 6.0], DType::F64).unwrap();
         let c = UFuncArray::new(vec![3], vec![7.0, 8.0, 9.0], DType::F64).unwrap();
-        let result = UFuncArray::vectorize_n(
-            &[&a, &b, &c],
-            &[],
-            |args| args[0] + args[1] * args[2],
-        ).unwrap();
+        let result =
+            UFuncArray::vectorize_n(&[&a, &b, &c], &[], |args| args[0] + args[1] * args[2])
+                .unwrap();
         assert_eq!(result.values(), &[29.0, 42.0, 57.0]);
     }
 
@@ -25097,7 +25209,8 @@ mod tests {
             &[&a, &b, &c],
             &[1], // exclude arg index 1
             |args| args[0] + args[1] + args[2],
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(result.shape(), &[3]);
         assert_eq!(result.values(), &[15.0, 17.0, 19.0]);
     }
@@ -25107,11 +25220,7 @@ mod tests {
         // a = [2,1] shape, b = [1,3] shape -> [2,3] output
         let a = UFuncArray::new(vec![2, 1], vec![1.0, 2.0], DType::F64).unwrap();
         let b = UFuncArray::new(vec![1, 3], vec![10.0, 20.0, 30.0], DType::F64).unwrap();
-        let result = UFuncArray::vectorize_n(
-            &[&a, &b],
-            &[],
-            |args| args[0] + args[1],
-        ).unwrap();
+        let result = UFuncArray::vectorize_n(&[&a, &b], &[], |args| args[0] + args[1]).unwrap();
         assert_eq!(result.shape(), &[2, 3]);
         assert_eq!(result.values(), &[11.0, 21.0, 31.0, 12.0, 22.0, 32.0]);
     }
@@ -25120,11 +25229,7 @@ mod tests {
     fn vectorize_n_all_excluded() {
         let a = UFuncArray::new(vec![1], vec![5.0], DType::F64).unwrap();
         let b = UFuncArray::new(vec![1], vec![3.0], DType::F64).unwrap();
-        let result = UFuncArray::vectorize_n(
-            &[&a, &b],
-            &[0, 1],
-            |args| args[0] * args[1],
-        ).unwrap();
+        let result = UFuncArray::vectorize_n(&[&a, &b], &[0, 1], |args| args[0] * args[1]).unwrap();
         assert_eq!(result.values(), &[15.0]);
     }
 
@@ -25849,11 +25954,7 @@ mod tests {
         let (frac, int) = modf(&arr).unwrap();
         for (i, &v) in vals.iter().enumerate() {
             let sum = frac.values()[i] + int.values()[i];
-            assert!(
-                (sum - v).abs() < 1e-15,
-                "modf roundtrip failed for {}",
-                v
-            );
+            assert!((sum - v).abs() < 1e-15, "modf roundtrip failed for {}", v);
         }
     }
 
@@ -26814,7 +26915,11 @@ mod tests {
         let roots = legroots(&[0.0, 0.0, 1.0]).unwrap();
         assert_eq!(roots.len(), 2);
         let expected = 1.0 / 3.0_f64.sqrt();
-        assert!((roots[0] - (-expected)).abs() < 1e-10, "root0 = {}", roots[0]);
+        assert!(
+            (roots[0] - (-expected)).abs() < 1e-10,
+            "root0 = {}",
+            roots[0]
+        );
         assert!((roots[1] - expected).abs() < 1e-10, "root1 = {}", roots[1]);
     }
 
@@ -26859,7 +26964,12 @@ mod tests {
         let back = poly2leg(&poly);
         assert_eq!(back.len(), orig.len());
         for i in 0..orig.len() {
-            assert!((back[i] - orig[i]).abs() < 1e-8, "c[{i}]: {} vs {}", back[i], orig[i]);
+            assert!(
+                (back[i] - orig[i]).abs() < 1e-8,
+                "c[{i}]: {} vs {}",
+                back[i],
+                orig[i]
+            );
         }
     }
 
@@ -26968,7 +27078,12 @@ mod tests {
         let poly = herm2poly(&orig);
         let back = poly2herm(&poly);
         for i in 0..orig.len() {
-            assert!((back[i] - orig[i]).abs() < 1e-8, "c[{i}]: {} vs {}", back[i], orig[i]);
+            assert!(
+                (back[i] - orig[i]).abs() < 1e-8,
+                "c[{i}]: {} vs {}",
+                back[i],
+                orig[i]
+            );
         }
     }
 
@@ -27109,7 +27224,12 @@ mod tests {
         let poly = lag2poly(&orig);
         let back = poly2lag(&poly);
         for i in 0..orig.len() {
-            assert!((back[i] - orig[i]).abs() < 1e-8, "c[{i}]: {} vs {}", back[i], orig[i]);
+            assert!(
+                (back[i] - orig[i]).abs() < 1e-8,
+                "c[{i}]: {} vs {}",
+                back[i],
+                orig[i]
+            );
         }
     }
 
