@@ -918,11 +918,7 @@ impl UFuncArray {
                 }
             }
         }
-        Self {
-            shape: vec![n, cols],
-            values,
-            dtype,
-        }
+        Self::from_values_with_dtype_lossy(vec![n, cols], values, dtype)
     }
 
     /// Create a diagonal matrix from a 1-D array with optional offset.
@@ -939,11 +935,7 @@ impl UFuncArray {
             let col = if k >= 0 { i + abs_k } else { i };
             values[row * size + col] = val;
         }
-        Self {
-            shape: vec![size, size],
-            values,
-            dtype: self.dtype,
-        }
+        Self::from_values_with_dtype_lossy(vec![size, size], values, self.dtype)
     }
 
     /// Create a 2-D identity matrix (or offset-diagonal matrix).
@@ -957,11 +949,7 @@ impl UFuncArray {
                 values[row * cols + col as usize] = 1.0;
             }
         }
-        Ok(Self {
-            shape: vec![n, cols],
-            values,
-            dtype,
-        })
+        Self::from_values_with_dtype(vec![n, cols], values, dtype)
     }
 
     /// Extract a diagonal or construct a diagonal array.
@@ -977,11 +965,7 @@ impl UFuncArray {
                 let col = if k >= 0 { i + abs_k } else { i };
                 values[row * size + col] = self.values[i];
             }
-            Ok(Self {
-                shape: vec![size, size],
-                values,
-                dtype: self.dtype,
-            })
+            Self::from_values_with_dtype(vec![size, size], values, self.dtype)
         } else if self.shape.len() == 2 {
             // 2-D input: extract diagonal
             let (rows, cols) = (self.shape[0], self.shape[1]);
@@ -993,11 +977,7 @@ impl UFuncArray {
             let values: Vec<f64> = (0..diag_len)
                 .map(|i| self.values[(start_row + i) * cols + start_col + i])
                 .collect();
-            Ok(Self {
-                shape: vec![diag_len],
-                values,
-                dtype: self.dtype,
-            })
+            Self::from_values_with_dtype(vec![diag_len], values, self.dtype)
         } else {
             Err(UFuncError::Msg(
                 "diag requires 1-D or 2-D input".to_string(),
@@ -1019,11 +999,7 @@ impl UFuncArray {
                 }
             }
         }
-        Ok(Self {
-            shape: self.shape.clone(),
-            values,
-            dtype: self.dtype,
-        })
+        Self::from_values_with_dtype(self.shape.clone(), values, self.dtype)
     }
 
     /// Extract lower triangle of a matrix.
@@ -1040,11 +1016,7 @@ impl UFuncArray {
                 }
             }
         }
-        Ok(Self {
-            shape: self.shape.clone(),
-            values,
-            dtype: self.dtype,
-        })
+        Self::from_values_with_dtype(self.shape.clone(), values, self.dtype)
     }
 
     #[must_use]
