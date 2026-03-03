@@ -36,7 +36,13 @@ use fnp_runtime::{
     CompatibilityClass, DecisionAction, DecisionAuditContext, EvidenceLedger, RuntimeMode,
     decide_and_record_with_context, decide_compatibility_from_wire,
 };
-use fnp_ufunc::{UFuncArray, UFuncError};
+use fnp_ufunc::{
+    UFuncArray, UFuncError, cheb2poly, chebadd, chebdiv, chebfit, chebfromroots, chebmul,
+    chebroots, chebsub, chebval, herm2poly, hermadd, hermdiv, hermfromroots, hermmul, hermroots,
+    hermsub, hermval, lag2poly, lagadd, lagdiv, lagfromroots, lagmul, lagroots, lagsub, lagval,
+    leg2poly, legadd, legdiv, legfromroots, legmul, legroots, legsub, legval, poly2cheb, poly2herm,
+    poly2lag, poly2leg,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
@@ -772,6 +778,44 @@ struct FftDifferentialCase {
     rel_tol: f64,
 }
 
+#[derive(Debug, Deserialize)]
+struct PolynomialDifferentialCase {
+    id: String,
+    operation: String,
+    #[serde(default)]
+    seed: u64,
+    #[serde(default)]
+    mode: String,
+    #[serde(default)]
+    env_fingerprint: String,
+    #[serde(default)]
+    artifact_refs: Vec<String>,
+    #[serde(default)]
+    reason_code: String,
+    #[serde(default)]
+    expected_reason_code: String,
+    #[serde(default)]
+    expected_error_contains: String,
+    #[serde(default)]
+    lhs_values: Vec<f64>,
+    #[serde(default)]
+    rhs_values: Vec<f64>,
+    #[serde(default)]
+    y_values: Vec<f64>,
+    #[serde(default)]
+    deg: Option<usize>,
+    #[serde(default)]
+    expected_values: Vec<f64>,
+    #[serde(default)]
+    expected_aux_values: Vec<f64>,
+    #[serde(default)]
+    sort_values: bool,
+    #[serde(default)]
+    abs_tol: f64,
+    #[serde(default)]
+    rel_tol: f64,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct IterSelectorFixtureInput {
     src_stride: isize,
@@ -1079,6 +1123,27 @@ struct FftDifferentialReportArtifact {
 }
 
 #[derive(Debug, Serialize)]
+struct PolynomialDifferentialMismatch {
+    fixture_id: String,
+    seed: u64,
+    mode: String,
+    operation: String,
+    expected_reason_code: String,
+    actual_reason_code: String,
+    message: String,
+    artifact_refs: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PolynomialDifferentialReportArtifact {
+    suite: &'static str,
+    total_cases: usize,
+    passed_cases: usize,
+    failed_cases: usize,
+    mismatches: Vec<PolynomialDifferentialMismatch>,
+}
+
+#[derive(Debug, Serialize)]
 struct IoDifferentialMismatch {
     fixture_id: String,
     seed: u64,
@@ -1253,6 +1318,15 @@ fn load_dtype_adversarial_cases(fixture_root: &Path) -> Result<Vec<DTypeAdversar
 
 fn load_fft_differential_cases(fixture_root: &Path) -> Result<Vec<FftDifferentialCase>, String> {
     let path = fixture_root.join("fft_differential_cases.json");
+    let raw = fs::read_to_string(&path)
+        .map_err(|err| format!("failed reading {}: {err}", path.display()))?;
+    serde_json::from_str(&raw).map_err(|err| format!("invalid json: {err}"))
+}
+
+fn load_polynomial_differential_cases(
+    fixture_root: &Path,
+) -> Result<Vec<PolynomialDifferentialCase>, String> {
+    let path = fixture_root.join("polynomial_differential_cases.json");
     let raw = fs::read_to_string(&path)
         .map_err(|err| format!("failed reading {}: {err}", path.display()))?;
     serde_json::from_str(&raw).map_err(|err| format!("invalid json: {err}"))
@@ -5095,6 +5169,554 @@ fn map_ufunc_error_to_fft_suite(error: UFuncError) -> FftSuiteError {
     FftSuiteError::new(error.reason_code(), error.to_string())
 }
 
+#[derive(Debug, Clone, PartialEq)]
+enum PolynomialOperationOutcome {
+    Array {
+        values: Vec<f64>,
+    },
+    Pair {
+        values: Vec<f64>,
+        aux_values: Vec<f64>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PolynomialSuiteError {
+    reason_code: String,
+    message: String,
+}
+
+impl PolynomialSuiteError {
+    fn new(reason_code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            reason_code: reason_code.into(),
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for PolynomialSuiteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for PolynomialSuiteError {}
+
+pub fn run_polynomial_differential_suite(config: &HarnessConfig) -> Result<SuiteReport, String> {
+    let cases = load_polynomial_differential_cases(&config.fixture_root)?;
+
+    let mut report = SuiteReport {
+        suite: "polynomial_differential",
+        case_count: cases.len(),
+        pass_count: 0,
+        failures: Vec::new(),
+    };
+    let mut mismatches = Vec::new();
+
+    for case in cases {
+        let mode = resolve_case_mode(&case.mode, config.strict_mode);
+        let env_fingerprint = normalize_env_fingerprint(&case.env_fingerprint);
+        let artifact_refs = normalize_artifact_refs(case.artifact_refs.clone());
+        let reason_code = normalize_reason_code(&case.reason_code);
+        let expected_reason_code = if case.expected_reason_code.trim().is_empty() {
+            reason_code.clone()
+        } else {
+            case.expected_reason_code.trim().to_string()
+        };
+        let expected_error = case.expected_error_contains.trim().to_lowercase();
+
+        match execute_polynomial_differential_operation(&case) {
+            Ok(outcome) => {
+                if !expected_error.is_empty() {
+                    let rendered = format!(
+                        "{}: seed={} mode={} reason_code={} env_fingerprint={} artifact_refs={} expected error containing '{}' but operation '{}' succeeded",
+                        case.id,
+                        case.seed,
+                        mode,
+                        reason_code,
+                        env_fingerprint,
+                        artifact_refs.join(","),
+                        case.expected_error_contains,
+                        case.operation
+                    );
+                    report.failures.push(rendered.clone());
+                    mismatches.push(PolynomialDifferentialMismatch {
+                        fixture_id: case.id,
+                        seed: case.seed,
+                        mode,
+                        operation: case.operation,
+                        expected_reason_code,
+                        actual_reason_code: "none".to_string(),
+                        message: rendered,
+                        artifact_refs,
+                    });
+                    continue;
+                }
+
+                match validate_polynomial_differential_expectation(&case, &outcome) {
+                    Ok(()) => report.pass_count += 1,
+                    Err(message) => {
+                        let rendered = format!(
+                            "{}: seed={} mode={} reason_code={} env_fingerprint={} artifact_refs={} {}",
+                            case.id,
+                            case.seed,
+                            mode,
+                            reason_code,
+                            env_fingerprint,
+                            artifact_refs.join(","),
+                            message
+                        );
+                        report.failures.push(rendered.clone());
+                        mismatches.push(PolynomialDifferentialMismatch {
+                            fixture_id: case.id,
+                            seed: case.seed,
+                            mode,
+                            operation: case.operation,
+                            expected_reason_code,
+                            actual_reason_code: "polynomial_differential_mismatch".to_string(),
+                            message: rendered,
+                            artifact_refs,
+                        });
+                    }
+                }
+            }
+            Err(err) => {
+                if expected_error.is_empty() {
+                    let rendered = format!(
+                        "{}: seed={} mode={} reason_code={} env_fingerprint={} artifact_refs={} expected success but got error '{}' (reason_code={})",
+                        case.id,
+                        case.seed,
+                        mode,
+                        reason_code,
+                        env_fingerprint,
+                        artifact_refs.join(","),
+                        err.message,
+                        err.reason_code
+                    );
+                    report.failures.push(rendered.clone());
+                    mismatches.push(PolynomialDifferentialMismatch {
+                        fixture_id: case.id,
+                        seed: case.seed,
+                        mode,
+                        operation: case.operation,
+                        expected_reason_code,
+                        actual_reason_code: err.reason_code,
+                        message: rendered,
+                        artifact_refs,
+                    });
+                    continue;
+                }
+
+                let contains_expected = err.message.to_lowercase().contains(&expected_error);
+                let reason_match = err.reason_code == expected_reason_code;
+                if contains_expected && reason_match {
+                    report.pass_count += 1;
+                } else {
+                    let rendered = format!(
+                        "{}: seed={} mode={} reason_code={} env_fingerprint={} artifact_refs={} expected error containing '{}' with reason_code='{}' but got '{}' (reason_code='{}')",
+                        case.id,
+                        case.seed,
+                        mode,
+                        reason_code,
+                        env_fingerprint,
+                        artifact_refs.join(","),
+                        case.expected_error_contains,
+                        expected_reason_code,
+                        err.message,
+                        err.reason_code
+                    );
+                    report.failures.push(rendered.clone());
+                    mismatches.push(PolynomialDifferentialMismatch {
+                        fixture_id: case.id,
+                        seed: case.seed,
+                        mode,
+                        operation: case.operation,
+                        expected_reason_code,
+                        actual_reason_code: err.reason_code,
+                        message: rendered,
+                        artifact_refs,
+                    });
+                }
+            }
+        }
+    }
+
+    let artifact = PolynomialDifferentialReportArtifact {
+        suite: "polynomial_differential",
+        total_cases: report.case_count,
+        passed_cases: report.pass_count,
+        failed_cases: report.case_count.saturating_sub(report.pass_count),
+        mismatches,
+    };
+    let report_path = config
+        .fixture_root
+        .join("oracle_outputs/polynomial_differential_report.json");
+    if let Some(parent) = report_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed creating {}: {err}", parent.display()))?;
+    }
+    let payload = serde_json::to_string_pretty(&artifact)
+        .map_err(|err| format!("failed serializing polynomial differential report: {err}"))?;
+    fs::write(&report_path, payload.as_bytes())
+        .map_err(|err| format!("failed writing {}: {err}", report_path.display()))?;
+
+    Ok(report)
+}
+
+fn execute_polynomial_differential_operation(
+    case: &PolynomialDifferentialCase,
+) -> Result<PolynomialOperationOutcome, PolynomialSuiteError> {
+    let as_array = |values: Vec<f64>| PolynomialOperationOutcome::Array { values };
+    let as_pair = |values: Vec<f64>, aux_values: Vec<f64>| PolynomialOperationOutcome::Pair {
+        values,
+        aux_values,
+    };
+
+    let lhs = if case.lhs_values.is_empty() {
+        None
+    } else {
+        Some(polynomial_values_to_array(&case.lhs_values)?)
+    };
+    let rhs = if case.rhs_values.is_empty() {
+        None
+    } else {
+        Some(polynomial_values_to_array(&case.rhs_values)?)
+    };
+    let y = if case.y_values.is_empty() {
+        None
+    } else {
+        Some(polynomial_values_to_array(&case.y_values)?)
+    };
+
+    match case.operation.as_str() {
+        "polyval" => {
+            let lhs = lhs.ok_or_else(|| {
+                PolynomialSuiteError::new(
+                    "polynomial_input_contract_violation",
+                    "polyval requires lhs_values coefficients",
+                )
+            })?;
+            let rhs = rhs.ok_or_else(|| {
+                PolynomialSuiteError::new(
+                    "polynomial_input_contract_violation",
+                    "polyval requires rhs_values x-domain",
+                )
+            })?;
+            Ok(as_array(
+                UFuncArray::polyval(&lhs, &rhs)
+                    .map_err(map_ufunc_error_to_polynomial_suite)?
+                    .values()
+                    .to_vec(),
+            ))
+        }
+        "polyfit" => {
+            let lhs = lhs.ok_or_else(|| {
+                PolynomialSuiteError::new(
+                    "polynomial_input_contract_violation",
+                    "polyfit requires lhs_values x-domain",
+                )
+            })?;
+            let y = y.ok_or_else(|| {
+                PolynomialSuiteError::new(
+                    "polynomial_input_contract_violation",
+                    "polyfit requires y_values",
+                )
+            })?;
+            let deg = case.deg.ok_or_else(|| {
+                PolynomialSuiteError::new(
+                    "polynomial_input_contract_violation",
+                    "polyfit requires 'deg'",
+                )
+            })?;
+            Ok(as_array(
+                UFuncArray::polyfit(&lhs, &y, deg)
+                    .map_err(map_ufunc_error_to_polynomial_suite)?
+                    .values()
+                    .to_vec(),
+            ))
+        }
+        "polyder" => {
+            let lhs = lhs.ok_or_else(|| {
+                PolynomialSuiteError::new(
+                    "polynomial_input_contract_violation",
+                    "polyder requires lhs_values",
+                )
+            })?;
+            Ok(as_array(
+                lhs.polyder()
+                    .map_err(map_ufunc_error_to_polynomial_suite)?
+                    .values()
+                    .to_vec(),
+            ))
+        }
+        "polyint" => {
+            let lhs = lhs.ok_or_else(|| {
+                PolynomialSuiteError::new(
+                    "polynomial_input_contract_violation",
+                    "polyint requires lhs_values",
+                )
+            })?;
+            Ok(as_array(
+                lhs.polyint()
+                    .map_err(map_ufunc_error_to_polynomial_suite)?
+                    .values()
+                    .to_vec(),
+            ))
+        }
+        "roots" => {
+            let lhs = lhs.ok_or_else(|| {
+                PolynomialSuiteError::new(
+                    "polynomial_input_contract_violation",
+                    "roots requires lhs_values",
+                )
+            })?;
+            Ok(as_array(
+                lhs.roots()
+                    .map_err(map_ufunc_error_to_polynomial_suite)?
+                    .values()
+                    .to_vec(),
+            ))
+        }
+        "poly" => {
+            let lhs = lhs.ok_or_else(|| {
+                PolynomialSuiteError::new(
+                    "polynomial_input_contract_violation",
+                    "poly requires lhs_values roots",
+                )
+            })?;
+            Ok(as_array(
+                UFuncArray::poly(&lhs)
+                    .map_err(map_ufunc_error_to_polynomial_suite)?
+                    .values()
+                    .to_vec(),
+            ))
+        }
+        "polymul" => {
+            let lhs = lhs.ok_or_else(|| {
+                PolynomialSuiteError::new(
+                    "polynomial_input_contract_violation",
+                    "polymul requires lhs_values",
+                )
+            })?;
+            let rhs = rhs.ok_or_else(|| {
+                PolynomialSuiteError::new(
+                    "polynomial_input_contract_violation",
+                    "polymul requires rhs_values",
+                )
+            })?;
+            Ok(as_array(
+                lhs.polymul(&rhs)
+                    .map_err(map_ufunc_error_to_polynomial_suite)?
+                    .values()
+                    .to_vec(),
+            ))
+        }
+        "polyadd" => {
+            let lhs = lhs.ok_or_else(|| {
+                PolynomialSuiteError::new(
+                    "polynomial_input_contract_violation",
+                    "polyadd requires lhs_values",
+                )
+            })?;
+            let rhs = rhs.ok_or_else(|| {
+                PolynomialSuiteError::new(
+                    "polynomial_input_contract_violation",
+                    "polyadd requires rhs_values",
+                )
+            })?;
+            Ok(as_array(
+                lhs.polyadd(&rhs)
+                    .map_err(map_ufunc_error_to_polynomial_suite)?
+                    .values()
+                    .to_vec(),
+            ))
+        }
+        "polysub" => {
+            let lhs = lhs.ok_or_else(|| {
+                PolynomialSuiteError::new(
+                    "polynomial_input_contract_violation",
+                    "polysub requires lhs_values",
+                )
+            })?;
+            let rhs = rhs.ok_or_else(|| {
+                PolynomialSuiteError::new(
+                    "polynomial_input_contract_violation",
+                    "polysub requires rhs_values",
+                )
+            })?;
+            Ok(as_array(
+                lhs.polysub(&rhs)
+                    .map_err(map_ufunc_error_to_polynomial_suite)?
+                    .values()
+                    .to_vec(),
+            ))
+        }
+        "polydiv" => {
+            let lhs = lhs.ok_or_else(|| {
+                PolynomialSuiteError::new(
+                    "polynomial_input_contract_violation",
+                    "polydiv requires lhs_values",
+                )
+            })?;
+            let rhs = rhs.ok_or_else(|| {
+                PolynomialSuiteError::new(
+                    "polynomial_input_contract_violation",
+                    "polydiv requires rhs_values",
+                )
+            })?;
+            let (q, r) = lhs
+                .polydiv(&rhs)
+                .map_err(map_ufunc_error_to_polynomial_suite)?;
+            Ok(as_pair(q.values().to_vec(), r.values().to_vec()))
+        }
+        "chebval" => Ok(as_array(chebval(&case.rhs_values, &case.lhs_values))),
+        "chebadd" => Ok(as_array(chebadd(&case.lhs_values, &case.rhs_values))),
+        "chebsub" => Ok(as_array(chebsub(&case.lhs_values, &case.rhs_values))),
+        "chebmul" => Ok(as_array(chebmul(&case.lhs_values, &case.rhs_values))),
+        "chebdiv" => {
+            let (q, r) = chebdiv(&case.lhs_values, &case.rhs_values)
+                .map_err(map_ufunc_error_to_polynomial_suite)?;
+            Ok(as_pair(q, r))
+        }
+        "chebfromroots" => Ok(as_array(chebfromroots(&case.lhs_values))),
+        "cheb2poly" => Ok(as_array(cheb2poly(&case.lhs_values))),
+        "poly2cheb" => Ok(as_array(poly2cheb(&case.lhs_values))),
+        "chebfit" => {
+            let deg = case.deg.ok_or_else(|| {
+                PolynomialSuiteError::new(
+                    "polynomial_input_contract_violation",
+                    "chebfit requires 'deg'",
+                )
+            })?;
+            Ok(as_array(
+                chebfit(&case.lhs_values, &case.y_values, deg)
+                    .map_err(map_ufunc_error_to_polynomial_suite)?,
+            ))
+        }
+        "chebroots" => Ok(as_array(
+            chebroots(&case.lhs_values).map_err(map_ufunc_error_to_polynomial_suite)?,
+        )),
+        "legval" => Ok(as_array(legval(&case.rhs_values, &case.lhs_values))),
+        "legadd" => Ok(as_array(legadd(&case.lhs_values, &case.rhs_values))),
+        "legsub" => Ok(as_array(legsub(&case.lhs_values, &case.rhs_values))),
+        "legmul" => Ok(as_array(legmul(&case.lhs_values, &case.rhs_values))),
+        "legdiv" => {
+            let (q, r) = legdiv(&case.lhs_values, &case.rhs_values)
+                .map_err(map_ufunc_error_to_polynomial_suite)?;
+            Ok(as_pair(q, r))
+        }
+        "legfromroots" => Ok(as_array(legfromroots(&case.lhs_values))),
+        "leg2poly" => Ok(as_array(leg2poly(&case.lhs_values))),
+        "poly2leg" => Ok(as_array(poly2leg(&case.lhs_values))),
+        "legroots" => Ok(as_array(
+            legroots(&case.lhs_values).map_err(map_ufunc_error_to_polynomial_suite)?,
+        )),
+        "hermval" => Ok(as_array(hermval(&case.rhs_values, &case.lhs_values))),
+        "hermadd" => Ok(as_array(hermadd(&case.lhs_values, &case.rhs_values))),
+        "hermsub" => Ok(as_array(hermsub(&case.lhs_values, &case.rhs_values))),
+        "hermmul" => Ok(as_array(hermmul(&case.lhs_values, &case.rhs_values))),
+        "hermdiv" => {
+            let (q, r) = hermdiv(&case.lhs_values, &case.rhs_values)
+                .map_err(map_ufunc_error_to_polynomial_suite)?;
+            Ok(as_pair(q, r))
+        }
+        "hermfromroots" => Ok(as_array(hermfromroots(&case.lhs_values))),
+        "herm2poly" => Ok(as_array(herm2poly(&case.lhs_values))),
+        "poly2herm" => Ok(as_array(poly2herm(&case.lhs_values))),
+        "hermroots" => Ok(as_array(
+            hermroots(&case.lhs_values).map_err(map_ufunc_error_to_polynomial_suite)?,
+        )),
+        "lagval" => Ok(as_array(lagval(&case.rhs_values, &case.lhs_values))),
+        "lagadd" => Ok(as_array(lagadd(&case.lhs_values, &case.rhs_values))),
+        "lagsub" => Ok(as_array(lagsub(&case.lhs_values, &case.rhs_values))),
+        "lagmul" => Ok(as_array(lagmul(&case.lhs_values, &case.rhs_values))),
+        "lagdiv" => {
+            let (q, r) = lagdiv(&case.lhs_values, &case.rhs_values)
+                .map_err(map_ufunc_error_to_polynomial_suite)?;
+            Ok(as_pair(q, r))
+        }
+        "lagfromroots" => Ok(as_array(lagfromroots(&case.lhs_values))),
+        "lag2poly" => Ok(as_array(lag2poly(&case.lhs_values))),
+        "poly2lag" => Ok(as_array(poly2lag(&case.lhs_values))),
+        "lagroots" => Ok(as_array(
+            lagroots(&case.lhs_values).map_err(map_ufunc_error_to_polynomial_suite)?,
+        )),
+        other => Err(PolynomialSuiteError::new(
+            "polynomial_policy_unknown_operation",
+            format!("unsupported polynomial differential operation {other}"),
+        )),
+    }
+}
+
+fn validate_polynomial_differential_expectation(
+    case: &PolynomialDifferentialCase,
+    outcome: &PolynomialOperationOutcome,
+) -> Result<(), String> {
+    let abs_tol = if case.abs_tol > 0.0 {
+        case.abs_tol
+    } else {
+        1e-9
+    };
+    let rel_tol = if case.rel_tol > 0.0 {
+        case.rel_tol
+    } else {
+        1e-9
+    };
+
+    let compare = |expected: &[f64], actual: &[f64], label: &str| -> Result<(), String> {
+        if expected.len() != actual.len() {
+            return Err(format!(
+                "{label} length mismatch expected={} actual={}",
+                expected.len(),
+                actual.len()
+            ));
+        }
+        let mut expected_values = expected.to_vec();
+        let mut actual_values = actual.to_vec();
+        if case.sort_values {
+            expected_values
+                .sort_by(|lhs, rhs| lhs.partial_cmp(rhs).unwrap_or(std::cmp::Ordering::Equal));
+            actual_values
+                .sort_by(|lhs, rhs| lhs.partial_cmp(rhs).unwrap_or(std::cmp::Ordering::Equal));
+        }
+        if !approx_equal_values(&expected_values, &actual_values, abs_tol, rel_tol) {
+            return Err(format!(
+                "{label} mismatch expected={expected_values:?} actual={actual_values:?} abs_tol={abs_tol} rel_tol={rel_tol}"
+            ));
+        }
+        Ok(())
+    };
+
+    match outcome {
+        PolynomialOperationOutcome::Array { values } => {
+            if case.expected_values.is_empty() {
+                return Err("expected_values required for array operation".to_string());
+            }
+            compare(&case.expected_values, values, "values")
+        }
+        PolynomialOperationOutcome::Pair { values, aux_values } => {
+            if case.expected_values.is_empty() || case.expected_aux_values.is_empty() {
+                return Err(
+                    "expected_values and expected_aux_values required for pair operation"
+                        .to_string(),
+                );
+            }
+            compare(&case.expected_values, values, "values")?;
+            compare(&case.expected_aux_values, aux_values, "aux_values")
+        }
+    }
+}
+
+fn polynomial_values_to_array(values: &[f64]) -> Result<UFuncArray, PolynomialSuiteError> {
+    UFuncArray::new(vec![values.len()], values.to_vec(), DType::F64)
+        .map_err(map_ufunc_error_to_polynomial_suite)
+}
+
+fn map_ufunc_error_to_polynomial_suite(error: UFuncError) -> PolynomialSuiteError {
+    PolynomialSuiteError::new(error.reason_code(), error.to_string())
+}
+
 #[derive(Debug, Clone)]
 struct RngSuiteError {
     reason_code: String,
@@ -5878,6 +6500,7 @@ pub fn run_all_core_suites(config: &HarnessConfig) -> Result<Vec<SuiteReport>, S
         run_rng_differential_suite(config)?,
         run_rng_metamorphic_suite(config)?,
         run_rng_adversarial_suite(config)?,
+        run_polynomial_differential_suite(config)?,
         run_fft_differential_suite(config)?,
         run_linalg_differential_suite(config)?,
         run_linalg_metamorphic_suite(config)?,
@@ -7187,13 +7810,13 @@ mod tests {
         run_dtype_promotion_suite, run_fft_differential_suite, run_io_adversarial_suite,
         run_io_differential_suite, run_io_metamorphic_suite, run_iter_adversarial_suite,
         run_iter_differential_suite, run_iter_metamorphic_suite, run_linalg_adversarial_suite,
-        run_linalg_differential_suite, run_linalg_metamorphic_suite, run_rng_adversarial_suite,
-        run_rng_differential_suite, run_rng_metamorphic_suite,
-        run_runtime_policy_adversarial_suite, run_shape_stride_adversarial_suite,
-        run_shape_stride_differential_suite, run_shape_stride_metamorphic_suite,
-        run_shape_stride_suite, run_smoke, run_ufunc_adversarial_suite,
-        run_ufunc_differential_suite, run_ufunc_metamorphic_suite, set_dtype_promotion_log_path,
-        set_shape_stride_log_path,
+        run_linalg_differential_suite, run_linalg_metamorphic_suite,
+        run_polynomial_differential_suite, run_rng_adversarial_suite, run_rng_differential_suite,
+        run_rng_metamorphic_suite, run_runtime_policy_adversarial_suite,
+        run_shape_stride_adversarial_suite, run_shape_stride_differential_suite,
+        run_shape_stride_metamorphic_suite, run_shape_stride_suite, run_smoke,
+        run_ufunc_adversarial_suite, run_ufunc_differential_suite, run_ufunc_metamorphic_suite,
+        set_dtype_promotion_log_path, set_shape_stride_log_path,
     };
     use fnp_iter::{
         RuntimeMode as IterRuntimeMode, TRANSFER_PACKET_REASON_CODES, TransferLogRecord,
@@ -7700,6 +8323,14 @@ mod tests {
     fn rng_adversarial_suite_is_green() {
         let cfg = HarnessConfig::default_paths();
         let suite = run_rng_adversarial_suite(&cfg).expect("adversarial suite should run");
+        assert!(suite.all_passed(), "failures={:?}", suite.failures);
+    }
+
+    #[test]
+    fn polynomial_differential_suite_is_green() {
+        let cfg = HarnessConfig::default_paths();
+        let suite = run_polynomial_differential_suite(&cfg)
+            .expect("polynomial differential suite should run");
         assert!(suite.all_passed(), "failures={:?}", suite.failures);
     }
 
