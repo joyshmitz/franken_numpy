@@ -19,6 +19,7 @@ This folder stores normalized oracle-vs-target fixtures for `fnp-conformance`.
 - `rng_differential_cases.json`: packet `FNP-P2C-007` deterministic RNG differential witness corpus.
 - `rng_metamorphic_cases.json`: deterministic RNG metamorphic invariants (jump additivity, fill/iter equivalence, bounded repeatability).
 - `rng_adversarial_cases.json`: hostile RNG payloads expecting bounded fail-closed reason-code outcomes.
+- `datetime_differential_cases.json`: datetime64/timedelta64 arithmetic, comparisons, and business-day differential corpus.
 - `io_differential_cases.json`: packet `FNP-P2C-009` differential corpus for NPY/NPZ parser/dispatch contract checks.
 - `io_metamorphic_cases.json`: deterministic IO metamorphic invariants (idempotent header/dispatch/policy/budget validations).
 - `io_adversarial_cases.json`: parser-boundary adversarial IO corpus with severity-classified failure expectations.
@@ -36,3 +37,4 @@ This folder stores normalized oracle-vs-target fixtures for `fnp-conformance`.
 - `packet003_transfer/oracle_outputs/iter_differential_report.json`: machine-readable mismatch report for packet `FNP-P2C-003` transfer differential checks.
 - `oracle_outputs/io_differential_report.json`: machine-readable mismatch report for packet `FNP-P2C-009` IO differential checks.
 - `oracle_outputs/linalg_differential_report.json`: machine-readable mismatch report for packet `FNP-P2C-008` differential checks.
+- `oracle_outputs/datetime_differential_report.json`: machine-readable mismatch report for datetime/timedelta differential checks.

@@ -37,11 +37,12 @@ use fnp_runtime::{
     decide_and_record_with_context, decide_compatibility_from_wire,
 };
 use fnp_ufunc::{
-    BinaryOp, MAError, MaskedArray, StringArray, UFuncArray, UFuncError, cheb2poly, chebadd,
-    chebdiv, chebfit, chebfromroots, chebmul, chebroots, chebsub, chebval, herm2poly, hermadd,
-    hermdiv, hermfromroots, hermmul, hermroots, hermsub, hermval, lag2poly, lagadd, lagdiv,
-    lagfromroots, lagmul, lagroots, lagsub, lagval, leg2poly, legadd, legdiv, legfromroots, legmul,
-    legroots, legsub, legval, poly2cheb, poly2herm, poly2lag, poly2leg,
+    BinaryOp, MAError, MaskedArray, StringArray, UFuncArray, UFuncError, busday_count,
+    busday_offset, cheb2poly, chebadd, chebdiv, chebfit, chebfromroots, chebmul, chebroots,
+    chebsub, chebval, herm2poly, hermadd, hermdiv, hermfromroots, hermmul, hermroots, hermsub,
+    hermval, is_busday, lag2poly, lagadd, lagdiv, lagfromroots, lagmul, lagroots, lagsub, lagval,
+    leg2poly, legadd, legdiv, legfromroots, legmul, legroots, legsub, legval, poly2cheb, poly2herm,
+    poly2lag, poly2leg,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -910,6 +911,50 @@ struct MaskedDifferentialCase {
     rel_tol: f64,
 }
 
+#[derive(Debug, Deserialize)]
+struct DateTimeDifferentialCase {
+    id: String,
+    operation: String,
+    #[serde(default)]
+    seed: u64,
+    #[serde(default)]
+    mode: String,
+    #[serde(default)]
+    env_fingerprint: String,
+    #[serde(default)]
+    artifact_refs: Vec<String>,
+    #[serde(default)]
+    reason_code: String,
+    #[serde(default)]
+    expected_reason_code: String,
+    #[serde(default)]
+    expected_error_contains: String,
+    #[serde(default)]
+    lhs_shape: Vec<usize>,
+    #[serde(default)]
+    lhs_values: Vec<f64>,
+    #[serde(default)]
+    lhs_dtype: String,
+    #[serde(default)]
+    rhs_shape: Vec<usize>,
+    #[serde(default)]
+    rhs_values: Vec<f64>,
+    #[serde(default)]
+    rhs_dtype: String,
+    #[serde(default)]
+    scalar: Option<f64>,
+    #[serde(default)]
+    expected_shape: Vec<usize>,
+    #[serde(default)]
+    expected_values: Vec<f64>,
+    #[serde(default)]
+    expected_dtype: String,
+    #[serde(default)]
+    abs_tol: f64,
+    #[serde(default)]
+    rel_tol: f64,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct IterSelectorFixtureInput {
     src_stride: isize,
@@ -1280,6 +1325,27 @@ struct MaskedDifferentialReportArtifact {
 }
 
 #[derive(Debug, Serialize)]
+struct DateTimeDifferentialMismatch {
+    fixture_id: String,
+    seed: u64,
+    mode: String,
+    operation: String,
+    expected_reason_code: String,
+    actual_reason_code: String,
+    message: String,
+    artifact_refs: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DateTimeDifferentialReportArtifact {
+    suite: &'static str,
+    total_cases: usize,
+    passed_cases: usize,
+    failed_cases: usize,
+    mismatches: Vec<DateTimeDifferentialMismatch>,
+}
+
+#[derive(Debug, Serialize)]
 struct IoDifferentialMismatch {
     fixture_id: String,
     seed: u64,
@@ -1481,6 +1547,15 @@ fn load_masked_differential_cases(
     fixture_root: &Path,
 ) -> Result<Vec<MaskedDifferentialCase>, String> {
     let path = fixture_root.join("masked_differential_cases.json");
+    let raw = fs::read_to_string(&path)
+        .map_err(|err| format!("failed reading {}: {err}", path.display()))?;
+    serde_json::from_str(&raw).map_err(|err| format!("invalid json: {err}"))
+}
+
+fn load_datetime_differential_cases(
+    fixture_root: &Path,
+) -> Result<Vec<DateTimeDifferentialCase>, String> {
+    let path = fixture_root.join("datetime_differential_cases.json");
     let raw = fs::read_to_string(&path)
         .map_err(|err| format!("failed reading {}: {err}", path.display()))?;
     serde_json::from_str(&raw).map_err(|err| format!("invalid json: {err}"))
@@ -6789,6 +6864,513 @@ fn map_ma_error_to_masked_suite(error: MAError) -> MaskedSuiteError {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+enum DateTimeOperationOutcome {
+    Array {
+        shape: Vec<usize>,
+        values: Vec<f64>,
+        dtype: DType,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DateTimeSuiteError {
+    reason_code: String,
+    message: String,
+}
+
+impl DateTimeSuiteError {
+    fn new(reason_code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            reason_code: reason_code.into(),
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for DateTimeSuiteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for DateTimeSuiteError {}
+
+pub fn run_datetime_differential_suite(config: &HarnessConfig) -> Result<SuiteReport, String> {
+    let cases = load_datetime_differential_cases(&config.fixture_root)?;
+
+    let mut report = SuiteReport {
+        suite: "datetime_differential",
+        case_count: cases.len(),
+        pass_count: 0,
+        failures: Vec::new(),
+    };
+    let mut mismatches = Vec::new();
+
+    for case in cases {
+        let mode = resolve_case_mode(&case.mode, config.strict_mode);
+        let env_fingerprint = normalize_env_fingerprint(&case.env_fingerprint);
+        let artifact_refs = normalize_artifact_refs(case.artifact_refs.clone());
+        let reason_code = normalize_reason_code(&case.reason_code);
+        let expected_reason_code = if case.expected_reason_code.trim().is_empty() {
+            reason_code.clone()
+        } else {
+            case.expected_reason_code.trim().to_string()
+        };
+        let expected_error = case.expected_error_contains.trim().to_lowercase();
+
+        match execute_datetime_differential_operation(&case) {
+            Ok(outcome) => {
+                if !expected_error.is_empty() {
+                    let rendered = format!(
+                        "{}: seed={} mode={} reason_code={} env_fingerprint={} artifact_refs={} expected error containing '{}' but operation '{}' succeeded",
+                        case.id,
+                        case.seed,
+                        mode,
+                        reason_code,
+                        env_fingerprint,
+                        artifact_refs.join(","),
+                        case.expected_error_contains,
+                        case.operation
+                    );
+                    report.failures.push(rendered.clone());
+                    mismatches.push(DateTimeDifferentialMismatch {
+                        fixture_id: case.id,
+                        seed: case.seed,
+                        mode,
+                        operation: case.operation,
+                        expected_reason_code,
+                        actual_reason_code: "none".to_string(),
+                        message: rendered,
+                        artifact_refs,
+                    });
+                    continue;
+                }
+
+                match validate_datetime_differential_expectation(&case, &outcome) {
+                    Ok(()) => report.pass_count += 1,
+                    Err(message) => {
+                        let rendered = format!(
+                            "{}: seed={} mode={} reason_code={} env_fingerprint={} artifact_refs={} {}",
+                            case.id,
+                            case.seed,
+                            mode,
+                            reason_code,
+                            env_fingerprint,
+                            artifact_refs.join(","),
+                            message
+                        );
+                        report.failures.push(rendered.clone());
+                        mismatches.push(DateTimeDifferentialMismatch {
+                            fixture_id: case.id,
+                            seed: case.seed,
+                            mode,
+                            operation: case.operation,
+                            expected_reason_code,
+                            actual_reason_code: "datetime_differential_mismatch".to_string(),
+                            message: rendered,
+                            artifact_refs,
+                        });
+                    }
+                }
+            }
+            Err(err) => {
+                if expected_error.is_empty() {
+                    let rendered = format!(
+                        "{}: seed={} mode={} reason_code={} env_fingerprint={} artifact_refs={} expected success but got error '{}' (reason_code={})",
+                        case.id,
+                        case.seed,
+                        mode,
+                        reason_code,
+                        env_fingerprint,
+                        artifact_refs.join(","),
+                        err.message,
+                        err.reason_code
+                    );
+                    report.failures.push(rendered.clone());
+                    mismatches.push(DateTimeDifferentialMismatch {
+                        fixture_id: case.id,
+                        seed: case.seed,
+                        mode,
+                        operation: case.operation,
+                        expected_reason_code,
+                        actual_reason_code: err.reason_code,
+                        message: rendered,
+                        artifact_refs,
+                    });
+                    continue;
+                }
+
+                let contains_expected = err.message.to_lowercase().contains(&expected_error);
+                let reason_match = err.reason_code == expected_reason_code;
+                if contains_expected && reason_match {
+                    report.pass_count += 1;
+                } else {
+                    let rendered = format!(
+                        "{}: seed={} mode={} reason_code={} env_fingerprint={} artifact_refs={} expected error containing '{}' with reason_code='{}' but got '{}' (reason_code='{}')",
+                        case.id,
+                        case.seed,
+                        mode,
+                        reason_code,
+                        env_fingerprint,
+                        artifact_refs.join(","),
+                        case.expected_error_contains,
+                        expected_reason_code,
+                        err.message,
+                        err.reason_code
+                    );
+                    report.failures.push(rendered.clone());
+                    mismatches.push(DateTimeDifferentialMismatch {
+                        fixture_id: case.id,
+                        seed: case.seed,
+                        mode,
+                        operation: case.operation,
+                        expected_reason_code,
+                        actual_reason_code: err.reason_code,
+                        message: rendered,
+                        artifact_refs,
+                    });
+                }
+            }
+        }
+    }
+
+    let artifact = DateTimeDifferentialReportArtifact {
+        suite: "datetime_differential",
+        total_cases: report.case_count,
+        passed_cases: report.pass_count,
+        failed_cases: report.case_count.saturating_sub(report.pass_count),
+        mismatches,
+    };
+    let report_path = config
+        .fixture_root
+        .join("oracle_outputs/datetime_differential_report.json");
+    if let Some(parent) = report_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed creating {}: {err}", parent.display()))?;
+    }
+    let payload = serde_json::to_string_pretty(&artifact)
+        .map_err(|err| format!("failed serializing datetime differential report: {err}"))?;
+    fs::write(&report_path, payload.as_bytes())
+        .map_err(|err| format!("failed writing {}: {err}", report_path.display()))?;
+
+    Ok(report)
+}
+
+fn execute_datetime_differential_operation(
+    case: &DateTimeDifferentialCase,
+) -> Result<DateTimeOperationOutcome, DateTimeSuiteError> {
+    let lhs = build_datetime_case_array(&case.lhs_shape, &case.lhs_values, &case.lhs_dtype, "lhs")?;
+    let rhs = if case.rhs_values.is_empty() {
+        None
+    } else {
+        Some(build_datetime_case_array(
+            &case.rhs_shape,
+            &case.rhs_values,
+            &case.rhs_dtype,
+            "rhs",
+        )?)
+    };
+
+    let as_array = |array: UFuncArray| DateTimeOperationOutcome::Array {
+        shape: array.shape().to_vec(),
+        values: array.values().to_vec(),
+        dtype: array.dtype(),
+    };
+
+    match case.operation.as_str() {
+        "datetime_add" => {
+            let rhs = rhs.ok_or_else(|| {
+                DateTimeSuiteError::new(
+                    "datetime_input_contract_violation",
+                    "datetime_add requires rhs_values",
+                )
+            })?;
+            Ok(as_array(
+                lhs.datetime_add(&rhs)
+                    .map_err(map_ufunc_error_to_datetime_suite)?,
+            ))
+        }
+        "datetime_sub" => {
+            let rhs = rhs.ok_or_else(|| {
+                DateTimeSuiteError::new(
+                    "datetime_input_contract_violation",
+                    "datetime_sub requires rhs_values",
+                )
+            })?;
+            Ok(as_array(
+                lhs.datetime_sub(&rhs)
+                    .map_err(map_ufunc_error_to_datetime_suite)?,
+            ))
+        }
+        "timedelta_add" => {
+            let rhs = rhs.ok_or_else(|| {
+                DateTimeSuiteError::new(
+                    "datetime_input_contract_violation",
+                    "timedelta_add requires rhs_values",
+                )
+            })?;
+            Ok(as_array(
+                lhs.timedelta_add(&rhs)
+                    .map_err(map_ufunc_error_to_datetime_suite)?,
+            ))
+        }
+        "timedelta_sub" => {
+            let rhs = rhs.ok_or_else(|| {
+                DateTimeSuiteError::new(
+                    "datetime_input_contract_violation",
+                    "timedelta_sub requires rhs_values",
+                )
+            })?;
+            Ok(as_array(
+                lhs.timedelta_sub(&rhs)
+                    .map_err(map_ufunc_error_to_datetime_suite)?,
+            ))
+        }
+        "timedelta_mul" => {
+            let scalar = case.scalar.ok_or_else(|| {
+                DateTimeSuiteError::new(
+                    "datetime_input_contract_violation",
+                    "timedelta_mul requires scalar",
+                )
+            })?;
+            Ok(as_array(
+                lhs.timedelta_mul(scalar)
+                    .map_err(map_ufunc_error_to_datetime_suite)?,
+            ))
+        }
+        "timedelta_div" => {
+            let scalar = case.scalar.ok_or_else(|| {
+                DateTimeSuiteError::new(
+                    "datetime_input_contract_violation",
+                    "timedelta_div requires scalar",
+                )
+            })?;
+            Ok(as_array(
+                lhs.timedelta_div(scalar)
+                    .map_err(map_ufunc_error_to_datetime_suite)?,
+            ))
+        }
+        "timedelta_neg" => Ok(as_array(lhs.timedelta_neg())),
+        "timedelta_abs" => Ok(as_array(lhs.timedelta_abs())),
+        "is_busday" => Ok(as_array(
+            is_busday(&lhs).map_err(map_ufunc_error_to_datetime_suite)?,
+        )),
+        "busday_count" => {
+            let rhs = rhs.ok_or_else(|| {
+                DateTimeSuiteError::new(
+                    "datetime_input_contract_violation",
+                    "busday_count requires rhs_values",
+                )
+            })?;
+            Ok(as_array(
+                busday_count(&lhs, &rhs).map_err(map_ufunc_error_to_datetime_suite)?,
+            ))
+        }
+        "busday_offset" => {
+            let rhs = rhs.ok_or_else(|| {
+                DateTimeSuiteError::new(
+                    "datetime_input_contract_violation",
+                    "busday_offset requires rhs_values",
+                )
+            })?;
+            Ok(as_array(
+                busday_offset(&lhs, &rhs).map_err(map_ufunc_error_to_datetime_suite)?,
+            ))
+        }
+        "equal" => {
+            let rhs = rhs.ok_or_else(|| {
+                DateTimeSuiteError::new(
+                    "datetime_input_contract_violation",
+                    "equal requires rhs_values",
+                )
+            })?;
+            Ok(as_array(
+                lhs.elementwise_binary(&rhs, BinaryOp::Equal)
+                    .map_err(map_ufunc_error_to_datetime_suite)?,
+            ))
+        }
+        "not_equal" => {
+            let rhs = rhs.ok_or_else(|| {
+                DateTimeSuiteError::new(
+                    "datetime_input_contract_violation",
+                    "not_equal requires rhs_values",
+                )
+            })?;
+            Ok(as_array(
+                lhs.elementwise_binary(&rhs, BinaryOp::NotEqual)
+                    .map_err(map_ufunc_error_to_datetime_suite)?,
+            ))
+        }
+        "less" => {
+            let rhs = rhs.ok_or_else(|| {
+                DateTimeSuiteError::new(
+                    "datetime_input_contract_violation",
+                    "less requires rhs_values",
+                )
+            })?;
+            Ok(as_array(
+                lhs.elementwise_binary(&rhs, BinaryOp::Less)
+                    .map_err(map_ufunc_error_to_datetime_suite)?,
+            ))
+        }
+        "less_equal" => {
+            let rhs = rhs.ok_or_else(|| {
+                DateTimeSuiteError::new(
+                    "datetime_input_contract_violation",
+                    "less_equal requires rhs_values",
+                )
+            })?;
+            Ok(as_array(
+                lhs.elementwise_binary(&rhs, BinaryOp::LessEqual)
+                    .map_err(map_ufunc_error_to_datetime_suite)?,
+            ))
+        }
+        "greater" => {
+            let rhs = rhs.ok_or_else(|| {
+                DateTimeSuiteError::new(
+                    "datetime_input_contract_violation",
+                    "greater requires rhs_values",
+                )
+            })?;
+            Ok(as_array(
+                lhs.elementwise_binary(&rhs, BinaryOp::Greater)
+                    .map_err(map_ufunc_error_to_datetime_suite)?,
+            ))
+        }
+        "greater_equal" => {
+            let rhs = rhs.ok_or_else(|| {
+                DateTimeSuiteError::new(
+                    "datetime_input_contract_violation",
+                    "greater_equal requires rhs_values",
+                )
+            })?;
+            Ok(as_array(
+                lhs.elementwise_binary(&rhs, BinaryOp::GreaterEqual)
+                    .map_err(map_ufunc_error_to_datetime_suite)?,
+            ))
+        }
+        other => Err(DateTimeSuiteError::new(
+            "datetime_policy_unknown_operation",
+            format!("unsupported datetime differential operation {other}"),
+        )),
+    }
+}
+
+fn validate_datetime_differential_expectation(
+    case: &DateTimeDifferentialCase,
+    outcome: &DateTimeOperationOutcome,
+) -> Result<(), String> {
+    match outcome {
+        DateTimeOperationOutcome::Array {
+            shape,
+            values,
+            dtype,
+        } => {
+            if !case.expected_shape.is_empty() && case.expected_shape != *shape {
+                return Err(format!(
+                    "shape mismatch expected={:?} actual={shape:?}",
+                    case.expected_shape
+                ));
+            }
+            if !case.expected_values.is_empty() {
+                if case.expected_values.len() != values.len() {
+                    return Err(format!(
+                        "value length mismatch expected={} actual={}",
+                        case.expected_values.len(),
+                        values.len()
+                    ));
+                }
+                let abs_tol = if case.abs_tol > 0.0 {
+                    case.abs_tol
+                } else {
+                    1e-9
+                };
+                let rel_tol = if case.rel_tol > 0.0 {
+                    case.rel_tol
+                } else {
+                    1e-9
+                };
+                if !approx_equal_values(&case.expected_values, values, abs_tol, rel_tol) {
+                    return Err(format!(
+                        "value mismatch expected={:?} actual={values:?} abs_tol={} rel_tol={}",
+                        case.expected_values, abs_tol, rel_tol
+                    ));
+                }
+            }
+            if !case.expected_dtype.trim().is_empty() {
+                let expected_dtype =
+                    parse_datetime_fixture_dtype(&case.expected_dtype).map_err(|err| {
+                        format!(
+                            "invalid expected_dtype '{}' ({})",
+                            case.expected_dtype, err.message
+                        )
+                    })?;
+                if *dtype != expected_dtype {
+                    return Err(format!(
+                        "dtype mismatch expected={expected_dtype:?} actual={dtype:?}"
+                    ));
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+fn build_datetime_case_array(
+    shape_hint: &[usize],
+    values: &[f64],
+    dtype_raw: &str,
+    side: &str,
+) -> Result<UFuncArray, DateTimeSuiteError> {
+    if values.is_empty() {
+        return Err(DateTimeSuiteError::new(
+            "datetime_input_contract_violation",
+            format!("{side}_values must not be empty"),
+        ));
+    }
+    let shape = if shape_hint.is_empty() {
+        vec![values.len()]
+    } else {
+        shape_hint.to_vec()
+    };
+    let expected_len = shape.iter().product::<usize>();
+    if expected_len != values.len() {
+        return Err(DateTimeSuiteError::new(
+            "datetime_input_contract_violation",
+            format!(
+                "{side}_values length {} does not match {side}_shape {shape:?} (len={expected_len})",
+                values.len()
+            ),
+        ));
+    }
+    let dtype = parse_datetime_fixture_dtype(dtype_raw).map_err(|err| {
+        DateTimeSuiteError::new(
+            "datetime_input_contract_violation",
+            format!("invalid {side}_dtype '{dtype_raw}' ({})", err.message),
+        )
+    })?;
+    UFuncArray::new(shape, values.to_vec(), dtype).map_err(map_ufunc_error_to_datetime_suite)
+}
+
+fn parse_datetime_fixture_dtype(dtype_raw: &str) -> Result<DType, DateTimeSuiteError> {
+    match dtype_raw.trim().to_ascii_lowercase().as_str() {
+        "bool" | "bool_" => Ok(DType::Bool),
+        "i64" | "int64" => Ok(DType::I64),
+        "f64" | "float64" => Ok(DType::F64),
+        "datetime64" => Ok(DType::DateTime64),
+        "timedelta64" => Ok(DType::TimeDelta64),
+        other => Err(DateTimeSuiteError::new(
+            "datetime_fixture_dtype_invalid",
+            format!("unsupported dtype '{other}'"),
+        )),
+    }
+}
+
+fn map_ufunc_error_to_datetime_suite(error: UFuncError) -> DateTimeSuiteError {
+    DateTimeSuiteError::new(error.reason_code(), error.to_string())
+}
+
 #[derive(Debug, Clone)]
 struct RngSuiteError {
     reason_code: String,
@@ -7574,6 +8156,7 @@ pub fn run_all_core_suites(config: &HarnessConfig) -> Result<Vec<SuiteReport>, S
         run_rng_adversarial_suite(config)?,
         run_string_differential_suite(config)?,
         run_masked_differential_suite(config)?,
+        run_datetime_differential_suite(config)?,
         run_polynomial_differential_suite(config)?,
         run_fft_differential_suite(config)?,
         run_linalg_differential_suite(config)?,
@@ -8880,17 +9463,18 @@ fn validate_runtime_policy_log_fields(
 mod tests {
     use super::{
         HarnessConfig, run_all_core_suites, run_crash_signature_regression_suite,
-        run_dtype_adversarial_suite, run_dtype_differential_suite, run_dtype_metamorphic_suite,
-        run_dtype_promotion_suite, run_fft_differential_suite, run_io_adversarial_suite,
-        run_io_differential_suite, run_io_metamorphic_suite, run_iter_adversarial_suite,
-        run_iter_differential_suite, run_iter_metamorphic_suite, run_linalg_adversarial_suite,
-        run_linalg_differential_suite, run_linalg_metamorphic_suite, run_masked_differential_suite,
-        run_polynomial_differential_suite, run_rng_adversarial_suite, run_rng_differential_suite,
-        run_rng_metamorphic_suite, run_runtime_policy_adversarial_suite,
-        run_shape_stride_adversarial_suite, run_shape_stride_differential_suite,
-        run_shape_stride_metamorphic_suite, run_shape_stride_suite, run_smoke,
-        run_string_differential_suite, run_ufunc_adversarial_suite, run_ufunc_differential_suite,
-        run_ufunc_metamorphic_suite, set_dtype_promotion_log_path, set_shape_stride_log_path,
+        run_datetime_differential_suite, run_dtype_adversarial_suite, run_dtype_differential_suite,
+        run_dtype_metamorphic_suite, run_dtype_promotion_suite, run_fft_differential_suite,
+        run_io_adversarial_suite, run_io_differential_suite, run_io_metamorphic_suite,
+        run_iter_adversarial_suite, run_iter_differential_suite, run_iter_metamorphic_suite,
+        run_linalg_adversarial_suite, run_linalg_differential_suite, run_linalg_metamorphic_suite,
+        run_masked_differential_suite, run_polynomial_differential_suite,
+        run_rng_adversarial_suite, run_rng_differential_suite, run_rng_metamorphic_suite,
+        run_runtime_policy_adversarial_suite, run_shape_stride_adversarial_suite,
+        run_shape_stride_differential_suite, run_shape_stride_metamorphic_suite,
+        run_shape_stride_suite, run_smoke, run_string_differential_suite,
+        run_ufunc_adversarial_suite, run_ufunc_differential_suite, run_ufunc_metamorphic_suite,
+        set_dtype_promotion_log_path, set_shape_stride_log_path,
     };
     use fnp_iter::{
         RuntimeMode as IterRuntimeMode, TRANSFER_PACKET_REASON_CODES, TransferLogRecord,
@@ -9421,6 +10005,14 @@ mod tests {
         let cfg = HarnessConfig::default_paths();
         let suite =
             run_masked_differential_suite(&cfg).expect("masked differential suite should run");
+        assert!(suite.all_passed(), "failures={:?}", suite.failures);
+    }
+
+    #[test]
+    fn datetime_differential_suite_is_green() {
+        let cfg = HarnessConfig::default_paths();
+        let suite =
+            run_datetime_differential_suite(&cfg).expect("datetime differential suite should run");
         assert!(suite.all_passed(), "failures={:?}", suite.failures);
     }
 
