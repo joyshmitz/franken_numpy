@@ -1,0 +1,424 @@
+[
+  {
+    "id": "str_len_unicode_golden",
+    "operation": "str_len",
+    "seed": 9961,
+    "mode": "strict",
+    "env_fingerprint": "fnp-ufunc-string-packet-f",
+    "artifact_refs": [
+      "crates/fnp-conformance/fixtures/string_differential_cases.json",
+      "crates/fnp-ufunc/src/lib.rs"
+    ],
+    "reason_code": "string_differential_expected_success",
+    "expected_reason_code": "string_differential_expected_success",
+    "lhs_strings": ["é", "漢字", "🙂", "á"],
+    "expected_values": [1.0, 2.0, 1.0, 2.0],
+    "abs_tol": 1e-12,
+    "rel_tol": 1e-12
+  },
+  {
+    "id": "upper_unicode_golden",
+    "operation": "upper",
+    "seed": 9962,
+    "mode": "strict",
+    "env_fingerprint": "fnp-ufunc-string-packet-f",
+    "artifact_refs": [
+      "crates/fnp-conformance/fixtures/string_differential_cases.json",
+      "crates/fnp-ufunc/src/lib.rs"
+    ],
+    "reason_code": "string_differential_expected_success",
+    "expected_reason_code": "string_differential_expected_success",
+    "lhs_strings": ["élève", "δelta", "mix🙂"],
+    "expected_strings": ["ÉLÈVE", "ΔELTA", "MIX🙂"]
+  },
+  {
+    "id": "lower_unicode_golden",
+    "operation": "lower",
+    "seed": 9963,
+    "mode": "strict",
+    "env_fingerprint": "fnp-ufunc-string-packet-f",
+    "artifact_refs": [
+      "crates/fnp-conformance/fixtures/string_differential_cases.json",
+      "crates/fnp-ufunc/src/lib.rs"
+    ],
+    "reason_code": "string_differential_expected_success",
+    "expected_reason_code": "string_differential_expected_success",
+    "lhs_strings": ["CAFÉ", "ΔELTA", "ß"],
+    "expected_strings": ["café", "δelta", "ß"]
+  },
+  {
+    "id": "title_unicode_golden",
+    "operation": "title",
+    "seed": 9964,
+    "mode": "strict",
+    "env_fingerprint": "fnp-ufunc-string-packet-f",
+    "artifact_refs": [
+      "crates/fnp-conformance/fixtures/string_differential_cases.json",
+      "crates/fnp-ufunc/src/lib.rs"
+    ],
+    "reason_code": "string_differential_expected_success",
+    "expected_reason_code": "string_differential_expected_success",
+    "lhs_strings": ["hELLO wORLD", "élève déjà"],
+    "expected_strings": ["Hello World", "Élève Déjà"]
+  },
+  {
+    "id": "strip_unicode_whitespace_golden",
+    "operation": "strip",
+    "seed": 9965,
+    "mode": "strict",
+    "env_fingerprint": "fnp-ufunc-string-packet-f",
+    "artifact_refs": [
+      "crates/fnp-conformance/fixtures/string_differential_cases.json",
+      "crates/fnp-ufunc/src/lib.rs"
+    ],
+    "reason_code": "string_differential_expected_success",
+    "expected_reason_code": "string_differential_expected_success",
+    "lhs_strings": ["  café  ", " 漢字 "],
+    "expected_strings": ["café", "漢字"]
+  },
+  {
+    "id": "count_emoji_golden",
+    "operation": "count",
+    "seed": 9966,
+    "mode": "strict",
+    "env_fingerprint": "fnp-ufunc-string-packet-f",
+    "artifact_refs": [
+      "crates/fnp-conformance/fixtures/string_differential_cases.json",
+      "crates/fnp-ufunc/src/lib.rs"
+    ],
+    "reason_code": "string_differential_expected_success",
+    "expected_reason_code": "string_differential_expected_success",
+    "lhs_strings": ["banana", "naïve naïve", "🙂🙂🙂"],
+    "arg_string": "🙂",
+    "expected_values": [0.0, 0.0, 3.0],
+    "abs_tol": 1e-12,
+    "rel_tol": 1e-12
+  },
+  {
+    "id": "find_emoji_golden",
+    "operation": "find",
+    "seed": 9967,
+    "mode": "strict",
+    "env_fingerprint": "fnp-ufunc-string-packet-f",
+    "artifact_refs": [
+      "crates/fnp-conformance/fixtures/string_differential_cases.json",
+      "crates/fnp-ufunc/src/lib.rs"
+    ],
+    "reason_code": "string_differential_expected_success",
+    "expected_reason_code": "string_differential_expected_success",
+    "lhs_strings": ["naïve", "🙂emoji🙂", "abc"],
+    "arg_string": "🙂",
+    "expected_values": [-1.0, 0.0, -1.0],
+    "abs_tol": 1e-12,
+    "rel_tol": 1e-12
+  },
+  {
+    "id": "rfind_emoji_golden",
+    "operation": "rfind",
+    "seed": 9968,
+    "mode": "strict",
+    "env_fingerprint": "fnp-ufunc-string-packet-f",
+    "artifact_refs": [
+      "crates/fnp-conformance/fixtures/string_differential_cases.json",
+      "crates/fnp-ufunc/src/lib.rs"
+    ],
+    "reason_code": "string_differential_expected_success",
+    "expected_reason_code": "string_differential_expected_success",
+    "lhs_strings": ["naïve", "🙂emoji🙂", "abc"],
+    "arg_string": "🙂",
+    "expected_values": [-1.0, 6.0, -1.0],
+    "abs_tol": 1e-12,
+    "rel_tol": 1e-12
+  },
+  {
+    "id": "startswith_na_golden",
+    "operation": "startswith",
+    "seed": 9969,
+    "mode": "strict",
+    "env_fingerprint": "fnp-ufunc-string-packet-f",
+    "artifact_refs": [
+      "crates/fnp-conformance/fixtures/string_differential_cases.json",
+      "crates/fnp-ufunc/src/lib.rs"
+    ],
+    "reason_code": "string_differential_expected_success",
+    "expected_reason_code": "string_differential_expected_success",
+    "lhs_strings": ["naïve", "banana", "漢字"],
+    "arg_string": "na",
+    "expected_values": [1.0, 0.0, 0.0],
+    "abs_tol": 1e-12,
+    "rel_tol": 1e-12
+  },
+  {
+    "id": "endswith_ve_golden",
+    "operation": "endswith",
+    "seed": 9970,
+    "mode": "strict",
+    "env_fingerprint": "fnp-ufunc-string-packet-f",
+    "artifact_refs": [
+      "crates/fnp-conformance/fixtures/string_differential_cases.json",
+      "crates/fnp-ufunc/src/lib.rs"
+    ],
+    "reason_code": "string_differential_expected_success",
+    "expected_reason_code": "string_differential_expected_success",
+    "lhs_strings": ["naïve", "eve", "🙂ve"],
+    "arg_string": "ve",
+    "expected_values": [1.0, 1.0, 1.0],
+    "abs_tol": 1e-12,
+    "rel_tol": 1e-12
+  },
+  {
+    "id": "replace_na_golden",
+    "operation": "replace",
+    "seed": 9971,
+    "mode": "strict",
+    "env_fingerprint": "fnp-ufunc-string-packet-f",
+    "artifact_refs": [
+      "crates/fnp-conformance/fixtures/string_differential_cases.json",
+      "crates/fnp-ufunc/src/lib.rs"
+    ],
+    "reason_code": "string_differential_expected_success",
+    "expected_reason_code": "string_differential_expected_success",
+    "lhs_strings": ["banana", "naïve", "🙂na🙂"],
+    "arg_string": "na",
+    "arg_alt_string": "NA",
+    "expected_strings": ["baNANA", "NAïve", "🙂NA🙂"]
+  },
+  {
+    "id": "add_unicode_concat_golden",
+    "operation": "add",
+    "seed": 9972,
+    "mode": "strict",
+    "env_fingerprint": "fnp-ufunc-string-packet-f",
+    "artifact_refs": [
+      "crates/fnp-conformance/fixtures/string_differential_cases.json",
+      "crates/fnp-ufunc/src/lib.rs"
+    ],
+    "reason_code": "string_differential_expected_success",
+    "expected_reason_code": "string_differential_expected_success",
+    "lhs_strings": ["α", "β", "🙂"],
+    "rhs_strings": ["1", "2", "3"],
+    "expected_strings": ["α1", "β2", "🙂3"]
+  },
+  {
+    "id": "multiply_unicode_repeat_golden",
+    "operation": "multiply",
+    "seed": 9973,
+    "mode": "strict",
+    "env_fingerprint": "fnp-ufunc-string-packet-f",
+    "artifact_refs": [
+      "crates/fnp-conformance/fixtures/string_differential_cases.json",
+      "crates/fnp-ufunc/src/lib.rs"
+    ],
+    "reason_code": "string_differential_expected_success",
+    "expected_reason_code": "string_differential_expected_success",
+    "lhs_strings": ["ha", "🙂", ""],
+    "repeat": 3,
+    "expected_strings": ["hahaha", "🙂🙂🙂", ""]
+  },
+  {
+    "id": "isalpha_unicode_golden",
+    "operation": "isalpha",
+    "seed": 9974,
+    "mode": "strict",
+    "env_fingerprint": "fnp-ufunc-string-packet-f",
+    "artifact_refs": [
+      "crates/fnp-conformance/fixtures/string_differential_cases.json",
+      "crates/fnp-ufunc/src/lib.rs"
+    ],
+    "reason_code": "string_differential_expected_success",
+    "expected_reason_code": "string_differential_expected_success",
+    "lhs_strings": ["abc", "é", "漢字", "abc1", ""],
+    "expected_values": [1.0, 1.0, 1.0, 0.0, 0.0],
+    "abs_tol": 1e-12,
+    "rel_tol": 1e-12
+  },
+  {
+    "id": "isdigit_ascii_golden",
+    "operation": "isdigit",
+    "seed": 9975,
+    "mode": "strict",
+    "env_fingerprint": "fnp-ufunc-string-packet-f",
+    "artifact_refs": [
+      "crates/fnp-conformance/fixtures/string_differential_cases.json",
+      "crates/fnp-ufunc/src/lib.rs"
+    ],
+    "reason_code": "string_differential_expected_success",
+    "expected_reason_code": "string_differential_expected_success",
+    "lhs_strings": ["123", "007", "12a", ""],
+    "expected_values": [1.0, 1.0, 0.0, 0.0],
+    "abs_tol": 1e-12,
+    "rel_tol": 1e-12
+  },
+  {
+    "id": "isalnum_unicode_golden",
+    "operation": "isalnum",
+    "seed": 9976,
+    "mode": "strict",
+    "env_fingerprint": "fnp-ufunc-string-packet-f",
+    "artifact_refs": [
+      "crates/fnp-conformance/fixtures/string_differential_cases.json",
+      "crates/fnp-ufunc/src/lib.rs"
+    ],
+    "reason_code": "string_differential_expected_success",
+    "expected_reason_code": "string_differential_expected_success",
+    "lhs_strings": ["abc123", "é2", "漢字", "-x", ""],
+    "expected_values": [1.0, 1.0, 1.0, 0.0, 0.0],
+    "abs_tol": 1e-12,
+    "rel_tol": 1e-12
+  },
+  {
+    "id": "isspace_unicode_golden",
+    "operation": "isspace",
+    "seed": 9977,
+    "mode": "strict",
+    "env_fingerprint": "fnp-ufunc-string-packet-f",
+    "artifact_refs": [
+      "crates/fnp-conformance/fixtures/string_differential_cases.json",
+      "crates/fnp-ufunc/src/lib.rs"
+    ],
+    "reason_code": "string_differential_expected_success",
+    "expected_reason_code": "string_differential_expected_success",
+    "lhs_strings": [" ", "\t\n", " ", "x ", ""],
+    "expected_values": [1.0, 1.0, 1.0, 0.0, 0.0],
+    "abs_tol": 1e-12,
+    "rel_tol": 1e-12
+  },
+  {
+    "id": "isupper_unicode_golden",
+    "operation": "isupper",
+    "seed": 9978,
+    "mode": "strict",
+    "env_fingerprint": "fnp-ufunc-string-packet-f",
+    "artifact_refs": [
+      "crates/fnp-conformance/fixtures/string_differential_cases.json",
+      "crates/fnp-ufunc/src/lib.rs"
+    ],
+    "reason_code": "string_differential_expected_success",
+    "expected_reason_code": "string_differential_expected_success",
+    "lhs_strings": ["ABC", "ÄÖÜ", "AbC", "123", ""],
+    "expected_values": [1.0, 1.0, 0.0, 0.0, 0.0],
+    "abs_tol": 1e-12,
+    "rel_tol": 1e-12
+  },
+  {
+    "id": "islower_unicode_golden",
+    "operation": "islower",
+    "seed": 9979,
+    "mode": "strict",
+    "env_fingerprint": "fnp-ufunc-string-packet-f",
+    "artifact_refs": [
+      "crates/fnp-conformance/fixtures/string_differential_cases.json",
+      "crates/fnp-ufunc/src/lib.rs"
+    ],
+    "reason_code": "string_differential_expected_success",
+    "expected_reason_code": "string_differential_expected_success",
+    "lhs_strings": ["abc", "éß", "abC", "123", ""],
+    "expected_values": [1.0, 1.0, 0.0, 0.0, 0.0],
+    "abs_tol": 1e-12,
+    "rel_tol": 1e-12
+  },
+  {
+    "id": "isnumeric_unicode_golden",
+    "operation": "isnumeric",
+    "seed": 9980,
+    "mode": "strict",
+    "env_fingerprint": "fnp-ufunc-string-packet-f",
+    "artifact_refs": [
+      "crates/fnp-conformance/fixtures/string_differential_cases.json",
+      "crates/fnp-ufunc/src/lib.rs"
+    ],
+    "reason_code": "string_differential_expected_success",
+    "expected_reason_code": "string_differential_expected_success",
+    "lhs_strings": ["123", "Ⅷ", "四", "12a", ""],
+    "expected_values": [1.0, 1.0, 0.0, 0.0, 0.0],
+    "abs_tol": 1e-12,
+    "rel_tol": 1e-12
+  },
+  {
+    "id": "isdecimal_ascii_golden",
+    "operation": "isdecimal",
+    "seed": 9981,
+    "mode": "strict",
+    "env_fingerprint": "fnp-ufunc-string-packet-f",
+    "artifact_refs": [
+      "crates/fnp-conformance/fixtures/string_differential_cases.json",
+      "crates/fnp-ufunc/src/lib.rs"
+    ],
+    "reason_code": "string_differential_expected_success",
+    "expected_reason_code": "string_differential_expected_success",
+    "lhs_strings": ["123", "007", "12a", ""],
+    "expected_values": [1.0, 1.0, 0.0, 0.0],
+    "abs_tol": 1e-12,
+    "rel_tol": 1e-12
+  },
+  {
+    "id": "istitle_golden",
+    "operation": "istitle",
+    "seed": 9982,
+    "mode": "strict",
+    "env_fingerprint": "fnp-ufunc-string-packet-f",
+    "artifact_refs": [
+      "crates/fnp-conformance/fixtures/string_differential_cases.json",
+      "crates/fnp-ufunc/src/lib.rs"
+    ],
+    "reason_code": "string_differential_expected_success",
+    "expected_reason_code": "string_differential_expected_success",
+    "lhs_strings": ["Hello World", "Hello world", "hello", ""],
+    "expected_values": [1.0, 0.0, 0.0, 0.0],
+    "abs_tol": 1e-12,
+    "rel_tol": 1e-12
+  },
+  {
+    "id": "equal_unicode_golden",
+    "operation": "equal",
+    "seed": 9983,
+    "mode": "strict",
+    "env_fingerprint": "fnp-ufunc-string-packet-f",
+    "artifact_refs": [
+      "crates/fnp-conformance/fixtures/string_differential_cases.json",
+      "crates/fnp-ufunc/src/lib.rs"
+    ],
+    "reason_code": "string_differential_expected_success",
+    "expected_reason_code": "string_differential_expected_success",
+    "lhs_strings": ["a", "ß", "漢"],
+    "rhs_strings": ["a", "ss", "漢"],
+    "expected_values": [1.0, 0.0, 1.0],
+    "abs_tol": 1e-12,
+    "rel_tol": 1e-12
+  },
+  {
+    "id": "greater_equal_unicode_golden",
+    "operation": "greater_equal",
+    "seed": 9984,
+    "mode": "strict",
+    "env_fingerprint": "fnp-ufunc-string-packet-f",
+    "artifact_refs": [
+      "crates/fnp-conformance/fixtures/string_differential_cases.json",
+      "crates/fnp-ufunc/src/lib.rs"
+    ],
+    "reason_code": "string_differential_expected_success",
+    "expected_reason_code": "string_differential_expected_success",
+    "lhs_strings": ["b", "a", "漢"],
+    "rhs_strings": ["a", "a", "語"],
+    "expected_values": [1.0, 1.0, 0.0],
+    "abs_tol": 1e-12,
+    "rel_tol": 1e-12
+  },
+  {
+    "id": "compare_chararrays_invalid_cmp_error",
+    "operation": "compare_chararrays",
+    "seed": 9985,
+    "mode": "strict",
+    "env_fingerprint": "fnp-ufunc-string-packet-f",
+    "artifact_refs": [
+      "crates/fnp-conformance/fixtures/string_differential_cases.json",
+      "crates/fnp-ufunc/src/lib.rs"
+    ],
+    "reason_code": "string_differential_expected_error",
+    "expected_reason_code": "ufunc_operation_error",
+    "expected_error_contains": "unknown comparison",
+    "lhs_strings": ["a", "b"],
+    "rhs_strings": ["a", "b"],
+    "cmp": "??"
+  }
+]

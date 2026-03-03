@@ -37,11 +37,11 @@ use fnp_runtime::{
     decide_and_record_with_context, decide_compatibility_from_wire,
 };
 use fnp_ufunc::{
-    UFuncArray, UFuncError, cheb2poly, chebadd, chebdiv, chebfit, chebfromroots, chebmul,
-    chebroots, chebsub, chebval, herm2poly, hermadd, hermdiv, hermfromroots, hermmul, hermroots,
-    hermsub, hermval, lag2poly, lagadd, lagdiv, lagfromroots, lagmul, lagroots, lagsub, lagval,
-    leg2poly, legadd, legdiv, legfromroots, legmul, legroots, legsub, legval, poly2cheb, poly2herm,
-    poly2lag, poly2leg,
+    StringArray, UFuncArray, UFuncError, cheb2poly, chebadd, chebdiv, chebfit, chebfromroots,
+    chebmul, chebroots, chebsub, chebval, herm2poly, hermadd, hermdiv, hermfromroots, hermmul,
+    hermroots, hermsub, hermval, lag2poly, lagadd, lagdiv, lagfromroots, lagmul, lagroots, lagsub,
+    lagval, leg2poly, legadd, legdiv, legfromroots, legmul, legroots, legsub, legval, poly2cheb,
+    poly2herm, poly2lag, poly2leg,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -816,6 +816,46 @@ struct PolynomialDifferentialCase {
     rel_tol: f64,
 }
 
+#[derive(Debug, Deserialize)]
+struct StringDifferentialCase {
+    id: String,
+    operation: String,
+    #[serde(default)]
+    seed: u64,
+    #[serde(default)]
+    mode: String,
+    #[serde(default)]
+    env_fingerprint: String,
+    #[serde(default)]
+    artifact_refs: Vec<String>,
+    #[serde(default)]
+    reason_code: String,
+    #[serde(default)]
+    expected_reason_code: String,
+    #[serde(default)]
+    expected_error_contains: String,
+    #[serde(default)]
+    lhs_strings: Vec<String>,
+    #[serde(default)]
+    rhs_strings: Vec<String>,
+    #[serde(default)]
+    arg_string: String,
+    #[serde(default)]
+    arg_alt_string: String,
+    #[serde(default)]
+    cmp: String,
+    #[serde(default)]
+    repeat: Option<usize>,
+    #[serde(default)]
+    expected_values: Vec<f64>,
+    #[serde(default)]
+    expected_strings: Vec<String>,
+    #[serde(default)]
+    abs_tol: f64,
+    #[serde(default)]
+    rel_tol: f64,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct IterSelectorFixtureInput {
     src_stride: isize,
@@ -1144,6 +1184,27 @@ struct PolynomialDifferentialReportArtifact {
 }
 
 #[derive(Debug, Serialize)]
+struct StringDifferentialMismatch {
+    fixture_id: String,
+    seed: u64,
+    mode: String,
+    operation: String,
+    expected_reason_code: String,
+    actual_reason_code: String,
+    message: String,
+    artifact_refs: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct StringDifferentialReportArtifact {
+    suite: &'static str,
+    total_cases: usize,
+    passed_cases: usize,
+    failed_cases: usize,
+    mismatches: Vec<StringDifferentialMismatch>,
+}
+
+#[derive(Debug, Serialize)]
 struct IoDifferentialMismatch {
     fixture_id: String,
     seed: u64,
@@ -1327,6 +1388,15 @@ fn load_polynomial_differential_cases(
     fixture_root: &Path,
 ) -> Result<Vec<PolynomialDifferentialCase>, String> {
     let path = fixture_root.join("polynomial_differential_cases.json");
+    let raw = fs::read_to_string(&path)
+        .map_err(|err| format!("failed reading {}: {err}", path.display()))?;
+    serde_json::from_str(&raw).map_err(|err| format!("invalid json: {err}"))
+}
+
+fn load_string_differential_cases(
+    fixture_root: &Path,
+) -> Result<Vec<StringDifferentialCase>, String> {
+    let path = fixture_root.join("string_differential_cases.json");
     let raw = fs::read_to_string(&path)
         .map_err(|err| format!("failed reading {}: {err}", path.display()))?;
     serde_json::from_str(&raw).map_err(|err| format!("invalid json: {err}"))
@@ -5717,6 +5787,410 @@ fn map_ufunc_error_to_polynomial_suite(error: UFuncError) -> PolynomialSuiteErro
     PolynomialSuiteError::new(error.reason_code(), error.to_string())
 }
 
+#[derive(Debug, Clone, PartialEq)]
+enum StringOperationOutcome {
+    Numeric { values: Vec<f64> },
+    Text { values: Vec<String> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StringSuiteError {
+    reason_code: String,
+    message: String,
+}
+
+impl StringSuiteError {
+    fn new(reason_code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            reason_code: reason_code.into(),
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for StringSuiteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for StringSuiteError {}
+
+pub fn run_string_differential_suite(config: &HarnessConfig) -> Result<SuiteReport, String> {
+    let cases = load_string_differential_cases(&config.fixture_root)?;
+
+    let mut report = SuiteReport {
+        suite: "string_differential",
+        case_count: cases.len(),
+        pass_count: 0,
+        failures: Vec::new(),
+    };
+    let mut mismatches = Vec::new();
+
+    for case in cases {
+        let mode = resolve_case_mode(&case.mode, config.strict_mode);
+        let env_fingerprint = normalize_env_fingerprint(&case.env_fingerprint);
+        let artifact_refs = normalize_artifact_refs(case.artifact_refs.clone());
+        let reason_code = normalize_reason_code(&case.reason_code);
+        let expected_reason_code = if case.expected_reason_code.trim().is_empty() {
+            reason_code.clone()
+        } else {
+            case.expected_reason_code.trim().to_string()
+        };
+        let expected_error = case.expected_error_contains.trim().to_lowercase();
+
+        match execute_string_differential_operation(&case) {
+            Ok(outcome) => {
+                if !expected_error.is_empty() {
+                    let rendered = format!(
+                        "{}: seed={} mode={} reason_code={} env_fingerprint={} artifact_refs={} expected error containing '{}' but operation '{}' succeeded",
+                        case.id,
+                        case.seed,
+                        mode,
+                        reason_code,
+                        env_fingerprint,
+                        artifact_refs.join(","),
+                        case.expected_error_contains,
+                        case.operation
+                    );
+                    report.failures.push(rendered.clone());
+                    mismatches.push(StringDifferentialMismatch {
+                        fixture_id: case.id,
+                        seed: case.seed,
+                        mode,
+                        operation: case.operation,
+                        expected_reason_code,
+                        actual_reason_code: "none".to_string(),
+                        message: rendered,
+                        artifact_refs,
+                    });
+                    continue;
+                }
+
+                match validate_string_differential_expectation(&case, &outcome) {
+                    Ok(()) => report.pass_count += 1,
+                    Err(message) => {
+                        let rendered = format!(
+                            "{}: seed={} mode={} reason_code={} env_fingerprint={} artifact_refs={} {}",
+                            case.id,
+                            case.seed,
+                            mode,
+                            reason_code,
+                            env_fingerprint,
+                            artifact_refs.join(","),
+                            message
+                        );
+                        report.failures.push(rendered.clone());
+                        mismatches.push(StringDifferentialMismatch {
+                            fixture_id: case.id,
+                            seed: case.seed,
+                            mode,
+                            operation: case.operation,
+                            expected_reason_code,
+                            actual_reason_code: "string_differential_mismatch".to_string(),
+                            message: rendered,
+                            artifact_refs,
+                        });
+                    }
+                }
+            }
+            Err(err) => {
+                if expected_error.is_empty() {
+                    let rendered = format!(
+                        "{}: seed={} mode={} reason_code={} env_fingerprint={} artifact_refs={} expected success but got error '{}' (reason_code={})",
+                        case.id,
+                        case.seed,
+                        mode,
+                        reason_code,
+                        env_fingerprint,
+                        artifact_refs.join(","),
+                        err.message,
+                        err.reason_code
+                    );
+                    report.failures.push(rendered.clone());
+                    mismatches.push(StringDifferentialMismatch {
+                        fixture_id: case.id,
+                        seed: case.seed,
+                        mode,
+                        operation: case.operation,
+                        expected_reason_code,
+                        actual_reason_code: err.reason_code,
+                        message: rendered,
+                        artifact_refs,
+                    });
+                    continue;
+                }
+
+                let contains_expected = err.message.to_lowercase().contains(&expected_error);
+                let reason_match = err.reason_code == expected_reason_code;
+                if contains_expected && reason_match {
+                    report.pass_count += 1;
+                } else {
+                    let rendered = format!(
+                        "{}: seed={} mode={} reason_code={} env_fingerprint={} artifact_refs={} expected error containing '{}' with reason_code='{}' but got '{}' (reason_code='{}')",
+                        case.id,
+                        case.seed,
+                        mode,
+                        reason_code,
+                        env_fingerprint,
+                        artifact_refs.join(","),
+                        case.expected_error_contains,
+                        expected_reason_code,
+                        err.message,
+                        err.reason_code
+                    );
+                    report.failures.push(rendered.clone());
+                    mismatches.push(StringDifferentialMismatch {
+                        fixture_id: case.id,
+                        seed: case.seed,
+                        mode,
+                        operation: case.operation,
+                        expected_reason_code,
+                        actual_reason_code: err.reason_code,
+                        message: rendered,
+                        artifact_refs,
+                    });
+                }
+            }
+        }
+    }
+
+    let artifact = StringDifferentialReportArtifact {
+        suite: "string_differential",
+        total_cases: report.case_count,
+        passed_cases: report.pass_count,
+        failed_cases: report.case_count.saturating_sub(report.pass_count),
+        mismatches,
+    };
+    let report_path = config
+        .fixture_root
+        .join("oracle_outputs/string_differential_report.json");
+    if let Some(parent) = report_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed creating {}: {err}", parent.display()))?;
+    }
+    let payload = serde_json::to_string_pretty(&artifact)
+        .map_err(|err| format!("failed serializing string differential report: {err}"))?;
+    fs::write(&report_path, payload.as_bytes())
+        .map_err(|err| format!("failed writing {}: {err}", report_path.display()))?;
+
+    Ok(report)
+}
+
+fn execute_string_differential_operation(
+    case: &StringDifferentialCase,
+) -> Result<StringOperationOutcome, StringSuiteError> {
+    let as_text = |values: Vec<String>| StringOperationOutcome::Text { values };
+    let as_numeric = |values: Vec<f64>| StringOperationOutcome::Numeric { values };
+
+    let lhs = string_values_to_array(&case.lhs_strings)?;
+    let rhs = if case.rhs_strings.is_empty() {
+        None
+    } else {
+        Some(string_values_to_array(&case.rhs_strings)?)
+    };
+
+    match case.operation.as_str() {
+        "upper" => Ok(as_text(lhs.upper().values().to_vec())),
+        "lower" => Ok(as_text(lhs.lower().values().to_vec())),
+        "capitalize" => Ok(as_text(lhs.capitalize().values().to_vec())),
+        "title" => Ok(as_text(lhs.title().values().to_vec())),
+        "strip" => Ok(as_text(lhs.strip().values().to_vec())),
+        "lstrip" => Ok(as_text(lhs.lstrip().values().to_vec())),
+        "rstrip" => Ok(as_text(lhs.rstrip().values().to_vec())),
+        "swapcase" => Ok(as_text(lhs.swapcase().values().to_vec())),
+        "replace" => Ok(as_text(
+            lhs.replace(&case.arg_string, &case.arg_alt_string)
+                .values()
+                .to_vec(),
+        )),
+        "add" => {
+            let rhs = rhs.ok_or_else(|| {
+                StringSuiteError::new(
+                    "string_input_contract_violation",
+                    "add requires rhs_strings",
+                )
+            })?;
+            Ok(as_text(
+                lhs.add(&rhs)
+                    .map_err(map_ufunc_error_to_string_suite)?
+                    .values()
+                    .to_vec(),
+            ))
+        }
+        "multiply" => {
+            let repeat = case.repeat.ok_or_else(|| {
+                StringSuiteError::new(
+                    "string_input_contract_violation",
+                    "multiply requires repeat",
+                )
+            })?;
+            Ok(as_text(lhs.multiply(repeat).values().to_vec()))
+        }
+        "str_len" => Ok(as_numeric(lhs.str_len().values().to_vec())),
+        "count" => Ok(as_numeric(
+            lhs.count_substr(&case.arg_string).values().to_vec(),
+        )),
+        "find" => Ok(as_numeric(lhs.find(&case.arg_string).values().to_vec())),
+        "rfind" => Ok(as_numeric(lhs.rfind(&case.arg_string).values().to_vec())),
+        "startswith" => Ok(as_numeric(
+            lhs.startswith(&case.arg_string).values().to_vec(),
+        )),
+        "endswith" => Ok(as_numeric(lhs.endswith(&case.arg_string).values().to_vec())),
+        "isalpha" => Ok(as_numeric(lhs.isalpha().values().to_vec())),
+        "isdigit" => Ok(as_numeric(lhs.isdigit().values().to_vec())),
+        "isalnum" => Ok(as_numeric(lhs.isalnum().values().to_vec())),
+        "isspace" => Ok(as_numeric(lhs.isspace().values().to_vec())),
+        "isupper" => Ok(as_numeric(lhs.isupper().values().to_vec())),
+        "islower" => Ok(as_numeric(lhs.islower().values().to_vec())),
+        "isnumeric" => Ok(as_numeric(lhs.isnumeric().values().to_vec())),
+        "isdecimal" => Ok(as_numeric(lhs.isdecimal().values().to_vec())),
+        "istitle" => Ok(as_numeric(lhs.istitle().values().to_vec())),
+        "equal" => {
+            let rhs = rhs.ok_or_else(|| {
+                StringSuiteError::new(
+                    "string_input_contract_violation",
+                    "equal requires rhs_strings",
+                )
+            })?;
+            Ok(as_numeric(lhs.equal(&rhs).values().to_vec()))
+        }
+        "not_equal" => {
+            let rhs = rhs.ok_or_else(|| {
+                StringSuiteError::new(
+                    "string_input_contract_violation",
+                    "not_equal requires rhs_strings",
+                )
+            })?;
+            Ok(as_numeric(lhs.not_equal(&rhs).values().to_vec()))
+        }
+        "greater" => {
+            let rhs = rhs.ok_or_else(|| {
+                StringSuiteError::new(
+                    "string_input_contract_violation",
+                    "greater requires rhs_strings",
+                )
+            })?;
+            Ok(as_numeric(lhs.greater(&rhs).values().to_vec()))
+        }
+        "greater_equal" => {
+            let rhs = rhs.ok_or_else(|| {
+                StringSuiteError::new(
+                    "string_input_contract_violation",
+                    "greater_equal requires rhs_strings",
+                )
+            })?;
+            Ok(as_numeric(lhs.greater_equal(&rhs).values().to_vec()))
+        }
+        "less" => {
+            let rhs = rhs.ok_or_else(|| {
+                StringSuiteError::new(
+                    "string_input_contract_violation",
+                    "less requires rhs_strings",
+                )
+            })?;
+            Ok(as_numeric(lhs.less(&rhs).values().to_vec()))
+        }
+        "less_equal" => {
+            let rhs = rhs.ok_or_else(|| {
+                StringSuiteError::new(
+                    "string_input_contract_violation",
+                    "less_equal requires rhs_strings",
+                )
+            })?;
+            Ok(as_numeric(lhs.less_equal(&rhs).values().to_vec()))
+        }
+        "compare_chararrays" => {
+            let rhs = rhs.ok_or_else(|| {
+                StringSuiteError::new(
+                    "string_input_contract_violation",
+                    "compare_chararrays requires rhs_strings",
+                )
+            })?;
+            let cmp = if case.cmp.trim().is_empty() {
+                case.arg_string.trim()
+            } else {
+                case.cmp.trim()
+            };
+            if cmp.is_empty() {
+                return Err(StringSuiteError::new(
+                    "string_input_contract_violation",
+                    "compare_chararrays requires cmp",
+                ));
+            }
+            Ok(as_numeric(
+                lhs.compare_chararrays(&rhs, cmp)
+                    .map_err(map_ufunc_error_to_string_suite)?
+                    .values()
+                    .to_vec(),
+            ))
+        }
+        other => Err(StringSuiteError::new(
+            "string_policy_unknown_operation",
+            format!("unsupported string differential operation {other}"),
+        )),
+    }
+}
+
+fn validate_string_differential_expectation(
+    case: &StringDifferentialCase,
+    outcome: &StringOperationOutcome,
+) -> Result<(), String> {
+    let abs_tol = if case.abs_tol > 0.0 {
+        case.abs_tol
+    } else {
+        1e-9
+    };
+    let rel_tol = if case.rel_tol > 0.0 {
+        case.rel_tol
+    } else {
+        1e-9
+    };
+
+    match outcome {
+        StringOperationOutcome::Numeric { values } => {
+            if case.expected_values.len() != values.len() {
+                return Err(format!(
+                    "values length mismatch expected={} actual={}",
+                    case.expected_values.len(),
+                    values.len()
+                ));
+            }
+            if !approx_equal_values(&case.expected_values, values, abs_tol, rel_tol) {
+                return Err(format!(
+                    "values mismatch expected={:?} actual={values:?} abs_tol={abs_tol} rel_tol={rel_tol}",
+                    case.expected_values
+                ));
+            }
+            Ok(())
+        }
+        StringOperationOutcome::Text { values } => {
+            if case.expected_strings.len() != values.len() {
+                return Err(format!(
+                    "strings length mismatch expected={} actual={}",
+                    case.expected_strings.len(),
+                    values.len()
+                ));
+            }
+            if case.expected_strings != *values {
+                return Err(format!(
+                    "strings mismatch expected={:?} actual={values:?}",
+                    case.expected_strings
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+
+fn string_values_to_array(values: &[String]) -> Result<StringArray, StringSuiteError> {
+    StringArray::new(vec![values.len()], values.to_vec()).map_err(map_ufunc_error_to_string_suite)
+}
+
+fn map_ufunc_error_to_string_suite(error: UFuncError) -> StringSuiteError {
+    StringSuiteError::new(error.reason_code(), error.to_string())
+}
+
 #[derive(Debug, Clone)]
 struct RngSuiteError {
     reason_code: String,
@@ -6500,6 +6974,7 @@ pub fn run_all_core_suites(config: &HarnessConfig) -> Result<Vec<SuiteReport>, S
         run_rng_differential_suite(config)?,
         run_rng_metamorphic_suite(config)?,
         run_rng_adversarial_suite(config)?,
+        run_string_differential_suite(config)?,
         run_polynomial_differential_suite(config)?,
         run_fft_differential_suite(config)?,
         run_linalg_differential_suite(config)?,
@@ -7815,8 +8290,8 @@ mod tests {
         run_rng_metamorphic_suite, run_runtime_policy_adversarial_suite,
         run_shape_stride_adversarial_suite, run_shape_stride_differential_suite,
         run_shape_stride_metamorphic_suite, run_shape_stride_suite, run_smoke,
-        run_ufunc_adversarial_suite, run_ufunc_differential_suite, run_ufunc_metamorphic_suite,
-        set_dtype_promotion_log_path, set_shape_stride_log_path,
+        run_string_differential_suite, run_ufunc_adversarial_suite, run_ufunc_differential_suite,
+        run_ufunc_metamorphic_suite, set_dtype_promotion_log_path, set_shape_stride_log_path,
     };
     use fnp_iter::{
         RuntimeMode as IterRuntimeMode, TRANSFER_PACKET_REASON_CODES, TransferLogRecord,
@@ -8331,6 +8806,14 @@ mod tests {
         let cfg = HarnessConfig::default_paths();
         let suite = run_polynomial_differential_suite(&cfg)
             .expect("polynomial differential suite should run");
+        assert!(suite.all_passed(), "failures={:?}", suite.failures);
+    }
+
+    #[test]
+    fn string_differential_suite_is_green() {
+        let cfg = HarnessConfig::default_paths();
+        let suite =
+            run_string_differential_suite(&cfg).expect("string differential suite should run");
         assert!(suite.all_passed(), "failures={:?}", suite.failures);
     }
 
