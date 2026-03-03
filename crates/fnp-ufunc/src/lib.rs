@@ -1081,8 +1081,14 @@ impl UFuncArray {
         let plan = plan_binary_dispatch(self, rhs)?;
         let out_shape = plan.out_shape;
         let out_count = plan.out_count;
+        let true_division_from_integral = matches!(op, BinaryOp::Div)
+            && (self.dtype.is_integer() || self.dtype == DType::Bool)
+            && (rhs.dtype.is_integer() || rhs.dtype == DType::Bool);
         let out_dtype = if op.is_bool_output() {
             DType::Bool
+        } else if true_division_from_integral {
+            // NumPy true-division promotes integral/bool operands to floating output.
+            DType::F64
         } else {
             plan.out_dtype
         };
@@ -16695,6 +16701,26 @@ mod tests {
     }
 
     #[test]
+    fn integer_true_divide_promotes_to_f64_and_preserves_non_finite() {
+        let lhs = UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::I32)
+            .expect("lhs");
+        let rhs = UFuncArray::new(vec![3], vec![0.0, 1.0, 0.0], DType::I32).expect("rhs");
+
+        let out = lhs
+            .elementwise_binary(&rhs, BinaryOp::Div)
+            .expect("integer divide should execute as true_divide");
+
+        assert_eq!(out.dtype(), DType::F64);
+        assert_eq!(out.shape(), &[2, 3]);
+        assert!(out.values()[0].is_infinite() && out.values()[0].is_sign_positive());
+        assert_eq!(out.values()[1], 2.0);
+        assert!(out.values()[2].is_infinite() && out.values()[2].is_sign_positive());
+        assert!(out.values()[3].is_infinite() && out.values()[3].is_sign_positive());
+        assert_eq!(out.values()[4], 5.0);
+        assert!(out.values()[5].is_infinite() && out.values()[5].is_sign_positive());
+    }
+
+    #[test]
     fn reduce_sum_axis_none_keepdims_false() {
         let arr = UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64)
             .expect("arr");
@@ -17067,11 +17093,18 @@ mod tests {
                 UFuncArray::new(lhs_shape.clone(), lhs_values.clone(), lhs_dtype).expect("lhs");
             let rhs =
                 UFuncArray::new(rhs_shape.clone(), rhs_values.clone(), rhs_dtype).expect("rhs");
-            let expected_dtype = promote(lhs_dtype, rhs_dtype);
             let expected_shape =
                 broadcast_shape(&lhs_shape, &rhs_shape).expect("broadcast should work");
 
             for op in ops {
+                let expected_dtype = if matches!(op, BinaryOp::Div)
+                    && (lhs_dtype.is_integer() || lhs_dtype == DType::Bool)
+                    && (rhs_dtype.is_integer() || rhs_dtype == DType::Bool)
+                {
+                    DType::F64
+                } else {
+                    promote(lhs_dtype, rhs_dtype)
+                };
                 let first = lhs
                     .elementwise_binary(&rhs, op)
                     .expect("operation should succeed");
