@@ -737,7 +737,13 @@ impl ArrayStorage {
             return Err(StorageError::IndexOutOfBounds { index, len: n });
         }
         Ok(match self {
-            Self::Bool(v) => if v[index] { 1.0 } else { 0.0 },
+            Self::Bool(v) => {
+                if v[index] {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
             Self::I8(v) => f64::from(v[index]),
             Self::I16(v) => f64::from(v[index]),
             Self::I32(v) => f64::from(v[index]),
@@ -819,7 +825,13 @@ impl ArrayStorage {
         if target == DType::Str {
             let strings: Vec<std::string::String> = (0..n)
                 .map(|i| match self {
-                    Self::Bool(v) => if v[i] { "True".into() } else { "False".into() },
+                    Self::Bool(v) => {
+                        if v[i] {
+                            "True".into()
+                        } else {
+                            "False".into()
+                        }
+                    }
                     Self::String(v) => v[i].clone(),
                     _ => {
                         // Use get_f64 for numeric types
@@ -851,7 +863,9 @@ impl ArrayStorage {
     #[must_use]
     pub fn to_f64_vec(&self) -> Vec<f64> {
         let n = self.len();
-        (0..n).map(|i| self.get_f64(i).unwrap_or(f64::NAN)).collect()
+        (0..n)
+            .map(|i| self.get_f64(i).unwrap_or(f64::NAN))
+            .collect()
     }
 
     /// Create F64 storage from a Vec<f64>.
@@ -878,7 +892,10 @@ impl ArrayStorage {
     pub fn to_complex128_vec(&self) -> Vec<(f64, f64)> {
         match self {
             Self::Complex128(v) => v.clone(),
-            Self::Complex64(v) => v.iter().map(|&(r, i)| (f64::from(r), f64::from(i))).collect(),
+            Self::Complex64(v) => v
+                .iter()
+                .map(|&(r, i)| (f64::from(r), f64::from(i)))
+                .collect(),
             _ => {
                 let n = self.len();
                 (0..n)
@@ -904,12 +921,7 @@ impl ArrayStorage {
 
     /// Write element at `index` as a complex128 (re, im) pair.
     /// For non-complex storage, only the real part is written.
-    pub fn set_complex128(
-        &mut self,
-        index: usize,
-        re: f64,
-        im: f64,
-    ) -> Result<(), StorageError> {
+    pub fn set_complex128(&mut self, index: usize, re: f64, im: f64) -> Result<(), StorageError> {
         let n = self.len();
         if index >= n {
             return Err(StorageError::IndexOutOfBounds { index, len: n });
@@ -1015,12 +1027,8 @@ impl ArrayStorage {
     #[must_use]
     pub fn complex_conjugate(&self) -> Self {
         match self {
-            Self::Complex128(v) => {
-                Self::Complex128(v.iter().map(|&(r, i)| (r, -i)).collect())
-            }
-            Self::Complex64(v) => {
-                Self::Complex64(v.iter().map(|&(r, i)| (r, -i)).collect())
-            }
+            Self::Complex128(v) => Self::Complex128(v.iter().map(|&(r, i)| (r, -i)).collect()),
+            Self::Complex64(v) => Self::Complex64(v.iter().map(|&(r, i)| (r, -i)).collect()),
             // For real types, conjugate is identity
             _ => self.clone(),
         }
@@ -1031,11 +1039,9 @@ impl ArrayStorage {
     #[must_use]
     pub fn complex_abs(&self) -> Self {
         match self {
-            Self::Complex128(v) => Self::F64(
-                v.iter()
-                    .map(|&(r, i)| (r * r + i * i).sqrt())
-                    .collect(),
-            ),
+            Self::Complex128(v) => {
+                Self::F64(v.iter().map(|&(r, i)| (r * r + i * i).sqrt()).collect())
+            }
             Self::Complex64(v) => Self::F64(
                 v.iter()
                     .map(|&(r, i)| {
@@ -1058,9 +1064,7 @@ impl ArrayStorage {
     #[must_use]
     pub fn complex_angle(&self) -> Self {
         match self {
-            Self::Complex128(v) => {
-                Self::F64(v.iter().map(|&(r, i)| i.atan2(r)).collect())
-            }
+            Self::Complex128(v) => Self::F64(v.iter().map(|&(r, i)| i.atan2(r)).collect()),
             Self::Complex64(v) => Self::F64(
                 v.iter()
                     .map(|&(r, i)| f64::from(i).atan2(f64::from(r)))
@@ -1203,9 +1207,9 @@ impl ArrayStorage {
     #[must_use]
     pub fn complex_sum(&self) -> (f64, f64) {
         let pairs = self.to_complex128_vec();
-        pairs.iter().fold((0.0, 0.0), |(sr, si), &(r, i)| {
-            (sr + r, si + i)
-        })
+        pairs
+            .iter()
+            .fold((0.0, 0.0), |(sr, si), &(r, i)| (sr + r, si + i))
     }
 
     /// Element-wise complex product reduction.
@@ -1758,10 +1762,7 @@ mod tests {
     fn storage_out_of_bounds() {
         let storage = ArrayStorage::F64(vec![1.0, 2.0]);
         let err = storage.get_f64(5).unwrap_err();
-        assert_eq!(
-            err,
-            StorageError::IndexOutOfBounds { index: 5, len: 2 }
-        );
+        assert_eq!(err, StorageError::IndexOutOfBounds { index: 5, len: 2 });
     }
 
     #[test]
@@ -2190,8 +2191,16 @@ mod tests {
     #[test]
     fn structured_storage_new_basic() {
         let fields = vec![
-            StructuredField { name: "x".into(), dtype: DType::F64, offset: 0 },
-            StructuredField { name: "y".into(), dtype: DType::I32, offset: 8 },
+            StructuredField {
+                name: "x".into(),
+                dtype: DType::F64,
+                offset: 0,
+            },
+            StructuredField {
+                name: "y".into(),
+                dtype: DType::I32,
+                offset: 8,
+            },
         ];
         let columns = vec![
             ArrayStorage::F64(vec![1.0, 2.0, 3.0]),
@@ -2206,8 +2215,16 @@ mod tests {
     #[test]
     fn structured_storage_field_access() {
         let fields = vec![
-            StructuredField { name: "name".into(), dtype: DType::Str, offset: 0 },
-            StructuredField { name: "value".into(), dtype: DType::F64, offset: 0 },
+            StructuredField {
+                name: "name".into(),
+                dtype: DType::Str,
+                offset: 0,
+            },
+            StructuredField {
+                name: "value".into(),
+                dtype: DType::F64,
+                offset: 0,
+            },
         ];
         let columns = vec![
             ArrayStorage::String(vec!["alice".into(), "bob".into()]),
@@ -2225,13 +2242,18 @@ mod tests {
     #[test]
     fn structured_storage_field_index() {
         let fields = vec![
-            StructuredField { name: "a".into(), dtype: DType::F64, offset: 0 },
-            StructuredField { name: "b".into(), dtype: DType::I64, offset: 8 },
+            StructuredField {
+                name: "a".into(),
+                dtype: DType::F64,
+                offset: 0,
+            },
+            StructuredField {
+                name: "b".into(),
+                dtype: DType::I64,
+                offset: 8,
+            },
         ];
-        let columns = vec![
-            ArrayStorage::F64(vec![1.0]),
-            ArrayStorage::I64(vec![2]),
-        ];
+        let columns = vec![ArrayStorage::F64(vec![1.0]), ArrayStorage::I64(vec![2])];
         let s = StructuredStorage::new(fields, columns).unwrap();
         assert_eq!(s.field_index("a"), Some(0));
         assert_eq!(s.field_index("b"), Some(1));
@@ -2240,9 +2262,11 @@ mod tests {
 
     #[test]
     fn structured_storage_field_by_index() {
-        let fields = vec![
-            StructuredField { name: "x".into(), dtype: DType::F64, offset: 0 },
-        ];
+        let fields = vec![StructuredField {
+            name: "x".into(),
+            dtype: DType::F64,
+            offset: 0,
+        }];
         let columns = vec![ArrayStorage::F64(vec![7.0, 8.0])];
         let s = StructuredStorage::new(fields, columns).unwrap();
         let col = s.get_field_by_index(0).unwrap();
@@ -2253,8 +2277,16 @@ mod tests {
     #[test]
     fn structured_storage_mismatched_column_lengths() {
         let fields = vec![
-            StructuredField { name: "a".into(), dtype: DType::F64, offset: 0 },
-            StructuredField { name: "b".into(), dtype: DType::F64, offset: 8 },
+            StructuredField {
+                name: "a".into(),
+                dtype: DType::F64,
+                offset: 0,
+            },
+            StructuredField {
+                name: "b".into(),
+                dtype: DType::F64,
+                offset: 8,
+            },
         ];
         let columns = vec![
             ArrayStorage::F64(vec![1.0, 2.0]),
@@ -2265,21 +2297,28 @@ mod tests {
 
     #[test]
     fn structured_storage_mismatched_field_count() {
-        let fields = vec![
-            StructuredField { name: "a".into(), dtype: DType::F64, offset: 0 },
-        ];
-        let columns = vec![
-            ArrayStorage::F64(vec![1.0]),
-            ArrayStorage::F64(vec![2.0]),
-        ];
+        let fields = vec![StructuredField {
+            name: "a".into(),
+            dtype: DType::F64,
+            offset: 0,
+        }];
+        let columns = vec![ArrayStorage::F64(vec![1.0]), ArrayStorage::F64(vec![2.0])];
         assert!(StructuredStorage::new(fields, columns).is_err());
     }
 
     #[test]
     fn structured_storage_dtype_mismatch() {
         let fields = vec![
-            StructuredField { name: "x".into(), dtype: DType::F64, offset: 0 },
-            StructuredField { name: "y".into(), dtype: DType::I64, offset: 8 },
+            StructuredField {
+                name: "x".into(),
+                dtype: DType::F64,
+                offset: 0,
+            },
+            StructuredField {
+                name: "y".into(),
+                dtype: DType::I64,
+                offset: 8,
+            },
         ];
         let columns = vec![
             ArrayStorage::F64(vec![1.0]),
@@ -2291,9 +2330,21 @@ mod tests {
     #[test]
     fn structured_storage_record_size() {
         let fields = vec![
-            StructuredField { name: "x".into(), dtype: DType::F64, offset: 0 },
-            StructuredField { name: "y".into(), dtype: DType::I32, offset: 8 },
-            StructuredField { name: "z".into(), dtype: DType::Bool, offset: 12 },
+            StructuredField {
+                name: "x".into(),
+                dtype: DType::F64,
+                offset: 0,
+            },
+            StructuredField {
+                name: "y".into(),
+                dtype: DType::I32,
+                offset: 8,
+            },
+            StructuredField {
+                name: "z".into(),
+                dtype: DType::Bool,
+                offset: 12,
+            },
         ];
         let columns = vec![
             ArrayStorage::F64(vec![1.0]),
@@ -2307,22 +2358,29 @@ mod tests {
     #[test]
     fn structured_storage_dtype_str() {
         let fields = vec![
-            StructuredField { name: "x".into(), dtype: DType::F64, offset: 0 },
-            StructuredField { name: "y".into(), dtype: DType::I32, offset: 8 },
+            StructuredField {
+                name: "x".into(),
+                dtype: DType::F64,
+                offset: 0,
+            },
+            StructuredField {
+                name: "y".into(),
+                dtype: DType::I32,
+                offset: 8,
+            },
         ];
-        let columns = vec![
-            ArrayStorage::F64(vec![1.0]),
-            ArrayStorage::I32(vec![2]),
-        ];
+        let columns = vec![ArrayStorage::F64(vec![1.0]), ArrayStorage::I32(vec![2])];
         let s = StructuredStorage::new(fields, columns).unwrap();
         assert_eq!(s.dtype_str(), "[('x', 'f64'), ('y', 'i32')]");
     }
 
     #[test]
     fn structured_storage_as_array_storage() {
-        let fields = vec![
-            StructuredField { name: "v".into(), dtype: DType::F64, offset: 0 },
-        ];
+        let fields = vec![StructuredField {
+            name: "v".into(),
+            dtype: DType::F64,
+            offset: 0,
+        }];
         let columns = vec![ArrayStorage::F64(vec![1.0, 2.0])];
         let ss = StructuredStorage::new(fields, columns).unwrap();
         let storage = ArrayStorage::Structured(ss);
@@ -2352,9 +2410,21 @@ mod tests {
     #[test]
     fn structured_storage_mixed_types() {
         let fields = vec![
-            StructuredField { name: "id".into(), dtype: DType::U32, offset: 0 },
-            StructuredField { name: "score".into(), dtype: DType::F64, offset: 4 },
-            StructuredField { name: "label".into(), dtype: DType::Str, offset: 12 },
+            StructuredField {
+                name: "id".into(),
+                dtype: DType::U32,
+                offset: 0,
+            },
+            StructuredField {
+                name: "score".into(),
+                dtype: DType::F64,
+                offset: 4,
+            },
+            StructuredField {
+                name: "label".into(),
+                dtype: DType::Str,
+                offset: 12,
+            },
         ];
         let columns = vec![
             ArrayStorage::U32(vec![1, 2, 3]),

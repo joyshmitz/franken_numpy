@@ -1253,8 +1253,9 @@ fn svd_bidiag_full(a: &[f64], m: usize, n: usize) -> Result<SvdFullResult, LinAl
                     let scale = 2.0 / w_norm_sq;
                     // Apply to work (right): work = work * (I - scale*w*w^T)
                     for row in j..m {
-                        let dot: f64 =
-                            ((j + 1)..n).map(|col| work[row * n + col] * w_house[col]).sum();
+                        let dot: f64 = ((j + 1)..n)
+                            .map(|col| work[row * n + col] * w_house[col])
+                            .sum();
                         let f = scale * dot;
                         for col in (j + 1)..n {
                             work[row * n + col] -= f * w_house[col];
@@ -1262,8 +1263,9 @@ fn svd_bidiag_full(a: &[f64], m: usize, n: usize) -> Result<SvdFullResult, LinAl
                     }
                     // Accumulate into Vt: Vt = (I - scale*w*w^T) * Vt
                     for col in 0..n {
-                        let dot: f64 =
-                            ((j + 1)..n).map(|row| w_house[row] * vt[row * n + col]).sum();
+                        let dot: f64 = ((j + 1)..n)
+                            .map(|row| w_house[row] * vt[row * n + col])
+                            .sum();
                         let f = scale * dot;
                         for row in (j + 1)..n {
                             vt[row * n + col] -= f * w_house[row];
@@ -1313,10 +1315,7 @@ fn svd_bidiag_full(a: &[f64], m: usize, n: usize) -> Result<SvdFullResult, LinAl
         // Initialize bulge chase: f = (d[lo]²-shift²)/d[lo], g = e[lo]
         let (mut f, mut g) = if d[lo].abs() > 0.0 {
             let sign_d = if d[lo] >= 0.0 { 1.0 } else { -1.0 };
-            (
-                (d[lo].abs() - shift) * (sign_d + shift / d[lo]),
-                e[lo],
-            )
+            ((d[lo].abs() - shift) * (sign_d + shift / d[lo]), e[lo])
         } else {
             (0.0, e[lo])
         };
@@ -1711,8 +1710,9 @@ fn tridiag_eig_qr(d: &mut [f64], e: &mut [f64], mut q: Option<&mut [f64]>, n: us
             d[hi] - e[hi - 1].abs()
         } else {
             let sign = if delta >= 0.0 { 1.0 } else { -1.0 };
-            d[hi] - e[hi - 1] * e[hi - 1]
-                / (delta + sign * (delta * delta + e[hi - 1] * e[hi - 1]).sqrt())
+            d[hi]
+                - e[hi - 1] * e[hi - 1]
+                    / (delta + sign * (delta * delta + e[hi - 1] * e[hi - 1]).sqrt())
         };
 
         // Implicit QR step via Givens similarity chase on symmetric tridiagonal.
@@ -1784,11 +1784,7 @@ fn hessenberg_reduce(a: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
             continue;
         }
 
-        let sign = if h[(j + 1) * n + j] >= 0.0 {
-            1.0
-        } else {
-            -1.0
-        };
+        let sign = if h[(j + 1) * n + j] >= 0.0 { 1.0 } else { -1.0 };
         let mut v = vec![0.0; n];
         for i in (j + 1)..n {
             v[i] = h[i * n + j];
@@ -1911,7 +1907,11 @@ fn hessenberg_qr_iter(h: &mut [f64], mut z: Option<&mut [f64]>, n: usize) {
             let ff = h[k * n + k];
             let gg = h[(k + 1) * n + k];
             let r = ff.hypot(gg);
-            let (c, s) = if r > 0.0 { (ff / r, gg / r) } else { (1.0, 0.0) };
+            let (c, s) = if r > 0.0 {
+                (ff / r, gg / r)
+            } else {
+                (1.0, 0.0)
+            };
             cos_vals[k - lo] = c;
             sin_vals[k - lo] = s;
             // Apply left rotation to rows k, k+1 (columns k..n)
@@ -1993,10 +1993,7 @@ pub fn eigh_nxn(a: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), LinAlgError
 
     // Sort eigenvalues descending and permute eigenvectors accordingly
     let mut indices: Vec<usize> = (0..n).collect();
-    indices.sort_by(|&a, &b| {
-        d[b].partial_cmp(&d[a])
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    indices.sort_by(|&a, &b| d[b].partial_cmp(&d[a]).unwrap_or(std::cmp::Ordering::Equal));
 
     let sorted_eigenvalues: Vec<f64> = indices.iter().map(|&i| d[i]).collect();
     let mut sorted_v = vec![0.0; n * n];
@@ -3595,10 +3592,7 @@ pub fn batch_det(data: &[f64], shape: &[usize]) -> Result<Vec<f64>, LinAlgError>
 }
 
 /// Batched slogdet: slogdet on (..., n, n) → (signs: ..., log_abs_dets: ...).
-pub fn batch_slogdet(
-    data: &[f64],
-    shape: &[usize],
-) -> Result<(Vec<f64>, Vec<f64>), LinAlgError> {
+pub fn batch_slogdet(data: &[f64], shape: &[usize]) -> Result<(Vec<f64>, Vec<f64>), LinAlgError> {
     let (batch, n) = parse_batched_square(shape)?;
     let mat_size = n * n;
     if data.len() != batch * mat_size {
@@ -3680,10 +3674,7 @@ pub fn batch_eigvalsh(data: &[f64], shape: &[usize]) -> Result<Vec<f64>, LinAlgE
 }
 
 /// Batched eigh: eigh on (..., n, n) → (eigenvalues (..., n), eigenvectors (..., n, n)).
-pub fn batch_eigh(
-    data: &[f64],
-    shape: &[usize],
-) -> Result<(Vec<f64>, Vec<f64>), LinAlgError> {
+pub fn batch_eigh(data: &[f64], shape: &[usize]) -> Result<(Vec<f64>, Vec<f64>), LinAlgError> {
     let (batch, n) = parse_batched_square(shape)?;
     let mat_size = n * n;
     if data.len() != batch * mat_size {
@@ -3740,10 +3731,7 @@ pub fn batch_svd(data: &[f64], shape: &[usize]) -> Result<Vec<f64>, LinAlgError>
 }
 
 /// Batched full SVD: svd on (..., m, n) → (U (..., m, m), S (..., min(m,n)), Vt (..., n, n)).
-pub fn batch_svd_full(
-    data: &[f64],
-    shape: &[usize],
-) -> Result<SvdFullResult, LinAlgError> {
+pub fn batch_svd_full(data: &[f64], shape: &[usize]) -> Result<SvdFullResult, LinAlgError> {
     let (batch, m, n) = parse_batched_shape(shape)?;
     let mat_size = m * n;
     let k = m.min(n);
@@ -3766,10 +3754,7 @@ pub fn batch_svd_full(
 }
 
 /// Batched QR: qr on (..., m, n) → (Q (..., m, m), R (..., m, n)).
-pub fn batch_qr(
-    data: &[f64],
-    shape: &[usize],
-) -> Result<(Vec<f64>, Vec<f64>), LinAlgError> {
+pub fn batch_qr(data: &[f64], shape: &[usize]) -> Result<(Vec<f64>, Vec<f64>), LinAlgError> {
     let (batch, m, n) = parse_batched_shape(shape)?;
     let mat_size = m * n;
     if data.len() != batch * mat_size {
@@ -3873,24 +3858,96 @@ pub fn batch_trace(data: &[f64], shape: &[usize]) -> Result<Vec<f64>, LinAlgErro
 #[cfg(test)]
 mod tests {
     use super::{
-        LINALG_PACKET_ID, LINALG_PACKET_REASON_CODES, LinAlgError, LinAlgLogRecord,
-        LinAlgRuntimeMode, MAX_BACKEND_REVALIDATION_ATTEMPTS, MAX_BATCH_SHAPE_CHECKS,
-        MAX_TOLERANCE_SEARCH_DEPTH, MatrixNormOrder, QrMode, VectorNormOrder, cholesky_2x2,
-        cholesky_nxn, cholesky_solve, cholesky_solve_multi, cond_nxn, cross_product, det_2x2,
-        det_nxn, eig_nxn, eig_nxn_full, eigh_2x2, eigh_nxn, eigvals_2x2, eigvalsh_nxn, expm_nxn,
-        funm_nxn, inv_2x2, inv_nxn, kron_nxn, logm_nxn, lstsq_2x2, lstsq_nxn, lstsq_output_shapes,
-        lu_factor_nxn, lu_solve, mat_mul_flat, mat_mul_rect, matrix_norm_2x2,
-        matrix_norm_frobenius, matrix_norm_nxn, matrix_power_nxn, matrix_rank_2x2, matrix_rank_nxn,
-        multi_dot, pinv_2x2, pinv_nxn, polar_nxn, qr_2x2, qr_mxn, qr_nxn, qr_output_shapes,
-        schur_nxn, slogdet_2x2, slogdet_nxn, solve_2x2, solve_nxn, solve_nxn_multi,
-        solve_triangular, sqrtm_nxn, svd_2x2, svd_mxn, svd_mxn_full, svd_nxn, svd_output_shapes,
-        tensorinv, tensorsolve, trace_nxn, validate_backend_bridge, validate_cholesky_diagonal,
-        validate_matrix_shape, validate_policy_metadata, validate_spectral_branch,
-        validate_square_matrix, validate_tolerance_policy, vector_norm,
+        LINALG_PACKET_ID,
+        LINALG_PACKET_REASON_CODES,
+        LinAlgError,
+        LinAlgLogRecord,
+        LinAlgRuntimeMode,
+        MAX_BACKEND_REVALIDATION_ATTEMPTS,
+        MAX_BATCH_SHAPE_CHECKS,
+        MAX_TOLERANCE_SEARCH_DEPTH,
+        MatrixNormOrder,
+        QrMode,
+        VectorNormOrder,
         // Batched linalg
-        batch_cholesky, batch_det, batch_eig, batch_eigh, batch_eigvalsh, batch_inv,
-        batch_matrix_norm, batch_qr, batch_solve, batch_slogdet, batch_svd, batch_svd_full,
+        batch_cholesky,
+        batch_det,
+        batch_eig,
+        batch_eigh,
+        batch_eigvalsh,
+        batch_inv,
+        batch_matrix_norm,
+        batch_qr,
+        batch_slogdet,
+        batch_solve,
+        batch_svd,
+        batch_svd_full,
         batch_trace,
+        cholesky_2x2,
+        cholesky_nxn,
+        cholesky_solve,
+        cholesky_solve_multi,
+        cond_nxn,
+        cross_product,
+        det_2x2,
+        det_nxn,
+        eig_nxn,
+        eig_nxn_full,
+        eigh_2x2,
+        eigh_nxn,
+        eigvals_2x2,
+        eigvalsh_nxn,
+        expm_nxn,
+        funm_nxn,
+        inv_2x2,
+        inv_nxn,
+        kron_nxn,
+        logm_nxn,
+        lstsq_2x2,
+        lstsq_nxn,
+        lstsq_output_shapes,
+        lu_factor_nxn,
+        lu_solve,
+        mat_mul_flat,
+        mat_mul_rect,
+        matrix_norm_2x2,
+        matrix_norm_frobenius,
+        matrix_norm_nxn,
+        matrix_power_nxn,
+        matrix_rank_2x2,
+        matrix_rank_nxn,
+        multi_dot,
+        pinv_2x2,
+        pinv_nxn,
+        polar_nxn,
+        qr_2x2,
+        qr_mxn,
+        qr_nxn,
+        qr_output_shapes,
+        schur_nxn,
+        slogdet_2x2,
+        slogdet_nxn,
+        solve_2x2,
+        solve_nxn,
+        solve_nxn_multi,
+        solve_triangular,
+        sqrtm_nxn,
+        svd_2x2,
+        svd_mxn,
+        svd_mxn_full,
+        svd_nxn,
+        svd_output_shapes,
+        tensorinv,
+        tensorsolve,
+        trace_nxn,
+        validate_backend_bridge,
+        validate_cholesky_diagonal,
+        validate_matrix_shape,
+        validate_policy_metadata,
+        validate_spectral_branch,
+        validate_square_matrix,
+        validate_tolerance_policy,
+        vector_norm,
     };
 
     fn packet008_artifacts() -> Vec<String> {
@@ -4993,16 +5050,8 @@ mod tests {
         let eigs = eig_nxn(&a, 2).expect("eig rotation");
         assert_eq!(eigs.len(), 4); // 2 eigenvalues × (re, im)
         // Both real parts should be cos(θ)
-        assert!(
-            (eigs[0] - c).abs() < 1e-10,
-            "re0={}, expected {c}",
-            eigs[0]
-        );
-        assert!(
-            (eigs[2] - c).abs() < 1e-10,
-            "re1={}, expected {c}",
-            eigs[2]
-        );
+        assert!((eigs[0] - c).abs() < 1e-10, "re0={}, expected {c}", eigs[0]);
+        assert!((eigs[2] - c).abs() < 1e-10, "re1={}, expected {c}", eigs[2]);
         // Imaginary parts should be ±sin(θ)
         assert!(
             (eigs[1].abs() - s).abs() < 1e-10,

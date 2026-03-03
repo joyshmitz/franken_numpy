@@ -464,8 +464,12 @@ impl Pcg64DxsmRng {
     /// Advance the state by `delta` steps (jump-ahead).
     /// Uses the standard PCG advance formula: O(log(delta)) multiplications.
     pub fn advance(&mut self, delta: u128) {
-        self.state =
-            pcg_advance_128(self.state, delta, u128::from(PCG_CHEAP_MULTIPLIER), self.inc);
+        self.state = pcg_advance_128(
+            self.state,
+            delta,
+            u128::from(PCG_CHEAP_MULTIPLIER),
+            self.inc,
+        );
     }
 }
 
@@ -535,10 +539,7 @@ impl Mt19937Rng {
     pub fn from_seed_sequence(ss: &SeedSequence) -> Result<Self, SeedSequenceError> {
         let mut mt = ss.generate_state_u32(MT_N)?;
         mt[0] = MT_UPPER_MASK;
-        Ok(Self {
-            mt,
-            pos: MT_N - 1,
-        })
+        Ok(Self { mt, pos: MT_N - 1 })
     }
 
     /// Create from a u64 seed using classic seeding (low 32 bits).
@@ -584,8 +585,7 @@ impl Mt19937Rng {
                 self.mt[kk + MT_M - MT_N] ^ (y >> 1) ^ if y & 1 != 0 { MT_MATRIX_A } else { 0 };
         }
         let y = (self.mt[MT_N - 1] & MT_UPPER_MASK) | (self.mt[0] & MT_LOWER_MASK);
-        self.mt[MT_N - 1] =
-            self.mt[MT_M - 1] ^ (y >> 1) ^ if y & 1 != 0 { MT_MATRIX_A } else { 0 };
+        self.mt[MT_N - 1] = self.mt[MT_M - 1] ^ (y >> 1) ^ if y & 1 != 0 { MT_MATRIX_A } else { 0 };
     }
 
     /// The MT19937 tempering transformation.
@@ -687,7 +687,9 @@ impl SeedSequence {
         pool_size: usize,
         spawn_counter: u64,
     ) -> Result<Self, SeedSequenceError> {
-        if entropy.is_empty() || !(DEFAULT_SEED_SEQUENCE_POOL_SIZE..=MAX_SEED_SEQUENCE_POOL_SIZE).contains(&pool_size) {
+        if entropy.is_empty()
+            || !(DEFAULT_SEED_SEQUENCE_POOL_SIZE..=MAX_SEED_SEQUENCE_POOL_SIZE).contains(&pool_size)
+        {
             return Err(SeedSequenceError::GenerateStateContractViolation);
         }
 
@@ -820,8 +822,8 @@ impl SeedSequence {
         for i in self.spawn_counter..end {
             let mut child_spawn_key = self.spawn_key.clone();
             // NumPy appends child index as a single u32 value
-            let child_idx = u32::try_from(i)
-                .map_err(|_| SeedSequenceError::SpawnContractViolation)?;
+            let child_idx =
+                u32::try_from(i).map_err(|_| SeedSequenceError::SpawnContractViolation)?;
             child_spawn_key.push(child_idx);
             children.push(Self::with_spawn_key_and_counter(
                 &self.entropy,
@@ -853,7 +855,9 @@ fn mix_entropy_pool(entropy: &[u32], pool_size: usize) -> Vec<u32> {
 
     /// Mix two values using the L/R multiply-XOR-shift pattern.
     fn ss_mix(x: u32, y: u32) -> u32 {
-        let result = SS_MIX_MULT_L.wrapping_mul(x).wrapping_sub(SS_MIX_MULT_R.wrapping_mul(y));
+        let result = SS_MIX_MULT_L
+            .wrapping_mul(x)
+            .wrapping_sub(SS_MIX_MULT_R.wrapping_mul(y));
         result ^ (result >> SS_XSHIFT)
     }
 
@@ -1116,7 +1120,10 @@ impl BitGenerator {
         let (seed, counter) = rng.state();
         Ok(Self {
             kind,
-            rng: RngBackend::Deterministic(DeterministicRng::from_state(splitmix64(seed ^ kind.stream_tag()), counter)),
+            rng: RngBackend::Deterministic(DeterministicRng::from_state(
+                splitmix64(seed ^ kind.stream_tag()),
+                counter,
+            )),
         })
     }
 
@@ -1213,7 +1220,10 @@ impl BitGenerator {
             );
             children.push(Self {
                 kind: self.kind,
-                rng: RngBackend::Deterministic(DeterministicRng::from_state(child_seed, child_counter)),
+                rng: RngBackend::Deterministic(DeterministicRng::from_state(
+                    child_seed,
+                    child_counter,
+                )),
             });
         }
 
@@ -1240,7 +1250,8 @@ impl BitGenerator {
             ));
         }
         state.validate()?;
-        self.rng = RngBackend::Deterministic(DeterministicRng::from_state(state.seed, state.counter));
+        self.rng =
+            RngBackend::Deterministic(DeterministicRng::from_state(state.seed, state.counter));
         Ok(())
     }
 }
@@ -1399,7 +1410,7 @@ impl RandomState {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Generator {
     bit_generator: BitGenerator,
     seed_sequence: Option<SeedSequence>,
@@ -1674,9 +1685,7 @@ impl Generator {
     /// Mimics `rng.standard_normal(size)`.
     #[must_use]
     pub fn standard_normal(&mut self, size: usize) -> Vec<f64> {
-        (0..size)
-            .map(|_| self.sample_ziggurat_normal())
-            .collect()
+        (0..size).map(|_| self.sample_ziggurat_normal()).collect()
     }
 
     /// Generate normal (Gaussian) samples with given mean and standard deviation.
@@ -1968,8 +1977,7 @@ impl Generator {
             if idx == 0 {
                 // Tail: Marsaglia's method
                 loop {
-                    let xx =
-                        -ZIGGURAT_NOR_INV_R * (-self.next_f64()).ln_1p();
+                    let xx = -ZIGGURAT_NOR_INV_R * (-self.next_f64()).ln_1p();
                     let yy = -(-self.next_f64()).ln_1p();
                     if yy + yy > xx * xx {
                         return if (rabs >> 8) & 0x1 != 0 {
@@ -1981,11 +1989,8 @@ impl Generator {
                 }
             } else {
                 // Wedge test
-                let f_diff =
-                    ZIGGURAT_NOR_F[idx - 1] - ZIGGURAT_NOR_F[idx];
-                if f_diff * self.next_f64() + ZIGGURAT_NOR_F[idx]
-                    < (-0.5 * x * x).exp()
-                {
+                let f_diff = ZIGGURAT_NOR_F[idx - 1] - ZIGGURAT_NOR_F[idx];
+                if f_diff * self.next_f64() + ZIGGURAT_NOR_F[idx] < (-0.5 * x * x).exp() {
                     return x;
                 }
             }
@@ -2009,8 +2014,7 @@ impl Generator {
             if idx == 0 {
                 return ZIGGURAT_EXP_R - (-self.next_f64()).ln_1p();
             }
-            let f_diff =
-                ZIGGURAT_EXP_F[idx - 1] - ZIGGURAT_EXP_F[idx];
+            let f_diff = ZIGGURAT_EXP_F[idx - 1] - ZIGGURAT_EXP_F[idx];
             if f_diff * self.next_f64() + ZIGGURAT_EXP_F[idx] < (-x).exp() {
                 return x;
             }
@@ -2050,9 +2054,7 @@ impl Generator {
                     x
                 } else {
                     // Inversion via standard exponential
-                    let z =
-                        (-self.sample_ziggurat_exponential() / (-p).ln_1p())
-                            .ceil();
+                    let z = (-self.sample_ziggurat_exponential() / (-p).ln_1p()).ceil();
                     if z >= 9.223_372_036_854_776e18 {
                         i64::MAX as u64
                     } else {
@@ -2399,11 +2401,7 @@ impl Generator {
     /// Power distribution (matching NumPy: uses standard_exponential).
     pub fn power(&mut self, a: f64, size: usize) -> Vec<f64> {
         (0..size)
-            .map(|_| {
-                (-(-self.sample_ziggurat_exponential()).exp_m1()).powf(
-                    1.0 / a,
-                )
-            })
+            .map(|_| (-(-self.sample_ziggurat_exponential()).exp_m1()).powf(1.0 / a))
             .collect()
     }
 
@@ -2436,18 +2434,14 @@ impl Generator {
     /// Rayleigh distribution (matching NumPy: uses standard_exponential).
     pub fn rayleigh(&mut self, scale: f64, size: usize) -> Vec<f64> {
         (0..size)
-            .map(|_| {
-                scale * (2.0 * self.sample_ziggurat_exponential()).sqrt()
-            })
+            .map(|_| scale * (2.0 * self.sample_ziggurat_exponential()).sqrt())
             .collect()
     }
 
     /// Pareto distribution (matching NumPy: uses expm1 of standard_exponential).
     pub fn pareto(&mut self, a: f64, size: usize) -> Vec<f64> {
         (0..size)
-            .map(|_| {
-                (self.sample_ziggurat_exponential() / a).exp_m1()
-            })
+            .map(|_| (self.sample_ziggurat_exponential() / a).exp_m1())
             .collect()
     }
 
@@ -2868,11 +2862,10 @@ mod tests {
         BIT_GENERATOR_STATE_SCHEMA_VERSION, BitGenerator, BitGeneratorError, BitGeneratorKind,
         DEFAULT_RNG_SEED, DeterministicRng, Generator, GeneratorPicklePayload,
         MAX_RNG_JUMP_OPERATIONS, MAX_SEED_SEQUENCE_CHILDREN, MAX_SEED_SEQUENCE_WORDS, Mt19937,
-        Mt19937Rng, Pcg64, Pcg64DxsmRng, Philox, RANDOM_PACKET_REASON_CODES,
-        RNG_CORE_REASON_CODES, RandomError, RandomLogRecord, RandomPolicyError,
-        RandomRuntimeMode, RandomState, SeedMaterial, SeedSequence, SeedSequenceError,
-        SeedSequenceSnapshot, Sfc64, default_rng, generator_from_seed_sequence,
-        validate_rng_policy_metadata,
+        Mt19937Rng, Pcg64, Pcg64DxsmRng, Philox, RANDOM_PACKET_REASON_CODES, RNG_CORE_REASON_CODES,
+        RandomError, RandomLogRecord, RandomPolicyError, RandomRuntimeMode, RandomState,
+        SeedMaterial, SeedSequence, SeedSequenceError, SeedSequenceSnapshot, Sfc64, default_rng,
+        generator_from_seed_sequence, validate_rng_policy_metadata,
     };
 
     fn packet007_artifacts() -> Vec<String> {
@@ -4352,7 +4345,10 @@ mod tests {
         // np.random.SeedSequence(42).generate_state(4, np.uint32)
         let ss = SeedSequence::new(&[42]).expect("seed");
         let state = ss.generate_state_u32(4).expect("state");
-        assert_eq!(state, vec![3_444_837_047, 2_669_555_309, 2_046_530_742, 3_581_440_988]);
+        assert_eq!(
+            state,
+            vec![3_444_837_047, 2_669_555_309, 2_046_530_742, 3_581_440_988]
+        );
     }
 
     #[test]
@@ -4386,7 +4382,10 @@ mod tests {
         // np.random.SeedSequence(0).generate_state(4, np.uint32)
         let ss = SeedSequence::new(&[0]).expect("seed");
         let state = ss.generate_state_u32(4).expect("state");
-        assert_eq!(state, vec![2_968_811_710, 3_677_149_159, 745_650_761, 2_884_920_346]);
+        assert_eq!(
+            state,
+            vec![2_968_811_710, 3_677_149_159, 745_650_761, 2_884_920_346]
+        );
     }
 
     #[test]
@@ -4395,7 +4394,10 @@ mod tests {
         let mut ss = SeedSequence::new(&[42]).expect("seed");
         let children = ss.spawn(2).expect("spawn");
         let state = children[0].generate_state_u32(4).expect("state");
-        assert_eq!(state, vec![2_684_470_948, 3_757_501_821, 1_691_896_351, 1_126_406_280]);
+        assert_eq!(
+            state,
+            vec![2_684_470_948, 3_757_501_821, 1_691_896_351, 1_126_406_280]
+        );
     }
 
     #[test]
@@ -4404,7 +4406,10 @@ mod tests {
         let mut ss = SeedSequence::new(&[42]).expect("seed");
         let children = ss.spawn(2).expect("spawn");
         let state = children[1].generate_state_u32(4).expect("state");
-        assert_eq!(state, vec![4_091_952_314, 31_242_083, 366_899_054, 1_794_014_678]);
+        assert_eq!(
+            state,
+            vec![4_091_952_314, 31_242_083, 366_899_054, 1_794_014_678]
+        );
     }
 
     #[test]
@@ -4426,7 +4431,10 @@ mod tests {
             &[3_436_620_908, 2_934_369_251, 723_718_028, 663_245_011]
         );
         let state = ss.generate_state_u32(4).expect("state");
-        assert_eq!(state, vec![879_039_660, 987_554_174, 2_298_115_603, 1_508_490_435]);
+        assert_eq!(
+            state,
+            vec![879_039_660, 987_554_174, 2_298_115_603, 1_508_490_435]
+        );
     }
 
     // ── PCG64-DXSM oracle tests ──────────────────────────────────────────
@@ -4608,11 +4616,26 @@ mod tests {
         // np.random.RandomState(42): first 20 randint(0, 2^32)
         let mut rng = Mt19937Rng::from_u32_seed(42);
         let expected: [u32; 20] = [
-            1_608_637_542, 3_421_126_067, 4_083_286_876, 787_846_414,
-            3_143_890_026, 3_348_747_335, 2_571_218_620, 2_563_451_924,
-            670_094_950, 1_914_837_113, 669_991_378, 429_389_014,
-            249_467_210, 1_972_458_954, 3_720_198_231, 1_433_267_572,
-            2_581_769_315, 613_608_295, 3_041_148_567, 2_795_544_706,
+            1_608_637_542,
+            3_421_126_067,
+            4_083_286_876,
+            787_846_414,
+            3_143_890_026,
+            3_348_747_335,
+            2_571_218_620,
+            2_563_451_924,
+            670_094_950,
+            1_914_837_113,
+            669_991_378,
+            429_389_014,
+            249_467_210,
+            1_972_458_954,
+            3_720_198_231,
+            1_433_267_572,
+            2_581_769_315,
+            613_608_295,
+            3_041_148_567,
+            2_795_544_706,
         ];
         for (i, &exp) in expected.iter().enumerate() {
             let got = rng.next_u32();
@@ -4651,11 +4674,26 @@ mod tests {
         let ss = SeedSequence::new(&[42]).expect("ss");
         let mut rng = Mt19937Rng::from_seed_sequence(&ss).expect("seed");
         let expected: [u32; 20] = [
-            2_327_846_034, 3_904_886_566, 2_661_450_408, 1_733_955_692,
-            246_401_338, 3_249_250_296, 3_487_099_619, 1_498_159_427,
-            3_694_075_699, 3_512_848_995, 2_695_531_450, 296_751_540,
-            2_928_881_423, 1_121_898_314, 2_900_273_415, 3_780_017_243,
-            2_064_865_906, 852_217_197, 3_155_620_539, 3_977_451_023,
+            2_327_846_034,
+            3_904_886_566,
+            2_661_450_408,
+            1_733_955_692,
+            246_401_338,
+            3_249_250_296,
+            3_487_099_619,
+            1_498_159_427,
+            3_694_075_699,
+            3_512_848_995,
+            2_695_531_450,
+            296_751_540,
+            2_928_881_423,
+            1_121_898_314,
+            2_900_273_415,
+            3_780_017_243,
+            2_064_865_906,
+            852_217_197,
+            3_155_620_539,
+            3_977_451_023,
         ];
         for (i, &exp) in expected.iter().enumerate() {
             let got = rng.next_u32();
@@ -4669,11 +4707,26 @@ mod tests {
         let ss = SeedSequence::new(&[0]).expect("ss");
         let mut rng = Mt19937Rng::from_seed_sequence(&ss).expect("seed");
         let expected: [u32; 20] = [
-            2_058_676_884, 2_606_108_953, 1_230_491_694, 2_111_045_058,
-            95_419_988, 1_510_044_700, 2_342_423_583, 3_663_458_586,
-            5_280_294, 1_692_592_663, 2_194_070_197, 3_828_360_469,
-            2_174_269_555, 3_287_063_170, 2_191_392_552, 1_383_654_479,
-            2_571_795_756, 4_056_454_040, 2_939_149_804, 581_682_926,
+            2_058_676_884,
+            2_606_108_953,
+            1_230_491_694,
+            2_111_045_058,
+            95_419_988,
+            1_510_044_700,
+            2_342_423_583,
+            3_663_458_586,
+            5_280_294,
+            1_692_592_663,
+            2_194_070_197,
+            3_828_360_469,
+            2_174_269_555,
+            3_287_063_170,
+            2_191_392_552,
+            1_383_654_479,
+            2_571_795_756,
+            4_056_454_040,
+            2_939_149_804,
+            581_682_926,
         ];
         for (i, &exp) in expected.iter().enumerate() {
             let got = rng.next_u32();
@@ -4772,9 +4825,15 @@ mod tests {
         let mut g = oracle_gen();
         let vals = g.random(10);
         let expected = [
-            0.9320816903198763, 0.3375056011176768, 0.21698197019501064,
-            0.3527062497665462, 0.5501051021142127, 0.8831674052732996,
-            0.8883371973100436, 0.3033192453525694, 0.4400329555858611,
+            0.9320816903198763,
+            0.3375056011176768,
+            0.21698197019501064,
+            0.3527062497665462,
+            0.5501051021142127,
+            0.8831674052732996,
+            0.8883371973100436,
+            0.3033192453525694,
+            0.4400329555858611,
             0.32925844288816175,
         ];
         assert_f64_seq("random", &vals, &expected);
@@ -4785,9 +4844,15 @@ mod tests {
         let mut g = oracle_gen();
         let vals = g.uniform(2.0, 5.0, 10);
         let expected = [
-            4.796245070959629, 3.0125168033530305, 2.650945910585032,
-            3.0581187492996387, 3.6503153063426383, 4.649502215819899,
-            4.6650115919301305, 2.909957736057708, 3.3200988667575833,
+            4.796245070959629,
+            3.0125168033530305,
+            2.650945910585032,
+            3.0581187492996387,
+            3.6503153063426383,
+            4.649502215819899,
+            4.6650115919301305,
+            2.909957736057708,
+            3.3200988667575833,
             2.987775328664485,
         ];
         assert_f64_seq("uniform", &vals, &expected);
@@ -4798,9 +4863,15 @@ mod tests {
         let mut g = oracle_gen();
         let vals = g.standard_normal(10);
         let expected = [
-            0.648970595720087, 1.089083499221345, 1.4703372914093853,
-            0.6605483574733667, -0.44234454827889136, -0.08094864935117092,
-            0.3087957082495461, -0.9638571574827081, -0.7254609073102689,
+            0.648970595720087,
+            1.089083499221345,
+            1.4703372914093853,
+            0.6605483574733667,
+            -0.44234454827889136,
+            -0.08094864935117092,
+            0.3087957082495461,
+            -0.9638571574827081,
+            -0.7254609073102689,
             -1.2118074194203396,
         ];
         assert_f64_seq("standard_normal", &vals, &expected);
@@ -4811,9 +4882,15 @@ mod tests {
         let mut g = oracle_gen();
         let vals = g.normal(5.0, 2.0, 10);
         let expected = [
-            6.297941191440174, 7.1781669984426895, 7.940674582818771,
-            6.321096714946734, 4.115310903442217, 4.838102701297658,
-            5.617591416499092, 3.0722856850345837, 3.549078185379462,
+            6.297941191440174,
+            7.1781669984426895,
+            7.940674582818771,
+            6.321096714946734,
+            4.115310903442217,
+            4.838102701297658,
+            5.617591416499092,
+            3.0722856850345837,
+            3.549078185379462,
             2.5763851611593207,
         ];
         assert_f64_seq("normal", &vals, &expected);
@@ -4824,9 +4901,15 @@ mod tests {
         let mut g = oracle_gen();
         let vals = g.standard_exponential(10);
         let expected = [
-            1.714034816202212, 0.1304857330479185, 0.2596812762587198,
-            0.04842832490161937, 2.1864510761713536, 0.6275885179904133,
-            0.5074780068833896, 1.7187312558502839, 0.32741607613953083,
+            1.714034816202212,
+            0.1304857330479185,
+            0.2596812762587198,
+            0.04842832490161937,
+            2.1864510761713536,
+            0.6275885179904133,
+            0.5074780068833896,
+            1.7187312558502839,
+            0.32741607613953083,
             0.27740364655423955,
         ];
         assert_f64_seq("standard_exponential", &vals, &expected);
@@ -4837,9 +4920,15 @@ mod tests {
         let mut g = oracle_gen();
         let vals = g.exponential(2.5, 10);
         let expected = [
-            4.28508704050553, 0.32621433261979627, 0.6492031906467994,
-            0.12107081225404842, 5.466127690428384, 1.5689712949760333,
-            1.268695017208474, 4.29682813962571, 0.8185401903488271,
+            4.28508704050553,
+            0.32621433261979627,
+            0.6492031906467994,
+            0.12107081225404842,
+            5.466127690428384,
+            1.5689712949760333,
+            1.268695017208474,
+            4.29682813962571,
+            0.8185401903488271,
             0.6935091163855989,
         ];
         assert_f64_seq("exponential", &vals, &expected);
@@ -4858,9 +4947,15 @@ mod tests {
         let mut g = oracle_gen();
         let vals = g.laplace(0.0, 1.0, 10);
         let expected = [
-            1.9963024436527586, -0.39302599234309016, -0.834793834992557,
-            -0.3489725415567814, 0.10559410319107608, 1.4538660025183756,
-            1.4991244586404344, -0.4998222325505851, -0.12775847525590414,
+            1.9963024436527586,
+            -0.39302599234309016,
+            -0.834793834992557,
+            -0.3489725415567814,
+            0.10559410319107608,
+            1.4538660025183756,
+            1.4991244586404344,
+            -0.4998222325505851,
+            -0.12775847525590414,
             -0.41776511533892585,
         ];
         assert_f64_seq("laplace", &vals, &expected);
@@ -4871,9 +4966,15 @@ mod tests {
         let mut g = oracle_gen();
         let vals = g.gumbel(0.0, 1.0, 10);
         let expected = [
-            -0.9893365720157541, 0.8873554840149915, 1.408132868136375,
-            0.832512543783072, 0.2247181857117213, -0.7640776591098938,
-            -0.7849382844008232, 1.0176924248162385, 0.5449386697962436,
+            -0.9893365720157541,
+            0.8873554840149915,
+            1.408132868136375,
+            0.832512543783072,
+            0.2247181857117213,
+            -0.7640776591098938,
+            -0.7849382844008232,
+            1.0176924248162385,
+            0.5449386697962436,
             0.9178635255883896,
         ];
         assert_f64_seq("gumbel", &vals, &expected);
@@ -4884,9 +4985,15 @@ mod tests {
         let mut g = oracle_gen();
         let vals = g.logistic(0.0, 1.0, 10);
         let expected = [
-            2.6191148066328793, -0.6744299972282881, -1.2833414588669285,
-            -0.6071646535080572, 0.2010953594922383, 2.0227726736767893,
-            2.073867757832975, -0.8315414121966367, -0.2410283095707554,
+            2.6191148066328793,
+            -0.6744299972282881,
+            -1.2833414588669285,
+            -0.6071646535080572,
+            0.2010953594922383,
+            2.0227726736767893,
+            2.073867757832975,
+            -0.8315414121966367,
+            -0.2410283095707554,
             -0.711540918907822,
         ];
         assert_f64_seq("logistic", &vals, &expected);
@@ -4897,9 +5004,15 @@ mod tests {
         let mut g = oracle_gen();
         let vals = g.lognormal(0.0, 1.0, 10);
         let expected = [
-            1.9135699776616077, 2.9715493968340625, 4.350702348137479,
-            1.9358535831832708, 0.6425282153220304, 0.9222410479048919,
-            1.3617841408185067, 0.38141885243216656, 0.48410139165696314,
+            1.9135699776616077,
+            2.9715493968340625,
+            4.350702348137479,
+            1.9358535831832708,
+            0.6425282153220304,
+            0.9222410479048919,
+            1.3617841408185067,
+            0.38141885243216656,
+            0.48410139165696314,
             0.2976587986528511,
         ];
         assert_f64_seq("lognormal", &vals, &expected);
@@ -4910,9 +5023,15 @@ mod tests {
         let mut g = oracle_gen();
         let vals = g.weibull(2.0, 10);
         let expected = [
-            1.3092115246216756, 0.3612280900593398, 0.5095893211780638,
-            0.2200643653607266, 1.4786653022815386, 0.7922048459776129,
-            0.7123749061297637, 1.3110039114549903, 0.5722028277975659,
+            1.3092115246216756,
+            0.3612280900593398,
+            0.5095893211780638,
+            0.2200643653607266,
+            1.4786653022815386,
+            0.7922048459776129,
+            0.7123749061297637,
+            1.3110039114549903,
+            0.5722028277975659,
             0.5266912250590848,
         ];
         assert_f64_seq("weibull", &vals, &expected);
@@ -4923,9 +5042,15 @@ mod tests {
         let mut g = oracle_gen();
         let vals = g.rayleigh(1.0, 10);
         let expected = [
-            1.8515046941351307, 0.5108536640720481, 0.7206681292505168,
-            0.3112180100881675, 2.091148524697064, 1.120346837359229,
-            1.0074502537429724, 1.8540395119038233, 0.8092169994995543,
+            1.8515046941351307,
+            0.5108536640720481,
+            0.7206681292505168,
+            0.3112180100881675,
+            2.091148524697064,
+            1.120346837359229,
+            1.0074502537429724,
+            1.8540395119038233,
+            0.8092169994995543,
             0.7448538736614579,
         ];
         assert_f64_seq("rayleigh", &vals, &expected);
@@ -4936,9 +5061,15 @@ mod tests {
         let mut g = oracle_gen();
         let vals = g.pareto(3.0, 10);
         let expected = [
-            0.7706468622745504, 0.044455027236940385, 0.09041725464725865,
-            0.016273773503058895, 1.072627291394015, 0.23268679426427932,
-            0.18430882648161737, 0.773420945135703, 0.11531702521584737,
+            0.7706468622745504,
+            0.044455027236940385,
+            0.09041725464725865,
+            0.016273773503058895,
+            1.072627291394015,
+            0.23268679426427932,
+            0.18430882648161737,
+            0.773420945135703,
+            0.11531702521584737,
             0.09687791167243072,
         ];
         assert_f64_seq("pareto", &vals, &expected);
@@ -4949,9 +5080,15 @@ mod tests {
         let mut g = oracle_gen();
         let vals = g.power(5.0, 10);
         let expected = [
-            0.9610549152494955, 0.6569121505771804, 0.7444820463934245,
-            0.5431567259656599, 0.9764540513247876, 0.8584202987597479,
-            0.8317139954376589, 0.9612527086874139, 0.7747973537703587,
+            0.9610549152494955,
+            0.6569121505771804,
+            0.7444820463934245,
+            0.5431567259656599,
+            0.9764540513247876,
+            0.8584202987597479,
+            0.8317139954376589,
+            0.9612527086874139,
+            0.7747973537703587,
             0.7531010773400103,
         ];
         assert_f64_seq("power", &vals, &expected);
@@ -4962,9 +5099,15 @@ mod tests {
         let mut g = oracle_gen();
         let vals = g.triangular(-1.0, 0.0, 1.0, 10);
         let expected = [
-            0.6314398022571518, -0.1784093463072054, -0.3412406050840555,
-            -0.1601116148361782, 0.05142749577505956, 0.5166107267911288,
-            0.5274266137625683, -0.22112999113771314, -0.06188171792053743,
+            0.6314398022571518,
+            -0.1784093463072054,
+            -0.3412406050840555,
+            -0.1601116148361782,
+            0.05142749577505956,
+            0.5166107267911288,
+            0.5274266137625683,
+            -0.22112999113771314,
+            -0.06188171792053743,
             -0.18850946661324297,
         ];
         assert_f64_seq("triangular", &vals, &expected);
@@ -4975,9 +5118,15 @@ mod tests {
         let mut g = oracle_gen();
         let vals = g.standard_cauchy(10);
         let expected = [
-            0.5958869050757608, 2.2259343691860884, 5.464508077953408,
-            -0.3203749703493653, 0.5986602290793768, 0.1310774619296665,
-            0.01082150363099386, 2.6511792597164083, -14.184214453507638,
+            0.5958869050757608,
+            2.2259343691860884,
+            5.464508077953408,
+            -0.3203749703493653,
+            0.5986602290793768,
+            0.1310774619296665,
+            0.01082150363099386,
+            2.6511792597164083,
+            -14.184214453507638,
             -0.023788035645022024,
         ];
         assert_f64_seq("standard_cauchy", &vals, &expected);
@@ -4996,9 +5145,15 @@ mod tests {
         let mut g = oracle_gen();
         let vals = g.standard_gamma(3.0, 10);
         let expected = [
-            3.8730178986382064, 5.860442600894906, 2.007580882434013,
-            3.203380706017545, 1.648765619968363, 2.72481060071336,
-            2.661129359850849, 3.887845119149194, 13.61058714233652,
+            3.8730178986382064,
+            5.860442600894906,
+            2.007580882434013,
+            3.203380706017545,
+            1.648765619968363,
+            2.72481060071336,
+            2.661129359850849,
+            3.887845119149194,
+            13.61058714233652,
             2.6281160439916977,
         ];
         assert_f64_seq("standard_gamma", &vals, &expected);
@@ -5009,9 +5164,15 @@ mod tests {
         let mut g = oracle_gen();
         let vals = g.gamma(2.0, 3.0, 10);
         let expected = [
-            7.958138981245406, 13.130063396284479, 3.475026335965074,
-            6.293849659854425, 2.6837349405954196, 5.138163583416871,
-            4.986869533913612, 7.995528829118353, 35.00081178275254,
+            7.958138981245406,
+            13.130063396284479,
+            3.475026335965074,
+            6.293849659854425,
+            2.6837349405954196,
+            5.138163583416871,
+            4.986869533913612,
+            7.995528829118353,
+            35.00081178275254,
             4.908686593272669,
         ];
         assert_f64_seq("gamma", &vals, &expected);
@@ -5022,9 +5183,15 @@ mod tests {
         let mut g = oracle_gen();
         let vals = g.chisquare(5.0, 10);
         let expected = [
-            6.538380773318506, 10.26311385719701, 3.1571964002088624,
-            5.307454924305685, 2.5292828476704683, 4.438236370161119,
-            4.323351568092394, 6.565802771078493, 25.301773085230973,
+            6.538380773318506,
+            10.26311385719701,
+            3.1571964002088624,
+            5.307454924305685,
+            2.5292828476704683,
+            4.438236370161119,
+            4.323351568092394,
+            6.565802771078493,
+            25.301773085230973,
             4.263872078966991,
         ];
         assert_f64_seq("chisquare", &vals, &expected);
@@ -5035,9 +5202,15 @@ mod tests {
         let mut g = oracle_gen();
         let vals = g.beta(2.0, 5.0, 10);
         let expected = [
-            0.23536154859916344, 0.17754074164377456, 0.1586686788060632,
-            0.21056377129012013, 0.7165302874074536, 0.17181153381629066,
-            0.31765174585585376, 0.1379429581403801, 0.2718552779844278,
+            0.23536154859916344,
+            0.17754074164377456,
+            0.1586686788060632,
+            0.21056377129012013,
+            0.7165302874074536,
+            0.17181153381629066,
+            0.31765174585585376,
+            0.1379429581403801,
+            0.2718552779844278,
             0.10894170824615793,
         ];
         assert_f64_seq("beta", &vals, &expected);
@@ -5048,9 +5221,15 @@ mod tests {
         let mut g = oracle_gen();
         let vals = g.wald(3.0, 2.0, 10);
         let expected = [
-            1.3817490656886038, 0.5946945995263678, 5.1241047841309015,
-            2.0598532428152385, 1.267450207084615, 2.87289685181097,
-            2.987558305897547, 6.566074359042968, 0.14489404392407723,
+            1.3817490656886038,
+            0.5946945995263678,
+            5.1241047841309015,
+            2.0598532428152385,
+            1.267450207084615,
+            2.87289685181097,
+            2.987558305897547,
+            6.566074359042968,
+            0.14489404392407723,
             3.088435618658114,
         ];
         assert_f64_seq("wald", &vals, &expected);
