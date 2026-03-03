@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 use fnp_dtype::DType;
+use fnp_io::{IOSupportedDType, load, save};
 use fnp_ufunc::{BinaryOp, UFuncArray};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -298,6 +299,179 @@ pub fn generate_benchmark_baseline(
         },
     )?;
 
+    let large_add_dim = 1024usize;
+    let large_add_elements_per_run = large_add_dim * large_add_dim;
+    let lhs_add_large = UFuncArray::new(
+        vec![large_add_dim, large_add_dim],
+        (0..large_add_elements_per_run)
+            .map(|i| f64::from((i % 257) as u32))
+            .collect(),
+        DType::F64,
+    )
+    .map_err(|err| format!("benchmark lhs_add_large init failed: {err}"))?;
+    let rhs_add_large = UFuncArray::new(
+        vec![large_add_dim],
+        (0..large_add_dim)
+            .map(|i| f64::from((i % 31) as u32))
+            .collect(),
+        DType::F64,
+    )
+    .map_err(|err| format!("benchmark rhs_add_large init failed: {err}"))?;
+    let add_large_bytes_per_run = large_add_elements_per_run * item_size * 3;
+    let add_large_workload = time_workload(
+        "ufunc_add_broadcast_1024x1024_by_1024",
+        8,
+        large_add_elements_per_run,
+        add_large_bytes_per_run,
+        || {
+            let out = lhs_add_large
+                .elementwise_binary(&rhs_add_large, BinaryOp::Add)
+                .map_err(|err| format!("large broadcast add failed: {err}"))?;
+            std::hint::black_box(out.values()[0]);
+            Ok(())
+        },
+    )?;
+
+    let matmul_dim = 256usize;
+    let matmul_elements = matmul_dim * matmul_dim;
+    let matmul_lhs = UFuncArray::new(
+        vec![matmul_dim, matmul_dim],
+        (0..matmul_elements)
+            .map(|i| f64::from(((i * 13) % 997) as u32) / 17.0)
+            .collect(),
+        DType::F64,
+    )
+    .map_err(|err| format!("benchmark matmul_lhs init failed: {err}"))?;
+    let matmul_rhs = UFuncArray::new(
+        vec![matmul_dim, matmul_dim],
+        (0..matmul_elements)
+            .map(|i| f64::from(((i * 17) % 991) as u32) / 19.0)
+            .collect(),
+        DType::F64,
+    )
+    .map_err(|err| format!("benchmark matmul_rhs init failed: {err}"))?;
+    let matmul_bytes_per_run = (matmul_elements * 3) * item_size;
+    let matmul_workload = time_workload(
+        "matmul_256x256_by_256x256",
+        6,
+        matmul_elements,
+        matmul_bytes_per_run,
+        || {
+            let out = matmul_lhs
+                .matmul(&matmul_rhs)
+                .map_err(|err| format!("matmul workload failed: {err}"))?;
+            std::hint::black_box(out.values()[0]);
+            Ok(())
+        },
+    )?;
+
+    let sort_len = 1_000_000usize;
+    let sort_in = UFuncArray::new(
+        vec![sort_len],
+        (0..sort_len)
+            .map(|i| f64::from(((i * 48_271) % sort_len) as u32))
+            .collect(),
+        DType::F64,
+    )
+    .map_err(|err| format!("benchmark sort input init failed: {err}"))?;
+    let sort_bytes_per_run = sort_len * item_size * 2;
+    let sort_workload =
+        time_workload("sort_quicksort_1m", 8, sort_len, sort_bytes_per_run, || {
+            let out = sort_in
+                .sort(None, Some("quicksort"))
+                .map_err(|err| format!("sort workload failed: {err}"))?;
+            std::hint::black_box(out.values()[0]);
+            Ok(())
+        })?;
+
+    let fft_len = 65_536usize;
+    let fft_in = UFuncArray::new(
+        vec![fft_len],
+        (0..fft_len)
+            .map(|i| {
+                let t = i as f64 / fft_len as f64;
+                (std::f64::consts::TAU * 5.0 * t).sin()
+                    + 0.5 * (std::f64::consts::TAU * 13.0 * t).cos()
+            })
+            .collect(),
+        DType::F64,
+    )
+    .map_err(|err| format!("benchmark fft input init failed: {err}"))?;
+    let fft_bytes_per_run = fft_len * item_size * 3;
+    let fft_workload = time_workload("fft_65536", 8, fft_len, fft_bytes_per_run, || {
+        let out = fft_in
+            .fft(None)
+            .map_err(|err| format!("fft workload failed: {err}"))?;
+        std::hint::black_box(out.values()[0]);
+        Ok(())
+    })?;
+
+    let astype_in = UFuncArray::new(
+        vec![large_add_dim, large_add_dim],
+        (0..large_add_elements_per_run)
+            .map(|i| f64::from(((i * 19) % 10_003) as u32))
+            .collect(),
+        DType::F64,
+    )
+    .map_err(|err| format!("benchmark astype input init failed: {err}"))?;
+    let astype_bytes_per_run =
+        large_add_elements_per_run * (DType::F64.item_size() + DType::I32.item_size());
+    let astype_workload = time_workload(
+        "astype_f64_to_i32_1024x1024",
+        10,
+        large_add_elements_per_run,
+        astype_bytes_per_run,
+        || {
+            let out = astype_in.astype(DType::I32);
+            std::hint::black_box(out.values()[0]);
+            Ok(())
+        },
+    )?;
+
+    let reshape_workload = time_workload(
+        "reshape_1024x1024_to_2048x512",
+        20,
+        large_add_elements_per_run,
+        large_add_elements_per_run * item_size,
+        || {
+            let out = astype_in
+                .reshape(&[2048, 512])
+                .map_err(|err| format!("reshape workload failed: {err}"))?;
+            std::hint::black_box(out.shape()[0]);
+            Ok(())
+        },
+    )?;
+
+    let io_dim = 512usize;
+    let io_elements = io_dim * io_dim;
+    let io_values: Vec<f64> = (0..io_elements)
+        .map(|i| f64::from(((i * 29) % 65_537) as u32) / 11.0)
+        .collect();
+    let io_npy_workload = time_workload(
+        "io_npy_save_load_512x512_f64",
+        8,
+        io_elements,
+        io_elements * item_size * 2,
+        || {
+            let payload = save(&[io_dim, io_dim], &io_values, IOSupportedDType::F64)
+                .map_err(|err| format!("io save workload failed: {err}"))?;
+            let (shape, values, dtype) =
+                load(&payload).map_err(|err| format!("io load workload failed: {err}"))?;
+            if shape != vec![io_dim, io_dim] {
+                return Err(format!(
+                    "io workload shape mismatch expected=[{io_dim},{io_dim}] actual={shape:?}"
+                ));
+            }
+            if dtype != IOSupportedDType::F64 {
+                return Err(format!(
+                    "io workload dtype mismatch expected=F64 actual={dtype:?}"
+                ));
+            }
+            std::hint::black_box(values[0]);
+            Ok(())
+        },
+    )?;
+
     let rustc = rustc_version();
     let environment_fingerprint = format!(
         "os={} arch={} cpus={} rustc={}",
@@ -318,7 +492,18 @@ pub fn generate_benchmark_baseline(
         schema_version: 1,
         generated_at_unix_ms: now_unix_ms(),
         git_commit: git_commit_short(repo_root),
-        workloads: vec![add_workload, reduce_axis1, reduce_all],
+        workloads: vec![
+            add_workload,
+            reduce_axis1,
+            reduce_all,
+            add_large_workload,
+            matmul_workload,
+            sort_workload,
+            fft_workload,
+            astype_workload,
+            reshape_workload,
+            io_npy_workload,
+        ],
         environment_fingerprint,
         reproducibility,
         evidence_log_refs: discover_evidence_log_refs(repo_root),

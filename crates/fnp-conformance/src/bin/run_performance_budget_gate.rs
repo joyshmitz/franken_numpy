@@ -75,6 +75,11 @@ const WORKLOAD_BUDGETS: &[WorkloadBudget] = &[
         p95_budget_ms: 180.0,
     },
     WorkloadBudget {
+        name: "ufunc_add_broadcast_1024x1024_by_1024",
+        path_family: "broadcast add/mul",
+        p95_budget_ms: 1300.0,
+    },
+    WorkloadBudget {
         name: "reduce_sum_axis1_keepdims_false_256x256",
         path_family: "reduction sum/mean",
         p95_budget_ms: 210.0,
@@ -84,14 +89,42 @@ const WORKLOAD_BUDGETS: &[WorkloadBudget] = &[
         path_family: "reduction sum/mean",
         p95_budget_ms: 210.0,
     },
+    WorkloadBudget {
+        name: "matmul_256x256_by_256x256",
+        path_family: "matmul/dot",
+        p95_budget_ms: 2400.0,
+    },
+    WorkloadBudget {
+        name: "sort_quicksort_1m",
+        path_family: "sorting/searching",
+        p95_budget_ms: 1600.0,
+    },
+    WorkloadBudget {
+        name: "fft_65536",
+        path_family: "fft transforms",
+        p95_budget_ms: 1200.0,
+    },
+    WorkloadBudget {
+        name: "astype_f64_to_i32_1024x1024",
+        path_family: "dtype conversion",
+        p95_budget_ms: 950.0,
+    },
+    WorkloadBudget {
+        name: "reshape_1024x1024_to_2048x512",
+        path_family: "reshape/view operations",
+        p95_budget_ms: 250.0,
+    },
+    WorkloadBudget {
+        name: "io_npy_save_load_512x512_f64",
+        path_family: "npy parse + load",
+        p95_budget_ms: 1800.0,
+    },
 ];
 
 const UNINSTRUMENTED_BUDGET_PATHS: &[&str] = &[
-    "reshape/view operations",
-    "dtype conversion",
-    "npy parse + load",
     "memory footprint",
     "allocation churn",
+    "allocator fragmentation under adversarial workloads",
 ];
 
 fn main() {

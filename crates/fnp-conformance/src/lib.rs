@@ -22,8 +22,8 @@ use fnp_iter::{
     validate_flatiter_write, validate_nditer_flags,
 };
 use fnp_linalg::{
-    LinAlgError, QrMode, lstsq_output_shapes, qr_2x2, qr_output_shapes, solve_2x2, svd_2x2,
-    svd_output_shapes, validate_backend_bridge,
+    LinAlgError, QrMode, batch_det, batch_inv, batch_solve, batch_trace, lstsq_output_shapes,
+    qr_2x2, qr_output_shapes, solve_2x2, svd_2x2, svd_output_shapes, validate_backend_bridge,
     validate_policy_metadata as validate_linalg_policy_metadata, validate_spectral_branch,
     validate_tolerance_policy,
 };
@@ -8344,6 +8344,31 @@ fn decode_rhs_2(rhs: &[f64]) -> Result<[f64; 2], LinAlgError> {
     Ok([rhs[0], rhs[1]])
 }
 
+fn flatten_matrix_fixture(matrix: &[Vec<f64>]) -> Result<Vec<f64>, LinAlgError> {
+    if matrix.is_empty() {
+        return Err(LinAlgError::ShapeContractViolation(
+            "batched operations require non-empty matrix fixture rows",
+        ));
+    }
+
+    let row_len = matrix[0].len();
+    if row_len == 0 {
+        return Err(LinAlgError::ShapeContractViolation(
+            "batched operations require non-empty matrix fixture columns",
+        ));
+    }
+    if matrix.iter().any(|row| row.len() != row_len) {
+        return Err(LinAlgError::ShapeContractViolation(
+            "batched operations require rectangular matrix fixture rows",
+        ));
+    }
+
+    Ok(matrix
+        .iter()
+        .flat_map(|row| row.iter().copied())
+        .collect::<Vec<_>>())
+}
+
 fn transpose_2x2(matrix: [[f64; 2]; 2]) -> [[f64; 2]; 2] {
     [[matrix[0][0], matrix[1][0]], [matrix[0][1], matrix[1][1]]]
 }
@@ -8476,6 +8501,36 @@ fn execute_linalg_operation(
                 singular_values_shape: output.singular_values_shape,
             })
         }
+        "batch_det" => {
+            let data = flatten_matrix_fixture(input.matrix)?;
+            Ok(LinalgOperationOutcome::SolveVector(batch_det(
+                data.as_slice(),
+                input.shape,
+            )?))
+        }
+        "batch_trace" => {
+            let data = flatten_matrix_fixture(input.matrix)?;
+            Ok(LinalgOperationOutcome::SolveVector(batch_trace(
+                data.as_slice(),
+                input.shape,
+            )?))
+        }
+        "batch_inv" => {
+            let data = flatten_matrix_fixture(input.matrix)?;
+            Ok(LinalgOperationOutcome::SolveVector(batch_inv(
+                data.as_slice(),
+                input.shape,
+            )?))
+        }
+        "batch_solve" => {
+            let data = flatten_matrix_fixture(input.matrix)?;
+            Ok(LinalgOperationOutcome::SolveVector(batch_solve(
+                data.as_slice(),
+                input.shape,
+                input.rhs,
+                input.rhs_shape,
+            )?))
+        }
         "spectral_branch" => {
             validate_spectral_branch(input.uplo, input.converged)?;
             Ok(LinalgOperationOutcome::Unit)
@@ -8515,6 +8570,36 @@ fn validate_linalg_differential_expectation(
                 return Err(format!(
                     "solve_2x2 mismatch expected={:?} actual={actual:?}",
                     case.expected_solution
+                ));
+            }
+            Ok(())
+        }
+        (
+            "batch_det" | "batch_trace" | "batch_inv" | "batch_solve",
+            LinalgOperationOutcome::SolveVector(actual),
+        ) => {
+            if case.expected_solution.len() != actual.len() {
+                return Err(format!(
+                    "{} expected vector length {} but got {}",
+                    case.operation,
+                    case.expected_solution.len(),
+                    actual.len()
+                ));
+            }
+            let tolerance = if case.expected_tolerance > 0.0 {
+                case.expected_tolerance
+            } else {
+                1e-9
+            };
+            if !approx_equal_values(
+                &case.expected_solution,
+                actual.as_slice(),
+                tolerance,
+                tolerance,
+            ) {
+                return Err(format!(
+                    "{} mismatch expected={:?} actual={actual:?}",
+                    case.operation, case.expected_solution
                 ));
             }
             Ok(())
