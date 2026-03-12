@@ -4832,11 +4832,157 @@ impl UFuncArray {
         })
     }
 
+    #[must_use]
+    fn uses_complex_interleaved_storage(&self) -> bool {
+        matches!(self.dtype, DType::Complex64 | DType::Complex128)
+    }
+
+    fn interleave_real_values(values: &[f64]) -> Vec<f64> {
+        let mut interleaved = Vec::with_capacity(values.len() * 2);
+        for &value in values {
+            interleaved.push(value);
+            interleaved.push(0.0);
+        }
+        interleaved
+    }
+
+    fn as_complex_matrix_input(
+        &self,
+        op: &str,
+        require_square: bool,
+    ) -> Result<(Vec<f64>, usize, usize), UFuncError> {
+        if self.uses_complex_interleaved_storage() {
+            if self.shape.len() != 3 || self.shape[2] != 2 {
+                return Err(UFuncError::Msg(format!(
+                    "{op}: complex input must have shape [rows, cols, 2]"
+                )));
+            }
+            let rows = self.shape[0];
+            let cols = self.shape[1];
+            if require_square && rows != cols {
+                return Err(UFuncError::Msg(format!(
+                    "{op}: complex input must be a square [n, n, 2] array"
+                )));
+            }
+            return Ok((self.values.clone(), rows, cols));
+        }
+
+        if self.shape.len() != 2 {
+            return Err(UFuncError::Msg(format!(
+                "{op}: input must be a 2-D array or complex [rows, cols, 2] array"
+            )));
+        }
+
+        let rows = self.shape[0];
+        let cols = self.shape[1];
+        if require_square && rows != cols {
+            return Err(UFuncError::Msg(format!(
+                "{op}: input must be a square 2-D array"
+            )));
+        }
+
+        Ok((Self::interleave_real_values(&self.values), rows, cols))
+    }
+
+    fn as_complex_vector_input(
+        &self,
+        op: &str,
+        expected_len: usize,
+    ) -> Result<Vec<f64>, UFuncError> {
+        if self.uses_complex_interleaved_storage() {
+            if self.shape.len() != 2 || self.shape[1] != 2 {
+                return Err(UFuncError::Msg(format!(
+                    "{op}: complex rhs must have shape [n, 2]"
+                )));
+            }
+            if self.shape[0] != expected_len {
+                return Err(UFuncError::Msg(format!(
+                    "{op}: rhs length must match A dimension"
+                )));
+            }
+            return Ok(self.values.clone());
+        }
+
+        if self.shape.len() != 1 || self.values.len() != expected_len {
+            return Err(UFuncError::Msg(format!(
+                "{op}: rhs must be 1-D with length matching A dimension"
+            )));
+        }
+
+        Ok(Self::interleave_real_values(&self.values))
+    }
+
+    fn as_complex_matrix_rhs_input(
+        &self,
+        op: &str,
+        expected_rows: usize,
+    ) -> Result<(Vec<f64>, usize), UFuncError> {
+        if self.uses_complex_interleaved_storage() {
+            if self.shape.len() != 3 || self.shape[2] != 2 {
+                return Err(UFuncError::Msg(format!(
+                    "{op}: complex B must have shape [n, m, 2]"
+                )));
+            }
+            if self.shape[0] != expected_rows {
+                return Err(UFuncError::Msg(format!(
+                    "{op}: B rows must match A dimension"
+                )));
+            }
+            return Ok((self.values.clone(), self.shape[1]));
+        }
+
+        if self.shape.len() != 2 {
+            return Err(UFuncError::Msg(format!("{op}: B must be 2-D")));
+        }
+        if self.shape[0] != expected_rows {
+            return Err(UFuncError::Msg(format!(
+                "{op}: B rows must match A dimension"
+            )));
+        }
+
+        Ok((Self::interleave_real_values(&self.values), self.shape[1]))
+    }
+
+    fn complex_output_dtype(&self, rhs: Option<&Self>) -> DType {
+        let promoted = rhs.map_or(self.dtype, |other| promote(self.dtype, other.dtype));
+        match promoted {
+            DType::Complex64 | DType::Complex128 => promoted,
+            _ if self.uses_complex_interleaved_storage() => self.dtype,
+            _ => rhs
+                .filter(|other| other.uses_complex_interleaved_storage())
+                .map_or(promoted, |other| other.dtype),
+        }
+    }
+
+    fn complex_matrix_from_interleaved(
+        rows: usize,
+        cols: usize,
+        values: Vec<f64>,
+        dtype: DType,
+    ) -> Result<Self, UFuncError> {
+        Self::new(vec![rows, cols, 2], values, dtype)
+    }
+
+    fn complex_vector_from_interleaved(
+        len: usize,
+        values: Vec<f64>,
+        dtype: DType,
+    ) -> Result<Self, UFuncError> {
+        Self::new(vec![len, 2], values, dtype)
+    }
+
     // ── Additional linalg bridge methods ─────────────────────────
 
     /// Cholesky decomposition (np.linalg.cholesky).
     /// Returns the lower-triangular factor L such that A = L L^T.
     pub fn cholesky(&self) -> Result<Self, UFuncError> {
+        if self.uses_complex_interleaved_storage() {
+            let (values, n, _) = self.as_complex_matrix_input("cholesky", true)?;
+            let result = fnp_linalg::complex_cholesky_nxn(&values, n)
+                .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+            return Self::complex_matrix_from_interleaved(n, n, result, self.dtype);
+        }
+
         if self.shape.len() != 2 || self.shape[0] != self.shape[1] {
             return Err(UFuncError::Msg(
                 "cholesky: input must be a square 2-D array".into(),
@@ -4877,6 +5023,13 @@ impl UFuncArray {
 
     /// Matrix inverse (np.linalg.inv).
     pub fn inv(&self) -> Result<Self, UFuncError> {
+        if self.uses_complex_interleaved_storage() {
+            let (values, n, _) = self.as_complex_matrix_input("inv", true)?;
+            let result = fnp_linalg::complex_inv_nxn(&values, n)
+                .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+            return Self::complex_matrix_from_interleaved(n, n, result, self.dtype);
+        }
+
         if self.shape.len() != 2 || self.shape[0] != self.shape[1] {
             return Err(UFuncError::Msg(
                 "inv: input must be a square 2-D array".into(),
@@ -4911,6 +5064,14 @@ impl UFuncArray {
     /// Solve linear system Ax = b (np.linalg.solve).
     /// A must be square 2-D; b must be 1-D with matching length.
     pub fn solve(&self, b: &Self) -> Result<Self, UFuncError> {
+        if self.uses_complex_interleaved_storage() || b.uses_complex_interleaved_storage() {
+            let (a_values, n, _) = self.as_complex_matrix_input("solve", true)?;
+            let rhs = b.as_complex_vector_input("solve", n)?;
+            let x = fnp_linalg::complex_solve_nxn(&a_values, &rhs, n)
+                .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+            return Self::complex_vector_from_interleaved(n, x, self.complex_output_dtype(Some(b)));
+        }
+
         if self.shape.len() != 2 || self.shape[0] != self.shape[1] {
             return Err(UFuncError::Msg(
                 "solve: A must be a square 2-D array".into(),
@@ -4934,6 +5095,35 @@ impl UFuncArray {
     /// Solve linear system AX = B for multiple RHS columns (np.linalg.solve).
     /// A is n x n, B is n x m. Returns X with shape [n, m].
     pub fn solve_multi(&self, b: &Self) -> Result<Self, UFuncError> {
+        if self.uses_complex_interleaved_storage() || b.uses_complex_interleaved_storage() {
+            let (a_values, n, _) = self.as_complex_matrix_input("solve_multi", true)?;
+            let (rhs_values, m) = b.as_complex_matrix_rhs_input("solve_multi", n)?;
+            let mut x = vec![0.0; 2 * n * m];
+
+            for col in 0..m {
+                let mut rhs = vec![0.0; 2 * n];
+                for row in 0..n {
+                    let src = 2 * (row * m + col);
+                    rhs[2 * row] = rhs_values[src];
+                    rhs[2 * row + 1] = rhs_values[src + 1];
+                }
+                let solution = fnp_linalg::complex_solve_nxn(&a_values, &rhs, n)
+                    .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+                for row in 0..n {
+                    let dst = 2 * (row * m + col);
+                    x[dst] = solution[2 * row];
+                    x[dst + 1] = solution[2 * row + 1];
+                }
+            }
+
+            return Self::complex_matrix_from_interleaved(
+                n,
+                m,
+                x,
+                self.complex_output_dtype(Some(b)),
+            );
+        }
+
         if self.shape.len() != 2 || self.shape[0] != self.shape[1] {
             return Err(UFuncError::Msg(
                 "solve_multi: A must be a square 2-D array".into(),
@@ -5091,14 +5281,42 @@ impl UFuncArray {
     /// QR decomposition (np.linalg.qr).
     /// Returns (Q, R). For m x n input, Q is m x min(m,n), R is min(m,n) x n.
     pub fn qr(&self) -> Result<(Self, Self), UFuncError> {
+        if self.uses_complex_interleaved_storage() {
+            let (values, m, n) = self.as_complex_matrix_input("qr", false)?;
+            let k = m.min(n);
+            let (q_full, r_full) = fnp_linalg::complex_qr_mxn(&values, m, n)
+                .map_err(|e| UFuncError::Msg(format!("{e}")))?;
+            let mut q = vec![0.0; 2 * m * k];
+            for row in 0..m {
+                for col in 0..k {
+                    let src = 2 * (row * m + col);
+                    let dst = 2 * (row * k + col);
+                    q[dst] = q_full[src];
+                    q[dst + 1] = q_full[src + 1];
+                }
+            }
+            let mut r = vec![0.0; 2 * k * n];
+            for row in 0..k {
+                for col in 0..n {
+                    let idx = 2 * (row * n + col);
+                    r[idx] = r_full[idx];
+                    r[idx + 1] = r_full[idx + 1];
+                }
+            }
+            return Ok((
+                Self::complex_matrix_from_interleaved(m, k, q, self.dtype)?,
+                Self::complex_matrix_from_interleaved(k, n, r, self.dtype)?,
+            ));
+        }
+
         if self.shape.len() != 2 {
             return Err(UFuncError::Msg("qr: input must be a 2-D array".into()));
         }
         let m = self.shape[0];
         let n = self.shape[1];
+        let k = m.min(n);
         let (q, r) =
             fnp_linalg::qr_mxn(&self.values, m, n).map_err(|e| UFuncError::Msg(format!("{e}")))?;
-        let k = m.min(n);
         Ok((
             Self {
                 shape: vec![m, k],
@@ -27356,6 +27574,23 @@ mod tests {
     }
 
     #[test]
+    fn cholesky_complex_diagonal_matrix() {
+        let a = UFuncArray::new(
+            vec![2, 2, 2],
+            vec![4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 9.0, 0.0],
+            DType::Complex128,
+        )
+        .unwrap();
+        let l = a.cholesky().unwrap();
+        assert_eq!(l.shape(), &[2, 2, 2]);
+        assert_eq!(l.dtype(), DType::Complex128);
+        let expected = [2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0];
+        for (actual, expected) in l.values().iter().zip(expected) {
+            assert!((actual - expected).abs() < 1e-10);
+        }
+    }
+
+    #[test]
     fn det_identity() {
         let a = UFuncArray::new(
             vec![3, 3],
@@ -27405,6 +27640,32 @@ mod tests {
     }
 
     #[test]
+    fn inv_complex_diagonal_matrix() {
+        let a = UFuncArray::new(
+            vec![2, 2, 2],
+            vec![1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 2.0, -1.0],
+            DType::Complex128,
+        )
+        .unwrap();
+        let inv = a.inv().unwrap();
+        assert_eq!(inv.shape(), &[2, 2, 2]);
+        assert_eq!(inv.dtype(), DType::Complex128);
+        let expected = [0.5, -0.5, 0.0, 0.0, 0.0, 0.0, 0.4, 0.2];
+        for (actual, expected) in inv.values().iter().zip(expected) {
+            assert!((actual - expected).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn inv_complex_requires_interleaved_shape() {
+        let a = UFuncArray::new(vec![2, 2], vec![1.0, 0.0, 0.0, 1.0], DType::Complex128).unwrap();
+        let err = a
+            .inv()
+            .expect_err("missing trailing complex axis should fail");
+        assert!(matches!(err, UFuncError::Msg(message) if message.contains("[rows, cols, 2]")));
+    }
+
+    #[test]
     fn pinv_identity() {
         let a = UFuncArray::new(vec![2, 2], vec![1.0, 0.0, 0.0, 1.0], DType::F64).unwrap();
         let p = a.pinv().unwrap();
@@ -27430,6 +27691,37 @@ mod tests {
         let x = a.solve(&b).unwrap();
         assert!((x.values()[0] - 5.0).abs() < 1e-8);
         assert!((x.values()[1] - (-6.0)).abs() < 1e-8);
+    }
+
+    #[test]
+    fn solve_complex_diagonal_system() {
+        let a = UFuncArray::new(
+            vec![2, 2, 2],
+            vec![1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 2.0, -1.0],
+            DType::Complex128,
+        )
+        .unwrap();
+        let b = UFuncArray::new(vec![2, 2], vec![1.0, 0.0, 2.0, 0.0], DType::Complex128).unwrap();
+        let x = a.solve(&b).unwrap();
+        assert_eq!(x.shape(), &[2, 2]);
+        assert_eq!(x.dtype(), DType::Complex128);
+        let expected = [0.5, -0.5, 0.8, 0.4];
+        for (actual, expected) in x.values().iter().zip(expected) {
+            assert!((actual - expected).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn solve_real_matrix_with_complex_rhs() {
+        let a = UFuncArray::new(vec![2, 2], vec![2.0, 0.0, 0.0, 4.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![2, 2], vec![2.0, 2.0, 8.0, -4.0], DType::Complex128).unwrap();
+        let x = a.solve(&b).unwrap();
+        assert_eq!(x.shape(), &[2, 2]);
+        assert_eq!(x.dtype(), DType::Complex128);
+        let expected = [1.0, 1.0, 2.0, -1.0];
+        for (actual, expected) in x.values().iter().zip(expected) {
+            assert!((actual - expected).abs() < 1e-10);
+        }
     }
 
     #[test]
@@ -27529,6 +27821,55 @@ mod tests {
     }
 
     #[test]
+    fn qr_complex_tall_identity_columns() {
+        let a = UFuncArray::new(
+            vec![3, 2, 2],
+            vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            DType::Complex128,
+        )
+        .unwrap();
+        let (q, r) = a.qr().unwrap();
+        assert_eq!(q.shape(), &[3, 2, 2]);
+        assert_eq!(r.shape(), &[2, 2, 2]);
+        assert_eq!(q.dtype(), DType::Complex128);
+        assert_eq!(r.dtype(), DType::Complex128);
+
+        let mut reconstructed = vec![0.0; a.values().len()];
+        for row in 0..3 {
+            for col in 0..2 {
+                let mut real = 0.0;
+                let mut imag = 0.0;
+                for inner in 0..2 {
+                    let q_idx = 2 * (row * 2 + inner);
+                    let r_idx = 2 * (inner * 2 + col);
+                    let q_real = q.values()[q_idx];
+                    let q_imag = q.values()[q_idx + 1];
+                    let r_real = r.values()[r_idx];
+                    let r_imag = r.values()[r_idx + 1];
+                    real += q_real * r_real - q_imag * r_imag;
+                    imag += q_real * r_imag + q_imag * r_real;
+                }
+                let out_idx = 2 * (row * 2 + col);
+                reconstructed[out_idx] = real;
+                reconstructed[out_idx + 1] = imag;
+            }
+        }
+
+        for (actual, expected) in reconstructed.iter().zip(a.values()) {
+            assert!((actual - expected).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn qr_complex_requires_interleaved_shape() {
+        let a = UFuncArray::new(vec![2, 2], vec![1.0, 0.0, 0.0, 1.0], DType::Complex128).unwrap();
+        let err = a
+            .qr()
+            .expect_err("missing trailing complex axis should fail");
+        assert!(matches!(err, UFuncError::Msg(message) if message.contains("[rows, cols, 2]")));
+    }
+
+    #[test]
     fn cond_identity() {
         let a = UFuncArray::new(
             vec![3, 3],
@@ -27613,6 +27954,24 @@ mod tests {
         let x = a.solve_multi(&b).unwrap();
         assert_eq!(x.shape(), &[2, 3]);
         assert_eq!(x.values(), b.values());
+    }
+
+    #[test]
+    fn solve_multi_real_matrix_with_complex_rhs() {
+        let a = UFuncArray::new(vec![2, 2], vec![2.0, 0.0, 0.0, 4.0], DType::F64).unwrap();
+        let b = UFuncArray::new(
+            vec![2, 2, 2],
+            vec![2.0, 2.0, 4.0, 0.0, 8.0, -4.0, 4.0, 4.0],
+            DType::Complex128,
+        )
+        .unwrap();
+        let x = a.solve_multi(&b).unwrap();
+        assert_eq!(x.shape(), &[2, 2, 2]);
+        assert_eq!(x.dtype(), DType::Complex128);
+        let expected = [1.0, 1.0, 2.0, 0.0, 2.0, -1.0, 1.0, 1.0];
+        for (actual, expected) in x.values().iter().zip(expected) {
+            assert!((actual - expected).abs() < 1e-10);
+        }
     }
 
     #[test]
