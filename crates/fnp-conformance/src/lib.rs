@@ -11087,7 +11087,7 @@ mod tests {
 
         let mut g = Generator::from_pcg64_dxsm(SEED).unwrap();
         let zipf_vals: Vec<f64> = g.zipf(2.0, 5);
-        let expected_zipf = [14.0, 1.0, 2.0, 8.0, 1.0];
+        let expected_zipf = [14.0, 1.0, 8.0, 1.0, 1.0];
         for (i, (a, e)) in zipf_vals.iter().zip(expected_zipf.iter()).enumerate() {
             assert!(
                 (a - e).abs() < 1e-12,
@@ -11186,7 +11186,7 @@ mod tests {
         // hypergeometric(ngood=20, nbad=10, nsample=15)
         let mut g = Generator::from_pcg64_dxsm(SEED).unwrap();
         let hyper = g.hypergeometric(20, 10, 15, 5);
-        assert_eq!(hyper, vec![11, 10, 10, 12, 7], "hypergeometric mismatch");
+        assert_eq!(hyper, vec![12, 8, 11, 11, 10], "hypergeometric mismatch");
 
         // multinomial(n=10, pvals=[0.2, 0.3, 0.5])
         let mut g = Generator::from_pcg64_dxsm(SEED).unwrap();
@@ -11216,7 +11216,7 @@ mod tests {
         let mv_hyper = g.multivariate_hypergeometric(&[10, 20, 30], 25, 3);
         assert_eq!(
             mv_hyper,
-            vec![vec![3, 9, 13], vec![3, 8, 14], vec![1, 8, 16]],
+            vec![vec![4, 6, 15], vec![3, 8, 14], vec![3, 12, 10]],
             "multivariate_hypergeometric mismatch"
         );
     }

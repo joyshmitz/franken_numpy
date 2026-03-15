@@ -5,6 +5,149 @@ mod ziggurat;
 const GOLDEN_GAMMA: u64 = 0x9E37_79B9_7F4A_7C15;
 const MIX_CONST1: u64 = 0xBF58_476D_1CE4_E5B9;
 const MIX_CONST2: u64 = 0x94D0_49BB_1331_11EB;
+
+/// Precomputed log(k!) for k = 0..125, matching NumPy's `logfactorial.c`.
+/// Values are verbatim from NumPy's lookup table for bit-exact parity.
+#[allow(clippy::excessive_precision, clippy::approx_constant)]
+const LOGFACT: [f64; 126] = [
+    0.0,
+    0.0,
+    0.69314718055994529,
+    1.791759469228055,
+    3.1780538303479458,
+    4.7874917427820458,
+    6.5792512120101012,
+    8.5251613610654147,
+    10.604602902745251,
+    12.801827480081469,
+    15.104412573075516,
+    17.502307845873887,
+    19.987214495661885,
+    22.552163853123425,
+    25.19122118273868,
+    27.89927138384089,
+    30.671860106080672,
+    33.505073450136891,
+    36.395445208033053,
+    39.339884187199495,
+    42.335616460753485,
+    45.380138898476908,
+    48.471181351835227,
+    51.606675567764377,
+    54.784729398112319,
+    58.003605222980518,
+    61.261701761002001,
+    64.557538627006338,
+    67.88974313718154,
+    71.257038967168015,
+    74.658236348830158,
+    78.092223553315307,
+    81.557959456115043,
+    85.054467017581516,
+    88.580827542197682,
+    92.136175603687093,
+    95.719694542143202,
+    99.330612454787428,
+    102.96819861451381,
+    106.63176026064346,
+    110.32063971475739,
+    114.03421178146171,
+    117.77188139974507,
+    121.53308151543864,
+    125.3172711493569,
+    129.12393363912722,
+    132.95257503561632,
+    136.80272263732635,
+    140.67392364823425,
+    144.5657439463449,
+    148.47776695177302,
+    152.40959258449735,
+    156.3608363030788,
+    160.3311282166309,
+    164.32011226319517,
+    168.32744544842765,
+    172.35279713916279,
+    176.39584840699735,
+    180.45629141754378,
+    184.53382886144948,
+    188.6281734236716,
+    192.7390472878449,
+    196.86618167289001,
+    201.00931639928152,
+    205.1681994826412,
+    209.34258675253685,
+    213.53224149456327,
+    217.73693411395422,
+    221.95644181913033,
+    226.1905483237276,
+    230.43904356577696,
+    234.70172344281826,
+    238.97838956183432,
+    243.26884900298271,
+    247.57291409618688,
+    251.89040220972319,
+    256.22113555000954,
+    260.56494097186322,
+    264.92164979855278,
+    269.29109765101981,
+    273.67312428569369,
+    278.06757344036612,
+    282.4742926876304,
+    286.89313329542699,
+    291.32395009427029,
+    295.76660135076065,
+    300.22094864701415,
+    304.68685676566872,
+    309.1641935801469,
+    313.65282994987905,
+    318.1526396202093,
+    322.66349912672615,
+    327.1852877037752,
+    331.71788719692847,
+    336.26118197919845,
+    340.81505887079902,
+    345.37940706226686,
+    349.95411804077025,
+    354.53908551944079,
+    359.1342053695754,
+    363.73937555556347,
+    368.35449607240474,
+    372.97946888568902,
+    377.61419787391867,
+    382.25858877306001,
+    386.91254912321756,
+    391.57598821732961,
+    396.24881705179155,
+    400.93094827891576,
+    405.6222961611449,
+    410.32277652693733,
+    415.03230672824964,
+    419.75080559954472,
+    424.47819341825709,
+    429.21439186665157,
+    433.95932399501481,
+    438.71291418612117,
+    443.47508812091894,
+    448.24577274538461,
+    453.02489623849613,
+    457.81238798127816,
+    462.60817852687489,
+    467.4121995716082,
+    472.22438392698058,
+    477.04466549258564,
+    481.87297922988796,
+];
+
+/// Compute log(k!) matching NumPy's `logfactorial()` in `logfactorial.c`.
+/// Uses a lookup table for k <= 125, Stirling series for larger k.
+fn logfactorial(k: i64) -> f64 {
+    if k < LOGFACT.len() as i64 {
+        return LOGFACT[k as usize];
+    }
+    let kf = k as f64;
+    let halfln2pi = 0.9189385332046728;
+    (kf + 0.5) * kf.ln() - kf + (halfln2pi + (1.0 / kf) * (1.0 / 12.0 - 1.0 / (360.0 * kf * kf)))
+}
 pub const DEFAULT_RNG_SEED: u64 = 0xC0DE_CAFE_F00D_BAAD;
 pub const DEFAULT_SEED_SEQUENCE_POOL_SIZE: usize = 4;
 pub const MAX_SEED_SEQUENCE_POOL_SIZE: usize = 256;
@@ -2871,46 +3014,169 @@ impl Generator {
 
     /// Hypergeometric distribution: draws from a population of `ngood + nbad`
     /// containing `ngood` success states, taking `nsample` draws without replacement.
-    /// Uses the direct counting algorithm (draw balls one-by-one).
+    ///
+    /// Uses NumPy's exact algorithm: HRUA (Stadlober 1989) for large samples,
+    /// direct counting via `random_interval()` for small samples.
     pub fn hypergeometric(&mut self, ngood: u64, nbad: u64, nsample: u64, size: usize) -> Vec<u64> {
+        let good = ngood as i64;
+        let bad = nbad as i64;
+        let sample = nsample as i64;
         (0..size)
-            .map(|_| {
-                let mut good_remaining = ngood;
-                let mut total_remaining = ngood + nbad;
-                let mut successes: u64 = 0;
-                for _ in 0..nsample {
-                    if total_remaining == 0 {
-                        break;
-                    }
-                    let u = self.next_f64();
-                    if u < (good_remaining as f64) / (total_remaining as f64) {
-                        successes += 1;
-                        good_remaining -= 1;
-                    }
-                    total_remaining -= 1;
-                }
-                successes
-            })
+            .map(|_| self.sample_hypergeometric(good, bad, sample) as u64)
             .collect()
     }
 
+    /// Single hypergeometric sample matching NumPy's `random_hypergeometric`.
+    fn sample_hypergeometric(&mut self, good: i64, bad: i64, sample: i64) -> i64 {
+        let total = good + bad;
+        if sample >= 10 && sample <= total - 10 {
+            self.hypergeometric_hrua(good, bad, sample)
+        } else {
+            self.hypergeometric_sample(good, bad, sample)
+        }
+    }
+
+    /// Simple hypergeometric sampling via `random_interval()`.
+    /// Matches `hypergeometric_sample()` in NumPy's `random_hypergeometric.c`.
+    fn hypergeometric_sample(&mut self, good: i64, bad: i64, sample: i64) -> i64 {
+        let total = good + bad;
+        let computed_sample = if sample > total / 2 {
+            total - sample
+        } else {
+            sample
+        };
+
+        let mut remaining_total = total;
+        let mut remaining_good = good;
+        let mut cs = computed_sample;
+
+        while cs > 0 && remaining_good > 0 && remaining_total > remaining_good {
+            remaining_total -= 1;
+            if (self.random_interval(remaining_total as u64) as i64) < remaining_good {
+                remaining_good -= 1;
+            }
+            cs -= 1;
+        }
+
+        if remaining_total == remaining_good {
+            remaining_good -= cs;
+        }
+
+        if sample > total / 2 {
+            remaining_good
+        } else {
+            good - remaining_good
+        }
+    }
+
+    /// HRUA (ratio-of-uniforms) hypergeometric sampling.
+    /// Matches `hypergeometric_hrua()` in NumPy's `random_hypergeometric.c`.
+    #[expect(clippy::many_single_char_names)]
+    fn hypergeometric_hrua(&mut self, good: i64, bad: i64, sample: i64) -> i64 {
+        // D1 = 2*sqrt(2/e), D2 = 3 - 2*sqrt(3/e)
+        const D1: f64 = 1.7155277699214135;
+        const D2: f64 = 0.8989161620588988;
+
+        let popsize = good + bad;
+        let computed_sample = sample.min(popsize - sample);
+        let mingoodbad = good.min(bad);
+        let maxgoodbad = good.max(bad);
+
+        let p = (mingoodbad as f64) / (popsize as f64);
+        let q = (maxgoodbad as f64) / (popsize as f64);
+
+        let mu = (computed_sample as f64) * p;
+        let a = mu + 0.5;
+
+        let var = ((popsize - computed_sample) as f64) * (computed_sample as f64) * p * q
+            / ((popsize - 1) as f64);
+        let c = (var + 0.5).sqrt();
+        let h = D1 * c + D2;
+
+        let m = (((computed_sample + 1) as f64) * ((mingoodbad + 1) as f64)
+            / ((popsize + 2) as f64))
+            .floor() as i64;
+
+        let g = logfactorial(m)
+            + logfactorial(mingoodbad - m)
+            + logfactorial(computed_sample - m)
+            + logfactorial(maxgoodbad - computed_sample + m);
+
+        let b = (((computed_sample.min(mingoodbad) + 1) as f64).min(a + 16.0 * c)).floor();
+
+        let mut k;
+        loop {
+            let u = self.next_f64();
+            let v = self.next_f64();
+            let x = a + h * (v - 0.5) / u;
+
+            if x < 0.0 || x >= b {
+                continue;
+            }
+
+            k = x.floor() as i64;
+
+            let gp = logfactorial(k)
+                + logfactorial(mingoodbad - k)
+                + logfactorial(computed_sample - k)
+                + logfactorial(maxgoodbad - computed_sample + k);
+
+            let t = g - gp;
+
+            if u * (4.0 - u) - 3.0 <= t {
+                break;
+            }
+            if u * (u - t) >= 1.0 {
+                continue;
+            }
+            if 2.0 * u.ln() <= t {
+                break;
+            }
+        }
+
+        if good > bad {
+            k = computed_sample - k;
+        }
+        if computed_sample < sample {
+            k = good - k;
+        }
+
+        k
+    }
+
     /// Zipf (Zipfian) distribution with parameter `a > 1`.
-    /// Uses rejection method based on Luc Devroye's algorithm.
+    ///
+    /// Matches `random_zipf()` in NumPy's `distributions.c`.
+    /// Returns integer-valued floats (zipf values are positive integers).
     pub fn zipf(&mut self, a: f64, size: usize) -> Vec<f64> {
-        let b = 2.0_f64.powf(a - 1.0);
         (0..size)
-            .map(|_| {
-                loop {
-                    let u = 1.0 - self.next_f64();
-                    let v = self.next_f64();
-                    let x = (u.powf(-1.0 / (a - 1.0))).floor();
-                    let t = ((1.0 + 1.0 / x).powf(a - 1.0)) / b;
-                    if v * x * (t - 1.0) / (b - 1.0) <= t / b {
-                        return x;
-                    }
-                }
-            })
+            .map(|_| self.sample_zipf_single(a) as f64)
             .collect()
+    }
+
+    fn sample_zipf_single(&mut self, a: f64) -> i64 {
+        if a >= 1025.0 {
+            return 1;
+        }
+        let am1 = a - 1.0;
+        let b = 2.0_f64.powf(am1);
+        let umin = (i64::MAX as f64).powf(-am1);
+
+        loop {
+            let u01 = self.next_f64();
+            let u = u01 * umin + (1.0 - u01); // U in (Umin, 1]
+            let v = self.next_f64();
+            let x = u.powf(-1.0 / am1).floor();
+
+            if x > (i64::MAX as f64) || x < 1.0 {
+                continue;
+            }
+
+            let t = (1.0 + 1.0 / x).powf(am1);
+            if v * x * (t - 1.0) / (b - 1.0) <= t / b {
+                return x as i64;
+            }
+        }
     }
 
     /// Wald (inverse Gaussian) distribution (matching NumPy's algorithm).
@@ -3000,7 +3266,8 @@ impl Generator {
                     let ngood = color_count;
                     let nbad = remaining - color_count;
                     let n = draws_left;
-                    let drawn = self.hypergeometric_single(ngood, nbad, n);
+                    let drawn =
+                        self.sample_hypergeometric(ngood as i64, nbad as i64, n as i64) as u64;
                     result.push(drawn);
                     remaining -= color_count;
                     draws_left -= drawn;
@@ -3008,32 +3275,6 @@ impl Generator {
                 result
             })
             .collect()
-    }
-
-    /// Single draw from hypergeometric distribution (helper for multivariate_hypergeometric).
-    fn hypergeometric_single(&mut self, ngood: u64, nbad: u64, nsample: u64) -> u64 {
-        let total = ngood + nbad;
-        if nsample == 0 || ngood == 0 {
-            return 0;
-        }
-        if nsample >= total {
-            return ngood;
-        }
-        let mut good_remaining = ngood;
-        let mut total_remaining = total;
-        let mut successes = 0u64;
-        for _ in 0..nsample {
-            let u = self.next_f64();
-            if u < good_remaining as f64 / total_remaining as f64 {
-                successes += 1;
-                good_remaining -= 1;
-            }
-            total_remaining -= 1;
-            if good_remaining == 0 || total_remaining == 0 {
-                break;
-            }
-        }
-        successes
     }
 
     /// Full multivariate normal with arbitrary covariance matrix.
@@ -5740,7 +5981,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "parity gap: our zipf uses different rejection algorithm than NumPy"]
     fn oracle_zipf() {
         let mut g = oracle_gen();
         let vals = g.zipf(2.0, 10);
@@ -5796,7 +6036,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "parity gap: our hypergeometric uses trial-by-trial, NumPy uses H2PE algorithm"]
     fn oracle_hypergeometric() {
         let mut g = oracle_gen();
         let vals = g.hypergeometric(20, 30, 10, 10);
