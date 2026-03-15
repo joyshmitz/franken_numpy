@@ -1410,6 +1410,54 @@ impl RandomState {
     }
 }
 
+/// Cached precomputed parameters for NumPy-compatible binomial sampling.
+/// Avoids recomputation when the same `(n, p)` pair is used repeatedly.
+/// Matches `binomial_t` in NumPy's distributions.h.
+#[derive(Debug, Clone)]
+struct BinomialCache {
+    has_binomial: bool,
+    psave: f64,
+    nsave: i64,
+    r: f64,
+    q: f64,
+    fm: f64,
+    m: i64,
+    p1: f64,
+    xm: f64,
+    xl: f64,
+    xr: f64,
+    c: f64,
+    laml: f64,
+    lamr: f64,
+    p2: f64,
+    p3: f64,
+    p4: f64,
+}
+
+impl BinomialCache {
+    fn new() -> Self {
+        Self {
+            has_binomial: false,
+            psave: 0.0,
+            nsave: 0,
+            r: 0.0,
+            q: 0.0,
+            fm: 0.0,
+            m: 0,
+            p1: 0.0,
+            xm: 0.0,
+            xl: 0.0,
+            xr: 0.0,
+            c: 0.0,
+            laml: 0.0,
+            lamr: 0.0,
+            p2: 0.0,
+            p3: 0.0,
+            p4: 0.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Generator {
     bit_generator: BitGenerator,
@@ -1901,19 +1949,233 @@ impl Generator {
     /// Generate binomially distributed samples.
     ///
     /// Mimics `rng.binomial(n, p, size)`.
+    /// Uses NumPy's exact algorithm: BTPE (Kachitvichyanukul & Schmeiser 1988)
+    /// for large `min(p,q)*n`, inversion for small `min(p,q)*n <= 30`.
     #[must_use]
     pub fn binomial(&mut self, n: u64, p: f64, size: usize) -> Vec<u64> {
+        let n_i64 = n as i64;
+        // Precompute cached BTPE/inversion parameters (shared across all samples)
+        let mut cache = BinomialCache::new();
         (0..size)
-            .map(|_| {
-                let mut successes = 0u64;
-                for _ in 0..n {
-                    if self.next_f64() < p {
-                        successes += 1;
-                    }
-                }
-                successes
-            })
+            .map(|_| self.sample_binomial_single(n_i64, p, &mut cache) as u64)
             .collect()
+    }
+
+    /// Single binomial sample matching NumPy's `random_binomial` dispatcher.
+    fn sample_binomial_single(
+        &mut self,
+        n: i64,
+        p: f64,
+        cache: &mut BinomialCache,
+    ) -> i64 {
+        if n == 0 || p == 0.0 {
+            return 0;
+        }
+
+        if p <= 0.5 {
+            if p * (n as f64) <= 30.0 {
+                self.binomial_inversion(n, p, cache)
+            } else {
+                self.binomial_btpe(n, p, cache)
+            }
+        } else {
+            let q = 1.0 - p;
+            if q * (n as f64) <= 30.0 {
+                n - self.binomial_inversion(n, q, cache)
+            } else {
+                n - self.binomial_btpe(n, q, cache)
+            }
+        }
+    }
+
+    /// BTPE algorithm for binomial sampling (Kachitvichyanukul & Schmeiser 1988).
+    /// Matches `random_binomial_btpe()` in NumPy's distributions.c.
+    #[expect(clippy::many_single_char_names)]
+    fn binomial_btpe(&mut self, n: i64, p: f64, cache: &mut BinomialCache) -> i64 {
+        if !cache.has_binomial || cache.nsave != n || cache.psave != p {
+            cache.nsave = n;
+            cache.psave = p;
+            cache.has_binomial = true;
+            cache.r = p.min(1.0 - p);
+            cache.q = 1.0 - cache.r;
+            cache.fm = (n as f64) * cache.r + cache.r;
+            cache.m = cache.fm.floor() as i64;
+            cache.p1 =
+                (2.195 * ((n as f64) * cache.r * cache.q).sqrt() - 4.6 * cache.q).floor() + 0.5;
+            cache.xm = (cache.m as f64) + 0.5;
+            cache.xl = cache.xm - cache.p1;
+            cache.xr = cache.xm + cache.p1;
+            cache.c = 0.134 + 20.5 / (15.3 + cache.m as f64);
+            let a1 = (cache.fm - cache.xl) / (cache.fm - cache.xl * cache.r);
+            cache.laml = a1 * (1.0 + a1 / 2.0);
+            let a2 = (cache.xr - cache.fm) / (cache.xr * cache.q);
+            cache.lamr = a2 * (1.0 + a2 / 2.0);
+            cache.p2 = cache.p1 * (1.0 + 2.0 * cache.c);
+            cache.p3 = cache.p2 + cache.c / cache.laml;
+            cache.p4 = cache.p3 + cache.c / cache.lamr;
+        }
+
+        let r = cache.r;
+        let q = cache.q;
+        let m = cache.m;
+        let p1 = cache.p1;
+        let xm = cache.xm;
+        let xl = cache.xl;
+        let xr = cache.xr;
+        let c = cache.c;
+        let laml = cache.laml;
+        let lamr = cache.lamr;
+        let p2 = cache.p2;
+        let p3 = cache.p3;
+        let p4 = cache.p4;
+
+        let nrq = (n as f64) * r * q;
+        let s = r / q;
+        let a = s * ((n + 1) as f64);
+
+        loop {
+            // Step 10
+            let u = self.next_f64() * p4;
+            let mut v = self.next_f64();
+
+            let y;
+
+            if u <= p1 {
+                // Triangle region
+                y = (xm - p1 * v + u).floor() as i64;
+            } else if u <= p2 {
+                // Parallelogram region
+                let x = xl + (u - p1) / c;
+                v = v * c + 1.0 - (m as f64 - x + 0.5).abs() / p1;
+                if v > 1.0 {
+                    continue;
+                }
+                y = x.floor() as i64;
+            } else if u <= p3 {
+                // Left exponential tail
+                y = (xl + v.ln() / laml).floor() as i64;
+                if y < 0 || v == 0.0 {
+                    continue;
+                }
+                v *= (u - p2) * laml;
+            } else {
+                // Right exponential tail
+                y = (xr - v.ln() / lamr).floor() as i64;
+                if y > n || v == 0.0 {
+                    continue;
+                }
+                v *= (u - p3) * lamr;
+            };
+
+            // Step 50: acceptance test
+            let k = (y - m).unsigned_abs();
+            if k > 20 && (k as f64) < nrq / 2.0 - 1.0 {
+                // Step 52: squeeze using upper and lower bounds on log(f)
+                let rho = ((k as f64) / nrq)
+                    * (((k as f64) * ((k as f64) / 3.0 + 0.625) + 0.16666666666666666) / nrq
+                        + 0.5);
+                let t = -(k as f64) * (k as f64) / (2.0 * nrq);
+                let log_v = v.ln();
+                if log_v < t - rho {
+                    return y; // Step 60 accept
+                }
+                if log_v > t + rho {
+                    continue; // reject → Step 10
+                }
+
+                // Full Stirling acceptance check
+                let x1 = (y + 1) as f64;
+                let f1 = (m + 1) as f64;
+                let z = (n + 1 - m) as f64;
+                let w = (n - y + 1) as f64;
+                let x2 = x1 * x1;
+                let f2 = f1 * f1;
+                let z2 = z * z;
+                let w2 = w * w;
+                if log_v
+                    > (xm * (f1 / x1).ln()
+                        + ((n - m) as f64 + 0.5) * (z / w).ln()
+                        + ((y - m) as f64) * (w * r / (x1 * q)).ln()
+                        + (13680.0
+                            - (462.0 - (132.0 - (99.0 - 140.0 / f2) / f2) / f2) / f2)
+                            / f1
+                            / 166320.0
+                        + (13680.0
+                            - (462.0 - (132.0 - (99.0 - 140.0 / z2) / z2) / z2) / z2)
+                            / z
+                            / 166320.0
+                        + (13680.0
+                            - (462.0 - (132.0 - (99.0 - 140.0 / x2) / x2) / x2) / x2)
+                            / x1
+                            / 166320.0
+                        + (13680.0
+                            - (462.0 - (132.0 - (99.0 - 140.0 / w2) / w2) / w2) / w2)
+                            / w
+                            / 166320.0)
+                {
+                    continue; // reject → Step 10
+                }
+                return y; // accept
+            }
+
+            // k <= 20 or close to mode: direct probability ratio test
+            let mut f_val = 1.0;
+            if m < y {
+                for i in (m + 1)..=y {
+                    f_val *= a / (i as f64) - s;
+                }
+            } else if m > y {
+                for i in (y + 1)..=m {
+                    f_val /= a / (i as f64) - s;
+                }
+            }
+            if v <= f_val {
+                return y; // Step 60 accept
+            }
+            // reject → Step 10 (loop continues)
+        }
+    }
+
+    /// Inversion algorithm for binomial sampling (small n*p).
+    /// Matches `random_binomial_inversion()` in NumPy's distributions.c.
+    fn binomial_inversion(
+        &mut self,
+        n: i64,
+        p: f64,
+        cache: &mut BinomialCache,
+    ) -> i64 {
+        if !cache.has_binomial || cache.nsave != n || cache.psave != p {
+            cache.nsave = n;
+            cache.psave = p;
+            cache.has_binomial = true;
+            cache.q = 1.0 - p;
+            // qn = (1-p)^n computed via log1p for numerical stability
+            cache.r = ((n as f64) * (-p).ln_1p()).exp();
+            let np = (n as f64) * p;
+            cache.m = (n as f64).min(np + 10.0 * (np * cache.q + 1.0).sqrt()) as i64;
+        }
+
+        let q = cache.q;
+        let qn = cache.r;
+        let bound = cache.m;
+
+        let mut x: i64 = 0;
+        let mut px = qn;
+        let mut u = self.next_f64();
+        loop {
+            if u <= px {
+                return x;
+            }
+            x += 1;
+            if x > bound {
+                x = 0;
+                px = qn;
+                u = self.next_f64();
+            } else {
+                u -= px;
+                px *= ((n - x + 1) as f64) * p / ((x as f64) * q);
+            }
+        }
     }
 
     /// Randomly choose elements from a 1-D array, with or without replacement.
@@ -2323,35 +2585,28 @@ impl Generator {
         (0..size)
             .map(|_| {
                 let mut result = vec![0u64; pvals.len()];
-                let mut remaining = n;
+                let mut remaining = n as i64;
                 let mut p_remaining = 1.0;
+                let mut cache = BinomialCache::new();
                 for (i, &p) in pvals.iter().enumerate() {
                     if remaining == 0 || i == pvals.len() - 1 {
-                        result[i] = remaining;
+                        result[i] = remaining as u64;
                         break;
                     }
-                    let draws = self.sample_binomial_single(remaining, p / p_remaining);
-                    result[i] = draws;
+                    let p_cond = (p / p_remaining).clamp(0.0, 1.0);
+                    let draws = self.sample_binomial_single(remaining, p_cond, &mut cache);
+                    result[i] = draws as u64;
                     remaining -= draws;
                     p_remaining -= p;
                     if p_remaining <= 0.0 {
                         p_remaining = 1e-15;
                     }
+                    // Invalidate cache since (n, p) changed for next category
+                    cache.has_binomial = false;
                 }
                 result
             })
             .collect()
-    }
-
-    fn sample_binomial_single(&mut self, n: u64, p: f64) -> u64 {
-        let p_clamped = p.clamp(0.0, 1.0);
-        let mut count = 0u64;
-        for _ in 0..n {
-            if self.next_f64() < p_clamped {
-                count += 1;
-            }
-        }
-        count
     }
 
     /// Dirichlet distribution (np.random.dirichlet).
@@ -5412,7 +5667,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "parity gap: our binomial uses n Bernoulli trials, NumPy uses BTPE algorithm"]
     fn oracle_binomial() {
         let mut g = oracle_gen();
         let vals = g.binomial(10, 0.5, 10);
@@ -5551,7 +5805,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "parity gap: depends on binomial which uses different algorithm"]
     fn oracle_multinomial() {
         let mut g = oracle_gen();
         let vals = g.multinomial(20, &[0.3, 0.5, 0.2], 3);

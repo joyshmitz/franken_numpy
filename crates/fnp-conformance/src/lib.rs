@@ -11073,7 +11073,7 @@ mod tests {
         let binom: Vec<u64> = g.binomial(10, 0.3, 5);
         assert_eq!(
             binom,
-            vec![1, 2, 4, 2, 2],
+            vec![5, 2, 2, 2, 3],
             "binomial(10,0.3) sequence mismatch"
         );
 
@@ -11193,7 +11193,7 @@ mod tests {
         let multi = g.multinomial(10, &[0.2, 0.3, 0.5], 3);
         assert_eq!(
             multi,
-            vec![vec![0, 3, 7], vec![0, 3, 7], vec![2, 7, 1]],
+            vec![vec![4, 2, 4], vec![1, 3, 6], vec![2, 5, 3]],
             "multinomial mismatch"
         );
 
