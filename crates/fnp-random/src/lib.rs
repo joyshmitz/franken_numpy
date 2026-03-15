@@ -1926,6 +1926,9 @@ impl Generator {
         replace: bool,
     ) -> Result<Vec<f64>, RandomError> {
         let n = a.len();
+        if n == 0 && size > 0 {
+            return Err(RandomError::InvalidUpperBound);
+        }
         if !replace && size > n {
             return Err(RandomError::InvalidUpperBound);
         }
