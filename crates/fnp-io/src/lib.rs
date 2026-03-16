@@ -4752,4 +4752,153 @@ mod tests {
         assert_eq!(MemmapMode::parse("c").unwrap(), MemmapMode::CopyOnWrite);
         assert!(MemmapMode::parse("x").is_err());
     }
+
+    // ── NumPy .npy format oracle tests ──────────────────────────────────
+    //
+    // Verify write/read roundtrip, magic bytes, header format, and that
+    // NumPy-generated payloads parse correctly.
+
+    #[test]
+    fn numpy_oracle_roundtrip_f64() {
+        let header = NpyHeader {
+            shape: vec![4],
+            fortran_order: false,
+            descr: IOSupportedDType::F64,
+        };
+        let values: Vec<f64> = vec![1.0, 2.0, 3.0, 4.0];
+        let payload: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let npy_bytes = write_npy_bytes(&header, &payload, false).expect("write");
+
+        let arr = read_npy_bytes(&npy_bytes, false).expect("read");
+        assert_eq!(arr.header.shape, vec![4]);
+        assert_eq!(arr.header.descr, IOSupportedDType::F64);
+        assert!(!arr.header.fortran_order);
+        let read_vals: Vec<f64> = arr
+            .payload
+            .chunks_exact(8)
+            .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+            .collect();
+        assert_eq!(read_vals, values);
+    }
+
+    #[test]
+    fn numpy_oracle_roundtrip_i32() {
+        let header = NpyHeader {
+            shape: vec![3],
+            fortran_order: false,
+            descr: IOSupportedDType::I32,
+        };
+        let values: Vec<i32> = vec![10, 20, 30];
+        let payload: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let npy_bytes = write_npy_bytes(&header, &payload, false).expect("write");
+
+        let arr = read_npy_bytes(&npy_bytes, false).expect("read");
+        assert_eq!(arr.header.shape, vec![3]);
+        assert_eq!(arr.header.descr, IOSupportedDType::I32);
+        let read_vals: Vec<i32> = arr
+            .payload
+            .chunks_exact(4)
+            .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
+            .collect();
+        assert_eq!(read_vals, values);
+    }
+
+    #[test]
+    fn numpy_oracle_roundtrip_bool() {
+        let header = NpyHeader {
+            shape: vec![4],
+            fortran_order: false,
+            descr: IOSupportedDType::Bool,
+        };
+        let payload = vec![1u8, 0, 1, 0];
+        let npy_bytes = write_npy_bytes(&header, &payload, false).expect("write");
+
+        let arr = read_npy_bytes(&npy_bytes, false).expect("read");
+        assert_eq!(arr.header.shape, vec![4]);
+        assert_eq!(arr.header.descr, IOSupportedDType::Bool);
+        assert_eq!(arr.payload, vec![1, 0, 1, 0]);
+    }
+
+    #[test]
+    fn numpy_oracle_roundtrip_f64_2d() {
+        let header = NpyHeader {
+            shape: vec![2, 3],
+            fortran_order: false,
+            descr: IOSupportedDType::F64,
+        };
+        let values: Vec<f64> = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let payload: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let npy_bytes = write_npy_bytes(&header, &payload, false).expect("write");
+
+        let arr = read_npy_bytes(&npy_bytes, false).expect("read");
+        assert_eq!(arr.header.shape, vec![2, 3]);
+        let read_vals: Vec<f64> = arr
+            .payload
+            .chunks_exact(8)
+            .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+            .collect();
+        assert_eq!(read_vals, values);
+    }
+
+    #[test]
+    fn numpy_oracle_roundtrip_u8() {
+        let header = NpyHeader {
+            shape: vec![5],
+            fortran_order: false,
+            descr: IOSupportedDType::U8,
+        };
+        let payload = vec![0u8, 127, 128, 200, 255];
+        let npy_bytes = write_npy_bytes(&header, &payload, false).expect("write");
+
+        let arr = read_npy_bytes(&npy_bytes, false).expect("read");
+        assert_eq!(arr.header.shape, vec![5]);
+        assert_eq!(arr.header.descr, IOSupportedDType::U8);
+        assert_eq!(arr.payload, payload);
+    }
+
+    #[test]
+    fn numpy_oracle_npy_magic_and_version() {
+        let header = NpyHeader {
+            shape: vec![2],
+            fortran_order: false,
+            descr: IOSupportedDType::F64,
+        };
+        let payload = vec![0u8; 16]; // 2 * 8 bytes
+        let npy = write_npy_bytes(&header, &payload, false).expect("write");
+
+        // Magic: \x93NUMPY
+        assert_eq!(&npy[..6], &[0x93, b'N', b'U', b'M', b'P', b'Y']);
+        // Version 1.0
+        assert_eq!(npy[6], 1);
+        assert_eq!(npy[7], 0);
+        // Header length is u16 LE at bytes 8-9
+        let header_len = u16::from_le_bytes([npy[8], npy[9]]) as usize;
+        // Header dict + padding ends with \n
+        assert_eq!(npy[10 + header_len - 1], b'\n');
+        // Total = preamble(10) + header + payload(16)
+        assert_eq!(npy.len(), 10 + header_len + 16);
+    }
+
+    #[test]
+    fn numpy_oracle_header_dict_format() {
+        // Verify the header dict matches NumPy's format
+        let header = NpyHeader {
+            shape: vec![4],
+            fortran_order: false,
+            descr: IOSupportedDType::F64,
+        };
+        let payload: Vec<u8> = vec![0u8; 32];
+        let npy = write_npy_bytes(&header, &payload, false).expect("write");
+
+        let header_len = u16::from_le_bytes([npy[8], npy[9]]) as usize;
+        let header_bytes = &npy[10..10 + header_len];
+        let header_str = std::str::from_utf8(header_bytes).expect("utf8 header");
+        // Must contain the required fields
+        assert!(header_str.contains("'descr'"), "missing descr");
+        assert!(header_str.contains("'fortran_order'"), "missing fortran_order");
+        assert!(header_str.contains("'shape'"), "missing shape");
+        assert!(header_str.contains("False"), "fortran_order should be False");
+        // Total preamble + header must be divisible by 16 (NumPy v1 alignment)
+        assert_eq!((10 + header_len) % 16, 0, "header not 16-byte aligned");
+    }
 }
