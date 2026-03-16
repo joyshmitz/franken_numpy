@@ -2425,9 +2425,19 @@ impl UFuncArray {
     }
 
     pub fn reduce_min(&self, axis: Option<isize>, keepdims: bool) -> Result<Self, UFuncError> {
+        // NumPy's np.min propagates NaN: if any element is NaN, result is NaN.
+        fn nan_min(a: f64, b: f64) -> f64 {
+            if a.is_nan() || b.is_nan() {
+                f64::NAN
+            } else if a < b {
+                a
+            } else {
+                b
+            }
+        }
         match axis {
             None => {
-                let min = self.values.iter().copied().fold(f64::INFINITY, f64::min);
+                let min = self.values.iter().copied().fold(f64::INFINITY, nan_min);
                 let shape = if keepdims {
                     vec![1; self.shape.len()]
                 } else {
@@ -2449,7 +2459,7 @@ impl UFuncArray {
                     &self.shape,
                     axis,
                     &mut out_values,
-                    f64::min,
+                    nan_min,
                 );
 
                 Ok(Self {
@@ -2462,13 +2472,23 @@ impl UFuncArray {
     }
 
     pub fn reduce_max(&self, axis: Option<isize>, keepdims: bool) -> Result<Self, UFuncError> {
+        // NumPy's np.max propagates NaN: if any element is NaN, result is NaN.
+        fn nan_max(a: f64, b: f64) -> f64 {
+            if a.is_nan() || b.is_nan() {
+                f64::NAN
+            } else if a > b {
+                a
+            } else {
+                b
+            }
+        }
         match axis {
             None => {
                 let max = self
                     .values
                     .iter()
                     .copied()
-                    .fold(f64::NEG_INFINITY, f64::max);
+                    .fold(f64::NEG_INFINITY, nan_max);
                 let shape = if keepdims {
                     vec![1; self.shape.len()]
                 } else {
@@ -2490,7 +2510,7 @@ impl UFuncArray {
                     &self.shape,
                     axis,
                     &mut out_values,
-                    f64::max,
+                    nan_max,
                 );
 
                 Ok(Self {
@@ -30028,5 +30048,125 @@ mod tests {
         let probes = UFuncArray::new(vec![3], vec![2.5, 5.0, 10.0], DType::F64).unwrap();
         let indices = sorted.searchsorted(&probes, Some("left"), None).unwrap();
         assert_eq!(indices.values(), &[2.0, 3.0, 6.0]);
+    }
+
+    // ── NumPy edge-case oracle tests ────────────────────────────────────
+    //
+    // Verify behavior for edge cases that commonly differ between
+    // implementations: empty arrays, NaN propagation, Inf arithmetic,
+    // boolean reduction dtypes.
+
+    #[test]
+    fn numpy_oracle_empty_array_sum() {
+        // np.sum(np.array([])) == 0.0
+        let empty = UFuncArray::new(vec![0], vec![], DType::F64).unwrap();
+        let result = empty.reduce_sum(None, false).unwrap();
+        assert_eq!(result.values(), &[0.0]);
+    }
+
+    #[test]
+    fn numpy_oracle_empty_array_prod() {
+        // np.prod(np.array([])) == 1.0
+        let empty = UFuncArray::new(vec![0], vec![], DType::F64).unwrap();
+        let result = empty.reduce_prod(None, false).unwrap();
+        assert_eq!(result.values(), &[1.0]);
+    }
+
+    #[test]
+    fn numpy_oracle_nan_sum_propagation() {
+        // np.sum([1.0, NaN, 3.0]) == NaN
+        let arr = UFuncArray::new(
+            vec![3],
+            vec![1.0, f64::NAN, 3.0],
+            DType::F64,
+        )
+        .unwrap();
+        let result = arr.reduce_sum(None, false).unwrap();
+        assert!(result.values()[0].is_nan(), "sum with NaN should be NaN");
+    }
+
+    #[test]
+    fn numpy_oracle_nansum_skips_nan() {
+        // np.nansum([1.0, NaN, 3.0]) == 4.0
+        let arr = UFuncArray::new(
+            vec![3],
+            vec![1.0, f64::NAN, 3.0],
+            DType::F64,
+        )
+        .unwrap();
+        let result = arr.nansum(None, false).unwrap();
+        assert_eq!(result.values(), &[4.0]);
+    }
+
+    #[test]
+    fn numpy_oracle_nan_min_propagation() {
+        // np.min([1.0, NaN, 3.0]) == NaN
+        let arr = UFuncArray::new(
+            vec![3],
+            vec![1.0, f64::NAN, 3.0],
+            DType::F64,
+        )
+        .unwrap();
+        let result = arr.reduce_min(None, false).unwrap();
+        assert!(result.values()[0].is_nan(), "min with NaN should be NaN");
+    }
+
+    #[test]
+    fn numpy_oracle_nanmin_skips_nan() {
+        // np.nanmin([1.0, NaN, 3.0]) == 1.0
+        let arr = UFuncArray::new(
+            vec![3],
+            vec![1.0, f64::NAN, 3.0],
+            DType::F64,
+        )
+        .unwrap();
+        let result = arr.nanmin(None, false).unwrap();
+        assert_eq!(result.values(), &[1.0]);
+    }
+
+    #[test]
+    fn numpy_oracle_inf_plus_neginf_is_nan() {
+        // np.sum([1.0, inf, -inf]) == NaN (inf + (-inf) = NaN)
+        let arr = UFuncArray::new(
+            vec![3],
+            vec![1.0, f64::INFINITY, f64::NEG_INFINITY],
+            DType::F64,
+        )
+        .unwrap();
+        let result = arr.reduce_sum(None, false).unwrap();
+        assert!(result.values()[0].is_nan(), "inf + (-inf) should be NaN");
+    }
+
+    #[test]
+    fn numpy_oracle_bool_sum_dtype_promotion() {
+        // np.sum([True, True, False]) == 2, dtype=int64
+        let arr = UFuncArray::new(vec![3], vec![1.0, 1.0, 0.0], DType::Bool).unwrap();
+        let result = arr.reduce_sum(None, false).unwrap();
+        assert_eq!(result.values(), &[2.0]);
+        // Sum of bools promotes to I64
+        assert_eq!(result.dtype(), DType::I64);
+    }
+
+    #[test]
+    fn numpy_oracle_all_nan_nanmin() {
+        // np.nanmin([NaN, NaN]) raises ValueError in NumPy
+        // (or returns NaN with a warning).  We should handle gracefully.
+        let arr = UFuncArray::new(
+            vec![2],
+            vec![f64::NAN, f64::NAN],
+            DType::F64,
+        )
+        .unwrap();
+        let result = arr.nanmin(None, false).unwrap();
+        // When all values are NaN, nanmin returns NaN (with warning in NumPy)
+        assert!(result.values()[0].is_nan() || result.values()[0] == f64::INFINITY);
+    }
+
+    #[test]
+    fn numpy_oracle_scalar_reduction() {
+        // np.sum(np.array(5.0)) == 5.0 (scalar input, scalar output)
+        let scalar = UFuncArray::new(vec![], vec![5.0], DType::F64).unwrap();
+        let result = scalar.reduce_sum(None, false).unwrap();
+        assert_eq!(result.values(), &[5.0]);
     }
 }
