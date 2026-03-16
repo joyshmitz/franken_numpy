@@ -9758,12 +9758,20 @@ impl UFuncArray {
                 if self.values.is_empty() {
                     return Err(UFuncError::Msg("ptp of empty array".to_string()));
                 }
-                let min = self.values.iter().copied().fold(f64::INFINITY, f64::min);
-                let max = self
-                    .values
-                    .iter()
-                    .copied()
-                    .fold(f64::NEG_INFINITY, f64::max);
+                // NaN-propagating min/max matching NumPy's ptp behavior
+                let mut min = f64::INFINITY;
+                let mut max = f64::NEG_INFINITY;
+                for &v in &self.values {
+                    if v.is_nan() {
+                        return Ok(Self::scalar(f64::NAN, self.dtype));
+                    }
+                    if v < min {
+                        min = v;
+                    }
+                    if v > max {
+                        max = v;
+                    }
+                }
                 Ok(Self::scalar(max - min, self.dtype))
             }
             Some(ax) => {
@@ -14723,16 +14731,19 @@ impl MaskedArray {
         if compressed.values().is_empty() {
             return Err(MAError::Msg("ptp: no unmasked elements".into()));
         }
-        let mn = compressed
-            .values()
-            .iter()
-            .copied()
-            .fold(f64::INFINITY, f64::min);
-        let mx = compressed
-            .values()
-            .iter()
-            .copied()
-            .fold(f64::NEG_INFINITY, f64::max);
+        let mut mn = f64::INFINITY;
+        let mut mx = f64::NEG_INFINITY;
+        for &v in compressed.values() {
+            if v.is_nan() {
+                return Ok(f64::NAN);
+            }
+            if v < mn {
+                mn = v;
+            }
+            if v > mx {
+                mx = v;
+            }
+        }
         Ok(mx - mn)
     }
 
@@ -30168,5 +30179,37 @@ mod tests {
         let scalar = UFuncArray::new(vec![], vec![5.0], DType::F64).unwrap();
         let result = scalar.reduce_sum(None, false).unwrap();
         assert_eq!(result.values(), &[5.0]);
+    }
+
+    #[test]
+    fn numpy_oracle_nan_max_propagation() {
+        // np.max([1.0, NaN, 3.0]) == NaN
+        let arr = UFuncArray::new(vec![3], vec![1.0, f64::NAN, 3.0], DType::F64).unwrap();
+        let result = arr.reduce_max(None, false).unwrap();
+        assert!(result.values()[0].is_nan(), "max with NaN should be NaN");
+    }
+
+    #[test]
+    fn numpy_oracle_ptp_nan_propagation() {
+        // np.ptp([1.0, NaN, 3.0]) == NaN
+        let arr = UFuncArray::new(vec![3], vec![1.0, f64::NAN, 3.0], DType::F64).unwrap();
+        let result = arr.ptp(None).unwrap();
+        assert!(result.values()[0].is_nan(), "ptp with NaN should be NaN");
+    }
+
+    #[test]
+    fn numpy_oracle_argmin_returns_nan_index() {
+        // np.argmin([3.0, NaN, 1.0]) == 1 (index of first NaN)
+        let arr = UFuncArray::new(vec![3], vec![3.0, f64::NAN, 1.0], DType::F64).unwrap();
+        let result = arr.reduce_argmin(None).unwrap();
+        assert_eq!(result.values(), &[1.0]);
+    }
+
+    #[test]
+    fn numpy_oracle_argmax_returns_nan_index() {
+        // np.argmax([3.0, NaN, 1.0]) == 1 (index of first NaN)
+        let arr = UFuncArray::new(vec![3], vec![3.0, f64::NAN, 1.0], DType::F64).unwrap();
+        let result = arr.reduce_argmax(None).unwrap();
+        assert_eq!(result.values(), &[1.0]);
     }
 }
