@@ -30294,4 +30294,61 @@ mod tests {
         let result = arr.quantile(0.5, None).unwrap();
         assert!(result.values()[0].is_nan(), "quantile should propagate NaN");
     }
+
+    // ── End-to-end workflow oracle tests ─────────────────────────────────
+    //
+    // Chain multiple operations together the way real users do, verifying
+    // the combined result matches NumPy exactly.
+
+    const WORKFLOW_TOL: f64 = 1e-12;
+
+    #[test]
+    fn workflow_zscore_normalization() {
+        // z = (data - mean(data)) / std(data)
+        let data = UFuncArray::new(vec![5], vec![1.0, 2.0, 3.0, 4.0, 5.0], DType::F64).unwrap();
+        let mean = data.reduce_mean(None, false).unwrap();
+        let std = data.reduce_std(None, false, 0).unwrap();
+        let centered = data.elementwise_binary(&mean.broadcast_to(&[5]).unwrap(), BinaryOp::Sub).unwrap();
+        let z = centered.elementwise_binary(&std.broadcast_to(&[5]).unwrap(), BinaryOp::Div).unwrap();
+        let s2 = std::f64::consts::SQRT_2;
+        let expected = [-s2, -s2 / 2.0, 0.0, s2 / 2.0, s2];
+        for (i, (&got, &exp)) in z.values().iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (got - exp).abs() < WORKFLOW_TOL,
+                "zscore[{i}]: got {got}, expected {exp}"
+            );
+        }
+    }
+
+    #[test]
+    fn workflow_sort_cumsum_percentile() {
+        let raw = UFuncArray::new(vec![5], vec![5.0, 1.0, 3.0, 2.0, 4.0], DType::F64).unwrap();
+        let sorted = raw.sort(None, None).unwrap();
+        assert_eq!(sorted.values(), &[1.0, 2.0, 3.0, 4.0, 5.0]);
+        let cum = sorted.cumsum(None).unwrap();
+        assert_eq!(cum.values(), &[1.0, 3.0, 6.0, 10.0, 15.0]);
+        let p50 = raw.percentile(50.0, None).unwrap();
+        assert_eq!(p50.values(), &[3.0]);
+    }
+
+    #[test]
+    fn workflow_boolean_filter_mean() {
+        let vals = UFuncArray::new(vec![5], vec![10.0, -5.0, 3.0, -2.0, 7.0], DType::F64).unwrap();
+        let zero = UFuncArray::new(vec![5], vec![0.0; 5], DType::F64).unwrap();
+        let mask = vals.elementwise_binary(&zero, BinaryOp::Greater).unwrap();
+        // mask should be [1, 0, 1, 0, 1]
+        assert_eq!(mask.values(), &[1.0, 0.0, 1.0, 0.0, 1.0]);
+        // Count positives
+        let count = mask.reduce_sum(None, false).unwrap();
+        assert_eq!(count.values(), &[3.0]);
+    }
+
+    #[test]
+    fn workflow_matmul_identity() {
+        // A @ I = A
+        let a = UFuncArray::new(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0], DType::F64).unwrap();
+        let eye = UFuncArray::new(vec![2, 2], vec![1.0, 0.0, 0.0, 1.0], DType::F64).unwrap();
+        let result = a.matmul(&eye).unwrap();
+        assert_eq!(result.values(), &[1.0, 2.0, 3.0, 4.0]);
+    }
 }
