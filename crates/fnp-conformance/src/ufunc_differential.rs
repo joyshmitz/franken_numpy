@@ -2186,8 +2186,21 @@ fn compare_arrays(
     let mut max_abs_error = 0.0_f64;
 
     for (idx, (&expected, &actual)) in expected_values.iter().zip(actual_values).enumerate() {
+        if expected.is_nan() && actual.is_nan() {
+            continue;
+        }
+        if expected.is_nan() || actual.is_nan() {
+            return (
+                false,
+                f64::NAN,
+                Some(format!(
+                    "value mismatch (NaN) at index {idx}: expected={expected} actual={actual}"
+                )),
+            );
+        }
+
         let abs_err = (expected - actual).abs();
-        if abs_err > max_abs_error {
+        if abs_err > max_abs_error || max_abs_error.is_nan() {
             max_abs_error = abs_err;
         }
 

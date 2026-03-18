@@ -9007,7 +9007,7 @@ fn generate_rng_samples(
         "normal" => Ok(generator.normal(case.param_a, case.param_b, draws)),
         "standard_exponential" => Ok(generator.standard_exponential(draws)),
         "exponential" => Ok(generator.exponential(case.param_a, draws)),
-        "standard_gamma" => Ok(generator.standard_gamma(case.param_a, draws)),
+        "standard_gamma" => Ok(generator.standard_gamma(case.param_a, draws).unwrap()),
         "integers" => {
             let low = f64_to_i64_param(case.param_a, "param_a")?;
             let high = f64_to_i64_param(case.param_b, "param_b")?;
@@ -9029,26 +9029,28 @@ fn generate_rng_samples(
                 .map(|value| value as f64)
                 .collect())
         }
-        "gamma" => Ok(generator.gamma(case.param_a, case.param_b, draws)),
-        "beta" => Ok(generator.beta(case.param_a, case.param_b, draws)),
+        "gamma" => Ok(generator.gamma(case.param_a, case.param_b, draws).unwrap()),
+        "beta" => Ok(generator.beta(case.param_a, case.param_b, draws).unwrap()),
         "geometric" => Ok(generator
             .geometric(case.param_a, draws)
             .into_iter()
             .map(|value| value as f64)
             .collect()),
         "lognormal" => Ok(generator.lognormal(case.param_a, case.param_b, draws)),
-        "chisquare" => Ok(generator.chisquare(case.param_a, draws)),
+        "chisquare" => Ok(generator.chisquare(case.param_a, draws).unwrap()),
         "standard_cauchy" => Ok(generator.standard_cauchy(draws)),
         "triangular" => Ok(generator.triangular(case.param_a, case.param_b, case.param_c, draws)),
         "laplace" => Ok(generator.laplace(case.param_a, case.param_b, draws)),
         "gumbel" => Ok(generator.gumbel(case.param_a, case.param_b, draws)),
-        "weibull" => Ok(generator.weibull(case.param_a, draws)),
+        "weibull" => Ok(generator.weibull(case.param_a, draws).unwrap()),
         "negative_binomial" => Ok(generator
             .negative_binomial(case.param_a, case.param_b, draws)
             .into_iter()
             .map(|value| value as f64)
             .collect()),
-        "f_distribution" => Ok(generator.f_distribution(case.param_a, case.param_b, draws)),
+        "f_distribution" => Ok(generator
+            .f_distribution(case.param_a, case.param_b, draws)
+            .unwrap()),
         "standard_t" => Ok(generator.standard_t(case.param_a, draws)),
         "noncentral_chisquare" => {
             Ok(generator.noncentral_chisquare(case.param_a, case.param_b, draws))
@@ -9059,8 +9061,10 @@ fn generate_rng_samples(
         "power" => Ok(generator.power(case.param_a, draws)),
         "vonmises" => Ok(generator.vonmises(case.param_a, case.param_b, draws)),
         "rayleigh" => Ok(generator.rayleigh(case.param_a, draws)),
-        "pareto" => Ok(generator.pareto(case.param_a, draws)),
-        "logistic" => Ok(generator.logistic(case.param_a, case.param_b, draws)),
+        "pareto" => Ok(generator.pareto(case.param_a, draws).unwrap()),
+        "logistic" => Ok(generator
+            .logistic(case.param_a, case.param_b, draws)
+            .unwrap()),
         "hypergeometric" => {
             let ngood = f64_to_u64_param(case.param_a, "param_a")?;
             let nbad = f64_to_u64_param(case.param_b, "param_b")?;
@@ -10136,7 +10140,9 @@ mod tests {
         run_ufunc_metamorphic_suite, set_dtype_promotion_log_path, set_shape_stride_log_path,
     };
     use fnp_iter::{
-        RuntimeMode as IterRuntimeMode, TRANSFER_PACKET_REASON_CODES, TransferLogRecord,
+        RuntimeMode as IterRuntimeMode, TRANSFER_PACKET_REASON_CODES, TransferContext,
+        TransferDtypeRelation, TransferLogRecord, TransferLoopClass, select_transfer_loop,
+        validate_subarray_transfer, validate_where_mask,
     };
     use serde_json::Value;
     use std::fs;
@@ -10840,7 +10846,7 @@ mod tests {
         );
         check_seq!(
             "standard_gamma(2)",
-            |g: &mut Generator| g.standard_gamma(2.0, 5),
+            |g: &mut Generator| g.standard_gamma(2.0, 5).unwrap(),
             [
                 2.65271299374846858e0,
                 4.37668779876149294e0,
@@ -10851,7 +10857,7 @@ mod tests {
         );
         check_seq!(
             "gamma(2,3)",
-            |g: &mut Generator| g.gamma(2.0, 3.0, 5),
+            |g: &mut Generator| g.gamma(2.0, 3.0, 5).unwrap(),
             [
                 7.95813898124540575e0,
                 1.31300633962844788e1,
@@ -10862,7 +10868,7 @@ mod tests {
         );
         check_seq!(
             "beta(2,5)",
-            |g: &mut Generator| g.beta(2.0, 5.0, 5),
+            |g: &mut Generator| g.beta(2.0, 5.0, 5).unwrap(),
             [
                 2.35361548599163445e-1,
                 1.77540741643774563e-1,
@@ -10873,7 +10879,7 @@ mod tests {
         );
         check_seq!(
             "chisquare(3)",
-            |g: &mut Generator| g.chisquare(3.0, 5),
+            |g: &mut Generator| g.chisquare(3.0, 5).unwrap(),
             [
                 4.03478951589785773e0,
                 7.16887968014016952e0,
@@ -10939,7 +10945,7 @@ mod tests {
         );
         check_seq!(
             "weibull(2)",
-            |g: &mut Generator| g.weibull(2.0, 5),
+            |g: &mut Generator| g.weibull(2.0, 5).unwrap(),
             [
                 1.30921152462167556e0,
                 3.61228090059339813e-1,
@@ -10950,7 +10956,7 @@ mod tests {
         );
         check_seq!(
             "f_distribution(5,2)",
-            |g: &mut Generator| g.f_distribution(5.0, 2.0, 5),
+            |g: &mut Generator| g.f_distribution(5.0, 2.0, 5).unwrap(),
             [
                 5.03569673371778581e0,
                 2.09797390659074745e0,
@@ -11005,7 +11011,7 @@ mod tests {
         );
         check_seq!(
             "pareto(3)",
-            |g: &mut Generator| g.pareto(3.0, 5),
+            |g: &mut Generator| g.pareto(3.0, 5).unwrap(),
             [
                 7.70646862274550370e-1,
                 4.44550272369403851e-2,
@@ -11016,7 +11022,7 @@ mod tests {
         );
         check_seq!(
             "logistic(0,1)",
-            |g: &mut Generator| g.logistic(0.0, 1.0, 5),
+            |g: &mut Generator| g.logistic(0.0, 1.0, 5).unwrap(),
             [
                 2.61911480663287932e0,
                 -6.74429997228288114e-1,
@@ -11203,7 +11209,7 @@ mod tests {
 
         // dirichlet(alpha=[2, 3, 5])
         let mut g = Generator::from_pcg64_dxsm(SEED).unwrap();
-        let dir = g.dirichlet(&[2.0, 3.0, 5.0], 3);
+        let dir = g.dirichlet(&[2.0, 3.0, 5.0], 3).unwrap();
         let expected_dir = [
             [0.21587855063764583, 0.47692451379316814, 0.307196935569186],
             [0.247103567175703, 0.19419713918314283, 0.5586992936411542],
@@ -11232,14 +11238,18 @@ mod tests {
 
         // multivariate_normal_diag(mean=[1,2], cov_diag=[0.5,0.5])
         let mut g = Generator::from_pcg64_dxsm(SEED).unwrap();
-        let mvn_diag = g.multivariate_normal_diag(&[1.0, 2.0], &[0.5, 0.5], 3);
+        let mvn_diag = g
+            .multivariate_normal_diag(&[1.0, 2.0], &[0.5, 0.5], 3)
+            .unwrap();
         // Each sample is a Vec of length 2, derived from standard_normal draws
         assert_eq!(mvn_diag.len(), 3);
         assert_eq!(mvn_diag[0].len(), 2);
         // Lock in exact values: verify they don't change across builds
         let first_run = mvn_diag.clone();
         let mut g2 = Generator::from_pcg64_dxsm(SEED).unwrap();
-        let second_run = g2.multivariate_normal_diag(&[1.0, 2.0], &[0.5, 0.5], 3);
+        let second_run = g2
+            .multivariate_normal_diag(&[1.0, 2.0], &[0.5, 0.5], 3)
+            .unwrap();
         for (i, (r1, r2)) in first_run.iter().zip(second_run.iter()).enumerate() {
             for (j, (a, b)) in r1.iter().zip(r2.iter()).enumerate() {
                 assert!(
@@ -11264,6 +11274,240 @@ mod tests {
                     "multivariate_normal[{i}][{j}] not deterministic: {a} vs {b}"
                 );
             }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // P2C003 Transfer-loop invariant tests
+    // -----------------------------------------------------------------------
+
+    fn base_ctx() -> TransferContext {
+        TransferContext {
+            src_stride: 8,
+            dst_stride: 8,
+            item_size: 8,
+            element_count: 64,
+            aligned: true,
+            dtype_relation: TransferDtypeRelation::Same,
+            same_value_cast: false,
+            has_where_mask: false,
+            has_overlap: false,
+            mode: IterRuntimeMode::Strict,
+        }
+    }
+
+    #[test]
+    fn p2c003_transfer_selector_determinism_property() {
+        let relations = [
+            TransferDtypeRelation::Same,
+            TransferDtypeRelation::LosslessCast,
+            TransferDtypeRelation::LossyCast,
+            TransferDtypeRelation::SubarrayBroadcast,
+            TransferDtypeRelation::StringWidthChange {
+                src_width: 4,
+                dst_width: 8,
+            },
+        ];
+        let modes = [IterRuntimeMode::Strict, IterRuntimeMode::Hardened];
+        let strides: [isize; 4] = [8, 16, -8, 24];
+
+        for rel in &relations {
+            for mode in modes {
+                for src_stride in strides {
+                    for dst_stride in strides {
+                        let ctx = TransferContext {
+                            src_stride,
+                            dst_stride,
+                            dtype_relation: *rel,
+                            mode,
+                            ..base_ctx()
+                        };
+                        let first = select_transfer_loop(ctx);
+                        let second = select_transfer_loop(ctx);
+                        assert_eq!(first, second, "P2C003-R01 determinism violated for {ctx:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn p2c003_overlap_never_silently_corrupts() {
+        let ctx_no_overlap = TransferContext {
+            has_overlap: false,
+            ..base_ctx()
+        };
+        let ctx_with_overlap = TransferContext {
+            has_overlap: true,
+            ..base_ctx()
+        };
+
+        let no_ol = select_transfer_loop(ctx_no_overlap).expect("no-overlap should resolve");
+        let with_ol = select_transfer_loop(ctx_with_overlap).expect("overlap should resolve");
+
+        // Same loop class (correctness preserved) but overlap action differs.
+        assert_eq!(no_ol.loop_class, with_ol.loop_class);
+        assert_ne!(no_ol.overlap_action, with_ol.overlap_action);
+    }
+
+    #[test]
+    fn p2c003_where_mask_isolation_invariant() {
+        let mask = vec![true, false, true, false, true, false, true, false];
+        let count = validate_where_mask(&mask, 8).expect("valid mask");
+        assert_eq!(count, 4, "exactly half should be selected");
+
+        // Where-mask transfer always resolves to MaskedTransfer loop class.
+        let ctx = TransferContext {
+            has_where_mask: true,
+            element_count: 8,
+            ..base_ctx()
+        };
+        let decision = select_transfer_loop(ctx).expect("masked transfer should resolve");
+        assert_eq!(decision.loop_class, TransferLoopClass::MaskedTransfer);
+    }
+
+    #[test]
+    fn p2c003_same_value_cast_rejects_lossy() {
+        let ctx = TransferContext {
+            dtype_relation: TransferDtypeRelation::LossyCast,
+            same_value_cast: true,
+            ..base_ctx()
+        };
+        let err = select_transfer_loop(ctx).expect_err("lossy same-value must reject");
+        assert_eq!(err.reason_code(), "transfer_same_value_cast_rejected");
+    }
+
+    #[test]
+    fn p2c003_same_value_cast_accepts_lossless() {
+        let ctx = TransferContext {
+            dtype_relation: TransferDtypeRelation::LosslessCast,
+            same_value_cast: true,
+            ..base_ctx()
+        };
+        let decision = select_transfer_loop(ctx).expect("lossless same-value should pass");
+        assert_eq!(decision.loop_class, TransferLoopClass::ContiguousCast);
+    }
+
+    #[test]
+    fn p2c003_string_transfer_zero_width_rejected() {
+        let ctx = TransferContext {
+            dtype_relation: TransferDtypeRelation::StringWidthChange {
+                src_width: 0,
+                dst_width: 4,
+            },
+            ..base_ctx()
+        };
+        let err = select_transfer_loop(ctx).expect_err("zero-width string should fail");
+        assert_eq!(err.reason_code(), "transfer_string_width_mismatch");
+    }
+
+    #[test]
+    fn p2c003_subarray_broadcast_contract() {
+        validate_subarray_transfer(4, 4).expect("1:1 should pass");
+        validate_subarray_transfer(4, 8).expect("1:2 broadcast should pass");
+        validate_subarray_transfer(4, 16).expect("1:4 broadcast should pass");
+
+        let err = validate_subarray_transfer(3, 7).expect_err("non-multiple should fail");
+        assert_eq!(
+            err.reason_code(),
+            "transfer_subarray_broadcast_contract_violation"
+        );
+    }
+
+    #[test]
+    fn p2c003_hardened_mode_fails_closed_for_overlap_subarray() {
+        let ctx = TransferContext {
+            dtype_relation: TransferDtypeRelation::SubarrayBroadcast,
+            has_overlap: true,
+            mode: IterRuntimeMode::Hardened,
+            ..base_ctx()
+        };
+        let err = select_transfer_loop(ctx).expect_err("hardened overlap subarray should fail");
+        assert_eq!(
+            err.reason_code(),
+            "transfer_subarray_broadcast_contract_violation"
+        );
+    }
+
+    #[test]
+    fn p2c003_strict_mode_allows_overlap_subarray() {
+        let ctx = TransferContext {
+            dtype_relation: TransferDtypeRelation::SubarrayBroadcast,
+            has_overlap: true,
+            mode: IterRuntimeMode::Strict,
+            ..base_ctx()
+        };
+        let decision =
+            select_transfer_loop(ctx).expect("strict mode should allow overlap subarray");
+        assert_eq!(decision.loop_class, TransferLoopClass::SubarrayGrouped);
+    }
+
+    #[test]
+    fn p2c003_where_mask_mismatch_rejected() {
+        let mask = vec![true, false];
+        let err = validate_where_mask(&mask, 10).expect_err("mask length mismatch");
+        assert_eq!(err.reason_code(), "transfer_where_mask_contract_violation");
+    }
+
+    #[test]
+    fn p2c003_transfer_loop_class_coverage_grid() {
+        // Ensure every TransferLoopClass variant is reachable.
+        let test_cases: Vec<(TransferContext, TransferLoopClass)> = vec![
+            (base_ctx(), TransferLoopClass::SimpleContiguous),
+            (
+                TransferContext {
+                    src_stride: 16,
+                    dst_stride: 16,
+                    ..base_ctx()
+                },
+                TransferLoopClass::StridedNoCast,
+            ),
+            (
+                TransferContext {
+                    dtype_relation: TransferDtypeRelation::LosslessCast,
+                    ..base_ctx()
+                },
+                TransferLoopClass::ContiguousCast,
+            ),
+            (
+                TransferContext {
+                    dtype_relation: TransferDtypeRelation::LossyCast,
+                    ..base_ctx()
+                },
+                TransferLoopClass::StridedWithCast,
+            ),
+            (
+                TransferContext {
+                    has_where_mask: true,
+                    ..base_ctx()
+                },
+                TransferLoopClass::MaskedTransfer,
+            ),
+            (
+                TransferContext {
+                    dtype_relation: TransferDtypeRelation::SubarrayBroadcast,
+                    ..base_ctx()
+                },
+                TransferLoopClass::SubarrayGrouped,
+            ),
+            (
+                TransferContext {
+                    dtype_relation: TransferDtypeRelation::StringWidthChange {
+                        src_width: 4,
+                        dst_width: 8,
+                    },
+                    ..base_ctx()
+                },
+                TransferLoopClass::StringFixedWidth,
+            ),
+        ];
+
+        for (ctx, expected_class) in test_cases {
+            let decision = select_transfer_loop(ctx).expect("should resolve");
+            assert_eq!(
+                decision.loop_class, expected_class,
+                "loop class mismatch for {ctx:?}"
+            );
         }
     }
 }

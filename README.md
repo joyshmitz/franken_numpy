@@ -923,12 +923,12 @@ What works and what doesn't:
 
 - **Not a Python package.** FrankenNumPy is a Rust library. There is no `pip install` or Python FFI bridge yet. You cannot `import frankennumpy` from Python today.
 - **No BLAS/LAPACK backend.** Linear algebra uses pure-Rust implementations (Householder QR, Golub-Kahan SVD, implicit shifted QR for eigenvalues). Competitive with BLAS for small matrices; slower for large ones. Future BLAS linkage is planned.
-- **Complex elementwise arithmetic is not specialized.** Complex64/Complex128 dtypes exist and complex linalg operations work, but elementwise `multiply` and `divide` on complex arrays treat them as interleaved real/imaginary floats rather than applying complex multiplication `(a+bi)(c+di) = (ac-bd)+(ad+bc)i`.
+- **Complex elementwise arithmetic uses interleaved storage.** Complex64/Complex128 dtypes store real/imaginary parts as interleaved floats with a trailing dimension of 2. Elementwise `multiply` and `divide` apply true complex arithmetic `(a+bi)(c+di) = (ac-bd)+(ad+bc)i`, but the interleaved representation adds overhead compared to native complex types.
 - **`multivariate_normal` uses Cholesky.** NumPy defaults to SVD. Adding SVD would require `fnp-linalg` as a dependency of `fnp-random` (currently zero-dependency).
 - **`multivariate_hypergeometric` uses sequential draws.** NumPy uses the `random_mvhg_marginals` algorithm.
 - **`frompyfunc` and `nditer`** require Python callable protocol (N/A for Rust).
 - **Single-threaded.** All operations are single-threaded. The `asupersync` async runtime integration is optional and used only for conformance pipeline orchestration, not for parallel array computation.
-- **f64 internal representation.** `UFuncArray` stores all numeric values as `Vec<f64>` internally (the `ArrayStorage` type-safe representation is in `fnp-dtype`). This means the ufunc layer loses integer fidelity for i64 values > 2^53. The dtype layer preserves it.
+- **f64 internal representation.** `UFuncArray` stores numeric values as `Vec<f64>` internally for arithmetic. For i64/u64 values > 2^53, an `IntegerSidecar` preserves exact integer values through storage round-trips (`from_storage` / `to_storage`). Arithmetic on large integers still uses f64 approximation.
 
 ---
 
