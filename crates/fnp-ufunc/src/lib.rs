@@ -19798,6 +19798,262 @@ mod tests {
         assert_eq!(err.reason_code(), "ufunc_loop_registry_invalid");
     }
 
+    // -----------------------------------------------------------------------
+    // GUFunc signature parsing edge cases and property tests (P2C005)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn gufunc_signature_scalar_input_output() {
+        let sig =
+            parse_gufunc_signature(Some("(),()->()"), None).expect("parse").expect("present");
+        assert_eq!(sig.inputs.len(), 2);
+        assert_eq!(sig.outputs.len(), 1);
+        assert!(sig.inputs[0].is_empty()); // scalar = empty dims
+        assert!(sig.inputs[1].is_empty());
+        assert!(sig.outputs[0].is_empty());
+        assert_eq!(sig.canonical(), "(),()->()");
+    }
+
+    #[test]
+    fn gufunc_signature_single_dim() {
+        let sig = parse_gufunc_signature(Some("(i)->(i)"), None)
+            .expect("parse")
+            .expect("present");
+        assert_eq!(sig.inputs, vec![vec!["i"]]);
+        assert_eq!(sig.outputs, vec![vec!["i"]]);
+    }
+
+    #[test]
+    fn gufunc_signature_matmul_pattern() {
+        let sig = parse_gufunc_signature(Some("(m,n),(n,p)->(m,p)"), None)
+            .expect("parse")
+            .expect("present");
+        assert_eq!(sig.inputs.len(), 2);
+        assert_eq!(sig.inputs[0], vec!["m", "n"]);
+        assert_eq!(sig.inputs[1], vec!["n", "p"]);
+        assert_eq!(sig.outputs[0], vec!["m", "p"]);
+    }
+
+    #[test]
+    fn gufunc_signature_high_arity_dims() {
+        // 8-dimensional signature
+        let sig_str = "(a,b,c,d,e,f,g,h)->(a,h)";
+        let sig = parse_gufunc_signature(Some(sig_str), None)
+            .expect("parse")
+            .expect("present");
+        assert_eq!(sig.inputs[0].len(), 8);
+        assert_eq!(sig.outputs[0], vec!["a", "h"]);
+    }
+
+    #[test]
+    fn gufunc_signature_multiple_outputs() {
+        let sig = parse_gufunc_signature(Some("(m,n)->(m),(n)"), None)
+            .expect("parse")
+            .expect("present");
+        assert_eq!(sig.outputs.len(), 2);
+        assert_eq!(sig.outputs[0], vec!["m"]);
+        assert_eq!(sig.outputs[1], vec!["n"]);
+    }
+
+    #[test]
+    fn gufunc_signature_underscore_dim_names() {
+        let sig = parse_gufunc_signature(Some("(_batch,_m),(_m,_n)->(_batch,_n)"), None)
+            .expect("parse")
+            .expect("present");
+        assert_eq!(sig.inputs[0], vec!["_batch", "_m"]);
+    }
+
+    #[test]
+    fn gufunc_signature_single_char_dims() {
+        let sig = parse_gufunc_signature(Some("(i),(j)->(k)"), None)
+            .expect("parse")
+            .expect("present");
+        assert_eq!(sig.inputs[0], vec!["i"]);
+        assert_eq!(sig.inputs[1], vec!["j"]);
+        assert_eq!(sig.outputs[0], vec!["k"]);
+    }
+
+    #[test]
+    fn gufunc_signature_alphanumeric_dims() {
+        let sig = parse_gufunc_signature(Some("(dim0,dim1)->(dim0)"), None)
+            .expect("parse")
+            .expect("present");
+        assert_eq!(sig.inputs[0], vec!["dim0", "dim1"]);
+    }
+
+    #[test]
+    fn gufunc_signature_whitespace_tolerance() {
+        let sig =
+            parse_gufunc_signature(Some("  ( m , n ) , ( n , p )  ->  ( m , p )  "), None)
+                .expect("parse")
+                .expect("present");
+        assert_eq!(sig.inputs.len(), 2);
+        assert_eq!(sig.outputs.len(), 1);
+        assert_eq!(sig.canonical(), "(m,n),(n,p)->(m,p)");
+    }
+
+    #[test]
+    fn gufunc_signature_none_returns_none() {
+        let result = parse_gufunc_signature(None, None).expect("parse");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn gufunc_signature_empty_sig_rejected() {
+        let err =
+            parse_gufunc_signature(Some(""), None).expect_err("empty sig should fail");
+        assert!(matches!(err, UFuncError::FixedSignatureInvalid { .. }));
+    }
+
+    #[test]
+    fn gufunc_signature_whitespace_only_rejected() {
+        let err =
+            parse_gufunc_signature(Some("   "), None).expect_err("whitespace should fail");
+        assert!(matches!(err, UFuncError::FixedSignatureInvalid { .. }));
+    }
+
+    #[test]
+    fn gufunc_signature_no_arrow_rejected() {
+        let err =
+            parse_gufunc_signature(Some("(i)(j)"), None).expect_err("no arrow should fail");
+        assert!(matches!(err, UFuncError::SignatureParse { .. }));
+    }
+
+    #[test]
+    fn gufunc_signature_double_arrow_rejected() {
+        let err = parse_gufunc_signature(Some("(i)->(j)->(k)"), None)
+            .expect_err("double arrow should fail");
+        assert!(matches!(err, UFuncError::SignatureParse { .. }));
+    }
+
+    #[test]
+    fn gufunc_signature_unclosed_paren_rejected() {
+        let err = parse_gufunc_signature(Some("(i,j->(k)"), None)
+            .expect_err("unclosed paren should fail");
+        assert!(matches!(err, UFuncError::SignatureParse { .. }));
+    }
+
+    #[test]
+    fn gufunc_signature_nested_parens_rejected() {
+        let err = parse_gufunc_signature(Some("((i,j))->(k)"), None)
+            .expect_err("nested parens should fail");
+        assert!(matches!(err, UFuncError::SignatureParse { .. }));
+    }
+
+    #[test]
+    fn gufunc_signature_invalid_dim_start_char_rejected() {
+        let err = parse_gufunc_signature(Some("(1dim)->(x)"), None)
+            .expect_err("digit start should fail");
+        assert!(matches!(err, UFuncError::SignatureParse { .. }));
+    }
+
+    #[test]
+    fn gufunc_signature_special_chars_in_dim_rejected() {
+        let err = parse_gufunc_signature(Some("(a+b)->(c)"), None)
+            .expect_err("special chars should fail");
+        assert!(matches!(err, UFuncError::SignatureParse { .. }));
+    }
+
+    #[test]
+    fn gufunc_signature_empty_dim_token_rejected() {
+        let err = parse_gufunc_signature(Some("(i,,j)->(k)"), None)
+            .expect_err("empty dim token should fail");
+        assert!(matches!(err, UFuncError::SignatureParse { .. }));
+    }
+
+    #[test]
+    fn gufunc_signature_missing_output_group_rejected() {
+        let err = parse_gufunc_signature(Some("(i)->"), None)
+            .expect_err("missing output should fail");
+        assert!(matches!(err, UFuncError::SignatureParse { .. }));
+    }
+
+    #[test]
+    fn gufunc_signature_determinism_property() {
+        let signatures = [
+            "(i)->(i)",
+            "(m,n),(n,p)->(m,p)",
+            "(),()->()",
+            "(batch,m),(m,n)->(batch,n)",
+            "(i),(j)->(k)",
+        ];
+        for sig_str in signatures {
+            let first = parse_gufunc_signature(Some(sig_str), None);
+            let second = parse_gufunc_signature(Some(sig_str), None);
+            assert_eq!(
+                first.as_ref().map(|r| r.as_ref().map(|s| s.canonical().to_string())),
+                second.as_ref().map(|r| r.as_ref().map(|s| s.canonical().to_string())),
+                "signature parsing must be deterministic for '{sig_str}'"
+            );
+        }
+    }
+
+    #[test]
+    fn gufunc_signature_canonical_is_stable_for_all_valid_patterns() {
+        let cases = [
+            ("(i)->(i)", "(i)->(i)"),
+            ("( m , n )->( m , n )", "(m,n)->(m,n)"),
+            ("(a,b),(c)->(d,e)", "(a,b),(c)->(d,e)"),
+            ("(),()->()", "(),()->()"),
+        ];
+        for (input, expected_canonical) in cases {
+            let sig = parse_gufunc_signature(Some(input), None)
+                .expect("parse")
+                .expect("present");
+            assert_eq!(
+                sig.canonical(),
+                expected_canonical,
+                "canonical mismatch for '{input}'"
+            );
+        }
+    }
+
+    #[test]
+    fn override_payload_class_accepts_all_valid_classes() {
+        for class in ["ndarray", "NotImplemented", "not_implemented", "override_result"] {
+            validate_override_payload_class(class)
+                .unwrap_or_else(|_| panic!("'{class}' should be accepted"));
+        }
+    }
+
+    #[test]
+    fn override_payload_class_is_case_insensitive() {
+        validate_override_payload_class("NDARRAY").expect("uppercase should pass");
+        validate_override_payload_class("Override_Result").expect("mixed case should pass");
+    }
+
+    #[test]
+    fn override_payload_class_rejects_empty() {
+        let err = validate_override_payload_class("")
+            .expect_err("empty should fail");
+        assert!(matches!(err, UFuncError::OverridePrecedenceViolation { .. }));
+    }
+
+    #[test]
+    fn override_payload_class_rejects_whitespace_only() {
+        let err = validate_override_payload_class("   ")
+            .expect_err("whitespace should fail");
+        assert!(matches!(err, UFuncError::OverridePrecedenceViolation { .. }));
+    }
+
+    #[test]
+    fn custom_loop_registration_rejects_empty_name() {
+        let err =
+            register_custom_loop("").expect_err("empty loop name should fail");
+        assert!(matches!(err, UFuncError::LoopRegistryInvalid { .. }));
+    }
+
+    #[test]
+    fn custom_loop_registration_rejects_whitespace_only() {
+        let err =
+            register_custom_loop("   ").expect_err("whitespace loop name should fail");
+        assert!(matches!(err, UFuncError::LoopRegistryInvalid { .. }));
+    }
+
+    // -----------------------------------------------------------------------
+    // End gufunc signature edge cases
+    // -----------------------------------------------------------------------
+
     #[test]
     fn axis_out_of_bounds_is_rejected() {
         let arr = UFuncArray::new(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0], DType::F64).expect("arr");

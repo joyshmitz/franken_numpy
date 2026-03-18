@@ -2824,27 +2824,28 @@ impl Generator {
     /// Returns `size` samples, each a vector of length `pvals.len()`.
     /// `n` is the number of trials, `pvals` are probabilities (must sum to ~1).
     pub fn multinomial(&mut self, n: u64, pvals: &[f64], size: usize) -> Vec<Vec<u64>> {
+        let mut cache = BinomialCache::new();
         (0..size)
             .map(|_| {
                 let mut result = vec![0u64; pvals.len()];
                 let mut remaining = n as i64;
                 let mut p_remaining = 1.0;
-                let mut cache = BinomialCache::new();
                 for (i, &p) in pvals.iter().enumerate() {
-                    if remaining == 0 || i == pvals.len() - 1 {
+                    if remaining <= 0 {
+                        break;
+                    }
+                    if i == pvals.len() - 1 {
                         result[i] = remaining as u64;
                         break;
                     }
                     let p_cond = (p / p_remaining).clamp(0.0, 1.0);
-                    let draws = self.sample_binomial_single(remaining, p_cond, &mut cache);
+                    let draws = self.sample_binomial_single(remaining as u64, p_cond, &mut cache);
                     result[i] = draws as u64;
-                    remaining -= draws;
+                    remaining -= draws as i64;
                     p_remaining -= p;
                     if p_remaining <= 0.0 {
                         p_remaining = 1e-15;
                     }
-                    // Invalidate cache since (n, p) changed for next category
-                    cache.has_binomial = false;
                 }
                 result
             })

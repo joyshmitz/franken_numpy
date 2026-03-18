@@ -498,5 +498,115 @@
       "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
     ],
     "reason_code": "dtype_promotion_matrix_core"
+  },
+  {
+    "id": "dtype002_can_cast_safe_bool_timedelta_true",
+    "operation": "can_cast",
+    "lhs": "bool",
+    "rhs": "timedelta64",
+    "expected": "true",
+    "casting": "safe",
+    "expected_reason_code": "dtype_can_cast_matrix_core",
+    "minimal_repro_artifacts": [
+      "crates/fnp-conformance/fixtures/packet002_dtype/dtype_differential_cases.json",
+      "artifacts/phase2c/FNP-P2C-002/fixture_manifest.json"
+    ],
+    "seed": 2114,
+    "mode": "strict",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_can_cast_matrix_core"
+  },
+  {
+    "id": "dtype002_can_cast_safe_f64_complex64_false",
+    "operation": "can_cast",
+    "lhs": "f64",
+    "rhs": "complex64",
+    "expected": "false",
+    "casting": "safe",
+    "expected_reason_code": "dtype_can_cast_matrix_core",
+    "minimal_repro_artifacts": [
+      "crates/fnp-conformance/fixtures/packet002_dtype/dtype_differential_cases.json",
+      "artifacts/phase2c/FNP-P2C-002/fixture_manifest.json"
+    ],
+    "seed": 2115,
+    "mode": "hardened",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_can_cast_matrix_core"
+  },
+  {
+    "id": "dtype002_can_cast_same_kind_u64_i8_true",
+    "operation": "can_cast",
+    "lhs": "u64",
+    "rhs": "i8",
+    "expected": "true",
+    "casting": "same_kind",
+    "expected_reason_code": "dtype_can_cast_matrix_core",
+    "minimal_repro_artifacts": [
+      "crates/fnp-conformance/fixtures/packet002_dtype/dtype_differential_cases.json",
+      "artifacts/phase2c/FNP-P2C-002/fixture_manifest.json"
+    ],
+    "seed": 2116,
+    "mode": "strict",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_can_cast_matrix_core"
+  },
+  {
+    "id": "dtype002_can_cast_same_kind_i32_u8_false",
+    "operation": "can_cast",
+    "lhs": "i32",
+    "rhs": "u8",
+    "expected": "false",
+    "casting": "same_kind",
+    "expected_reason_code": "dtype_can_cast_matrix_core",
+    "minimal_repro_artifacts": [
+      "crates/fnp-conformance/fixtures/packet002_dtype/dtype_differential_cases.json",
+      "artifacts/phase2c/FNP-P2C-002/fixture_manifest.json"
+    ],
+    "seed": 2117,
+    "mode": "hardened",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_can_cast_matrix_core"
+  },
+  {
+    "id": "dtype002_can_cast_same_kind_datetime_timedelta_false",
+    "operation": "can_cast",
+    "lhs": "datetime64",
+    "rhs": "timedelta64",
+    "expected": "false",
+    "casting": "same_kind",
+    "expected_reason_code": "dtype_can_cast_matrix_core",
+    "minimal_repro_artifacts": [
+      "crates/fnp-conformance/fixtures/packet002_dtype/dtype_differential_cases.json",
+      "artifacts/phase2c/FNP-P2C-002/fixture_manifest.json"
+    ],
+    "seed": 2118,
+    "mode": "strict",
+    "env_fingerprint": "fnp-dtype-packet002-f",
+    "artifact_refs": [
+      "artifacts/phase2c/FNP-P2C-002/contract_table.md",
+      "artifacts/phase2c/FNP-P2C-002/unit_property_evidence.json",
+      "crates/fnp-conformance/fixtures/workflow_scenario_corpus.json"
+    ],
+    "reason_code": "dtype_can_cast_matrix_core"
   }
 ]

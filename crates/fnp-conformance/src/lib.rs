@@ -9,7 +9,7 @@ pub mod ufunc_differential;
 pub mod workflow_scenarios;
 
 use crate::ufunc_differential::{UFuncInputCase, UFuncOperation};
-use fnp_dtype::{DType, can_cast_lossless, promote};
+use fnp_dtype::{DType, can_cast, can_cast_lossless, promote};
 use fnp_io::{
     IOError, IOSupportedDType, LoadDispatch, MemmapMode, classify_load_dispatch,
     validate_descriptor_roundtrip, validate_header_schema, validate_io_policy_metadata,
@@ -182,9 +182,13 @@ struct PromotionFixtureCase {
 #[derive(Debug, Deserialize)]
 struct DTypeDifferentialCase {
     id: String,
+    #[serde(default)]
+    operation: String,
     lhs: String,
     rhs: String,
     expected: String,
+    #[serde(default)]
+    casting: String,
     #[serde(default)]
     expected_reason_code: String,
     #[serde(default)]
@@ -208,6 +212,8 @@ struct DTypeMetamorphicCase {
     lhs: String,
     #[serde(default)]
     rhs: Option<String>,
+    #[serde(default)]
+    casting: String,
     #[serde(default)]
     seed: u64,
     #[serde(default)]
@@ -3395,6 +3401,17 @@ fn parse_dtype_for_suite(raw: &str, position: &str) -> Result<DType, DTypeSuiteE
     })
 }
 
+fn parse_expected_bool_for_suite(raw: &str, position: &str) -> Result<bool, DTypeSuiteError> {
+    match raw.trim() {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        other => Err(DTypeSuiteError::new(
+            "dtype_expected_value_invalid",
+            format!("unknown {position} boolean '{other}'"),
+        )),
+    }
+}
+
 pub fn run_dtype_differential_suite(config: &HarnessConfig) -> Result<SuiteReport, String> {
     let cases = load_dtype_differential_cases(&config.fixture_root)?;
     let mut report = SuiteReport {
@@ -3426,43 +3443,85 @@ pub fn run_dtype_differential_suite(config: &HarnessConfig) -> Result<SuiteRepor
             &case.lhs, "lhs",
         ) {
             Ok(lhs) => match parse_dtype_for_suite(&case.rhs, "rhs") {
-                Ok(rhs) => match parse_dtype_for_suite(&case.expected, "expected") {
-                    Ok(expected) => {
-                        expected_dtype_for_log = expected.name().to_string();
-                        let actual = promote(lhs, rhs);
-                        let actual_reason_code = if actual == expected {
-                            reason_code.clone()
-                        } else {
-                            "dtype_promotion_oracle_mismatch".to_string()
-                        };
-                        let reason_match = actual_reason_code == expected_reason_code;
-                        let passed = actual == expected && reason_match;
-                        let detail = if passed {
-                            String::new()
-                        } else if actual != expected {
-                            format!(
-                                "promotion mismatch expected={} actual={}",
-                                expected.name(),
-                                actual.name()
+                Ok(rhs) => match case.operation.as_str() {
+                    "" | "promote" => match parse_dtype_for_suite(&case.expected, "expected") {
+                        Ok(expected) => {
+                            expected_dtype_for_log = expected.name().to_string();
+                            let actual = promote(lhs, rhs);
+                            let actual_reason_code = if actual == expected {
+                                reason_code.clone()
+                            } else {
+                                "dtype_promotion_oracle_mismatch".to_string()
+                            };
+                            let reason_match = actual_reason_code == expected_reason_code;
+                            let passed = actual == expected && reason_match;
+                            let detail = if passed {
+                                String::new()
+                            } else if actual != expected {
+                                format!(
+                                    "promotion mismatch expected={} actual={}",
+                                    expected.name(),
+                                    actual.name()
+                                )
+                            } else {
+                                format!(
+                                    "reason_code mismatch expected_reason_code={} actual_reason_code={actual_reason_code}",
+                                    expected_reason_code
+                                )
+                            };
+                            (
+                                passed,
+                                actual_reason_code,
+                                actual.name().to_string(),
+                                detail,
                             )
-                        } else {
-                            format!(
-                                "reason_code mismatch expected_reason_code={} actual_reason_code={actual_reason_code}",
-                                expected_reason_code
-                            )
-                        };
-                        (
-                            passed,
-                            actual_reason_code,
-                            actual.name().to_string(),
-                            detail,
-                        )
-                    }
-                    Err(err) => (
+                        }
+                        Err(err) => (
+                            false,
+                            err.reason_code,
+                            "parse_error".to_string(),
+                            err.message,
+                        ),
+                    },
+                    "can_cast" => match parse_expected_bool_for_suite(&case.expected, "expected") {
+                        Ok(expected) => {
+                            expected_dtype_for_log = expected.to_string();
+                            let casting = case.casting.trim();
+                            let actual = can_cast(lhs, rhs, casting);
+                            let actual_reason_code = if actual == expected {
+                                reason_code.clone()
+                            } else {
+                                "dtype_can_cast_oracle_mismatch".to_string()
+                            };
+                            let reason_match = actual_reason_code == expected_reason_code;
+                            let passed = actual == expected && reason_match;
+                            let detail = if passed {
+                                String::new()
+                            } else if actual != expected {
+                                format!(
+                                    "can_cast mismatch casting={} expected={} actual={actual}",
+                                    casting, expected
+                                )
+                            } else {
+                                format!(
+                                    "reason_code mismatch expected_reason_code={} actual_reason_code={actual_reason_code}",
+                                    expected_reason_code
+                                )
+                            };
+                            (passed, actual_reason_code, actual.to_string(), detail)
+                        }
+                        Err(err) => (
+                            false,
+                            err.reason_code,
+                            "parse_error".to_string(),
+                            err.message,
+                        ),
+                    },
+                    other => (
                         false,
-                        err.reason_code,
-                        "parse_error".to_string(),
-                        err.message,
+                        "dtype_operation_unsupported".to_string(),
+                        "unsupported_operation".to_string(),
+                        format!("unsupported dtype differential operation {other}"),
                     ),
                 },
                 Err(err) => (
@@ -3662,6 +3721,38 @@ pub fn run_dtype_metamorphic_suite(config: &HarnessConfig) -> Result<SuiteReport
                     "relation_requires_rhs".to_string(),
                     "missing_rhs".to_string(),
                     "lossless_cast_destination relation requires rhs dtype".to_string(),
+                ),
+            },
+            "safe_implies_same_kind" => match case.rhs.as_ref() {
+                Some(rhs_raw) => match parse_dtype_for_suite(&case.lhs, "lhs")
+                    .and_then(|lhs| parse_dtype_for_suite(rhs_raw, "rhs").map(|rhs| (lhs, rhs)))
+                {
+                    Ok((lhs, rhs)) => {
+                        let safe = can_cast(lhs, rhs, "safe");
+                        let same_kind = can_cast(lhs, rhs, "same_kind");
+                        (
+                            !safe || same_kind,
+                            "safe_subset_same_kind".to_string(),
+                            format!("safe={safe},same_kind={same_kind}"),
+                            format!(
+                                "safe cast must imply same_kind for lhs={} rhs={}",
+                                lhs.name(),
+                                rhs.name()
+                            ),
+                        )
+                    }
+                    Err(err) => (
+                        false,
+                        "parse_success".to_string(),
+                        "parse_error".to_string(),
+                        err.message,
+                    ),
+                },
+                None => (
+                    false,
+                    "relation_requires_rhs".to_string(),
+                    "missing_rhs".to_string(),
+                    "safe_implies_same_kind relation requires rhs dtype".to_string(),
                 ),
             },
             other => (

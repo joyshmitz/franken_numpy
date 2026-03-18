@@ -1549,7 +1549,8 @@ pub fn savetxt(
             "savetxt: values length != nrows * ncols",
         ));
     }
-    let mut output = String::new();
+    // Pre-allocate approximately (15 chars per float + delimiter) * total
+    let mut output = String::with_capacity(values.len() * 16);
     if !config.header.is_empty() {
         output.push_str(config.comments);
         output.push(' ');
@@ -1563,9 +1564,18 @@ pub fn savetxt(
             }
             let v = values[r * ncols + c];
             match config.fmt {
-                "%.18e" | "%e" => output.push_str(&format!("{v:e}")),
-                "%d" | "%i" => output.push_str(&format!("{}", v as i64)),
-                _ => output.push_str(&format!("{v}")),
+                "%.18e" | "%e" => {
+                    use std::fmt::Write;
+                    write!(output, "{v:e}").unwrap();
+                }
+                "%d" | "%i" => {
+                    use std::fmt::Write;
+                    write!(output, "{}", v as i64).unwrap();
+                }
+                _ => {
+                    use std::fmt::Write;
+                    write!(output, "{v}").unwrap();
+                }
             }
         }
         output.push('\n');
@@ -1604,19 +1614,31 @@ pub fn genfromtxt(
             .filter(|s| delimiter != ' ' || !s.is_empty())
             .map(|s| s.trim().parse::<f64>().unwrap_or(filling_values))
             .collect();
+
+        let current_ncols = row_vals.len();
+        let target_ncols = ncols.unwrap_or(current_ncols);
+
+        if values.len() + target_ncols > MAX_TEXT_ELEMENTS {
+            return Err(IOError::ReadPayloadIncomplete(
+                "genfromtxt: text exceeds MAX_TEXT_ELEMENTS budget",
+            ));
+        }
+
         match ncols {
-            None => ncols = Some(row_vals.len()),
-            Some(expected) if row_vals.len() != expected => {
+            None => {
+                ncols = Some(current_ncols);
+                values.extend(row_vals);
+            }
+            Some(expected) if current_ncols != expected => {
                 // Pad or truncate to match
                 let mut padded = row_vals;
                 padded.resize(expected, filling_values);
                 values.extend(padded);
-                nrows += 1;
-                continue;
             }
-            _ => {}
+            Some(_) => {
+                values.extend(row_vals);
+            }
         }
-        values.extend(row_vals);
         nrows += 1;
     }
     Ok(TextArrayData {
