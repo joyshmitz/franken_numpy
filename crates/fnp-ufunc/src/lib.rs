@@ -1193,7 +1193,15 @@ impl UFuncLoopRegistry {
                     ),
                 });
             }
-            return Ok(()); // Idempotent re-registration
+            if existing.output_dtypes != output_dtypes {
+                return Err(UFuncError::LoopRegistryInvalid {
+                    detail: format!(
+                        "conflicting output dtypes for loop '{}' on ufunc '{}'",
+                        loop_name, ufunc_name
+                    ),
+                });
+            }
+            return Ok(()); // Idempotent re-registration (exact match)
         }
 
         self.entries.push(CustomLoopEntry {
@@ -19996,6 +20004,18 @@ mod tests {
         let err = reg
             .register("loop_b", "add", vec![DType::I64], vec![DType::I64])
             .expect_err("conflicting registration should fail");
+        assert!(matches!(err, UFuncError::LoopRegistryInvalid { .. }));
+    }
+
+    #[test]
+    fn loop_registry_rejects_output_dtype_mismatch_on_reregistration() {
+        let mut reg = UFuncLoopRegistry::new();
+        reg.register("my_loop", "add", vec![DType::I64], vec![DType::I64])
+            .expect("first registration");
+
+        let err = reg
+            .register("my_loop", "add", vec![DType::I64], vec![DType::F64])
+            .expect_err("same loop name but different output dtypes should fail");
         assert!(matches!(err, UFuncError::LoopRegistryInvalid { .. }));
     }
 

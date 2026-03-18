@@ -507,8 +507,8 @@ pub fn select_transfer_loop(ctx: TransferContext) -> Result<TransferLoopDecision
 
         // Same dtype, no cast needed.
         TransferDtypeRelation::Same => {
-            let src_unit = ctx.src_stride == ctx.item_size as isize;
-            let dst_unit = ctx.dst_stride == ctx.item_size as isize;
+            let src_unit = ctx.src_stride == item_size_isize;
+            let dst_unit = ctx.dst_stride == item_size_isize;
             if ctx.aligned && src_unit && dst_unit {
                 TransferLoopClass::SimpleContiguous
             } else {
@@ -518,8 +518,8 @@ pub fn select_transfer_loop(ctx: TransferContext) -> Result<TransferLoopDecision
 
         // Lossless cast.
         TransferDtypeRelation::LosslessCast => {
-            let src_unit = ctx.src_stride == ctx.item_size as isize;
-            let dst_unit = ctx.dst_stride == ctx.item_size as isize;
+            let src_unit = ctx.src_stride == item_size_isize;
+            let dst_unit = ctx.dst_stride == item_size_isize;
             if ctx.aligned && src_unit && dst_unit {
                 TransferLoopClass::ContiguousCast
             } else {
@@ -555,17 +555,20 @@ pub fn select_transfer_loop(ctx: TransferContext) -> Result<TransferLoopDecision
     })
 }
 
+/// Maps a resolved loop class to the contract family reason code for audit trail.
+///
+/// For successful resolutions, this identifies which P2C003 contract row governs
+/// the selected transfer path. This is NOT an error code — it's the contract
+/// family tag used by the evidence ledger.
 fn transfer_loop_class_reason(class: &TransferLoopClass) -> &'static str {
     match class {
-        TransferLoopClass::SimpleContiguous | TransferLoopClass::ContiguousCast => {
-            "transfer_selector_invalid_context"
-        }
-        TransferLoopClass::StridedNoCast | TransferLoopClass::StridedWithCast => {
-            "transfer_selector_invalid_context"
-        }
-        TransferLoopClass::MaskedTransfer => "transfer_where_mask_contract_violation",
-        TransferLoopClass::SubarrayGrouped => "transfer_subarray_broadcast_contract_violation",
-        TransferLoopClass::StringFixedWidth => "transfer_string_width_mismatch",
+        TransferLoopClass::SimpleContiguous
+        | TransferLoopClass::ContiguousCast
+        | TransferLoopClass::StridedNoCast
+        | TransferLoopClass::StridedWithCast => "transfer_selector_resolved",
+        TransferLoopClass::MaskedTransfer => "transfer_where_mask_resolved",
+        TransferLoopClass::SubarrayGrouped => "transfer_subarray_resolved",
+        TransferLoopClass::StringFixedWidth => "transfer_string_width_resolved",
     }
 }
 
