@@ -58,7 +58,7 @@
 | fnp-conformance | 105 | Differential parity, metamorphic identities, adversarial fuzzing, witness stability, P2C003 transfer invariants |
 | fnp-dtype | 116 | Dtype taxonomy, promotion table, cast policy primitives |
 | fnp-runtime | 12 | Mode split, fail-closed decoding, override-audit gate |
-| **Total** | **2,004** | |
+| **Total** | **2,016** | |
 
 ## Remaining Gaps (Python-specific, low priority)
 
