@@ -1533,7 +1533,7 @@ pub fn trace_nxn(a: &[f64], n: usize) -> Result<f64, LinAlgError> {
     Ok((0..n).map(|i| a[i * n + i]).sum())
 }
 
-/// Matrix rank via SVD (uses QR iteration for singular values).
+/// Matrix rank via SVD.
 /// Returns the number of singular values above `rcond * sigma_max`.
 pub fn matrix_rank_nxn(a: &[f64], n: usize, rcond: f64) -> Result<usize, LinAlgError> {
     if a.len() != n * n || n == 0 {
@@ -1552,40 +1552,7 @@ pub fn matrix_rank_nxn(a: &[f64], n: usize, rcond: f64) -> Result<usize, LinAlgE
         ));
     }
 
-    // Compute A^T A, then eigenvalues via QR iteration to get singular values
-    let mut ata = vec![0.0; n * n];
-    for i in 0..n {
-        for j in 0..n {
-            let mut sum = 0.0;
-            for k in 0..n {
-                sum += a[k * n + i] * a[k * n + j];
-            }
-            ata[i * n + j] = sum;
-        }
-    }
-
-    // QR iteration on A^T A to find eigenvalues (which are sigma^2)
-    let mut m = ata;
-    for _ in 0..200 {
-        let (q, r) = qr_nxn(&m, n)?;
-        // M = R * Q
-        let mut next = vec![0.0; n * n];
-        for i in 0..n {
-            for j in 0..n {
-                let mut sum = 0.0;
-                for k in 0..n {
-                    sum += r[i * n + k] * q[k * n + j];
-                }
-                next[i * n + j] = sum;
-            }
-        }
-        m = next;
-    }
-
-    // Diagonal of converged matrix = eigenvalues of A^T A = sigma^2
-    let mut sigmas: Vec<f64> = (0..n).map(|i| m[i * n + i].max(0.0).sqrt()).collect();
-    sigmas.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-
+    let sigmas = svd_nxn(a, n)?;
     let sigma_max = sigmas.first().copied().unwrap_or(0.0);
     if sigma_max == 0.0 {
         return Ok(0);

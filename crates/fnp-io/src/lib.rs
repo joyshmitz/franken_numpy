@@ -13,6 +13,7 @@ pub const NPZ_MAGIC_PREFIX: [u8; 4] = [b'P', b'K', 0x03, 0x04];
 pub const MAX_HEADER_BYTES: usize = 65_536;
 pub const MAX_ARCHIVE_MEMBERS: usize = 4_096;
 pub const MAX_ARCHIVE_UNCOMPRESSED_BYTES: usize = 2 * 1024 * 1024 * 1024;
+pub const MAX_TEXT_ELEMENTS: usize = 16 * 1024 * 1024; // 128MB of f64s
 pub const MAX_DISPATCH_RETRIES: usize = 8;
 pub const MAX_MEMMAP_VALIDATION_RETRIES: usize = 64;
 

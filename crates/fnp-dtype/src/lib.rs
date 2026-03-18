@@ -480,6 +480,9 @@ fn can_cast_same_kind(from: DType, to: DType) -> bool {
         return to.is_integer() || to.is_float() || to.is_complex();
     }
     if from.is_integer() {
+        if is_signed_integer_dtype(from) {
+            return is_signed_integer_dtype(to) || to.is_float() || to.is_complex();
+        }
         return to.is_integer() || to.is_float() || to.is_complex();
     }
     if from.is_float() {
@@ -1816,6 +1819,7 @@ mod tests {
         assert!(can_cast(DType::U64, DType::TimeDelta64, "same_kind"));
 
         assert!(!can_cast(DType::Bool, DType::DateTime64, "same_kind"));
+        assert!(!can_cast(DType::I32, DType::U8, "same_kind"));
         assert!(!can_cast(DType::F16, DType::U8, "same_kind"));
         assert!(!can_cast(DType::Complex64, DType::F64, "same_kind"));
         assert!(!can_cast(DType::TimeDelta64, DType::Str, "same_kind"));

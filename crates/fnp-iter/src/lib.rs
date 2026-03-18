@@ -174,9 +174,7 @@ pub fn overlap_copy_policy(
     byte_len: usize,
 ) -> Result<OverlapAction, TransferError> {
     if byte_len == 0 {
-        return Err(TransferError::OverlapPolicyTriggered(
-            "byte_len must be > 0 for overlap policy",
-        ));
+        return Ok(OverlapAction::NoCopy);
     }
 
     let src_end = src_offset
@@ -190,10 +188,12 @@ pub fn overlap_copy_policy(
             "destination range overflow in overlap policy",
         ))?;
 
+    // Disjoint ranges
     if src_end <= dst_offset || dst_end <= src_offset {
         return Ok(OverlapAction::NoCopy);
     }
 
+    // Overlapping ranges: check for simple unit-stride cases
     if dst_offset > src_offset {
         Ok(OverlapAction::BackwardCopy)
     } else {
@@ -284,19 +284,18 @@ fn count_selected_indices(len: usize, index: &FlatIterIndex) -> Result<usize, Tr
 #[must_use]
 fn count_true_mask(mask: &[bool]) -> usize {
     let mut count = 0usize;
-    let mut chunks = mask.chunks_exact(8);
+    let mut chunks = mask.chunks_exact(128);
     for chunk in &mut chunks {
-        count += usize::from(chunk[0])
-            + usize::from(chunk[1])
-            + usize::from(chunk[2])
-            + usize::from(chunk[3])
-            + usize::from(chunk[4])
-            + usize::from(chunk[5])
-            + usize::from(chunk[6])
-            + usize::from(chunk[7]);
+        for &b in chunk {
+            if b {
+                count += 1;
+            }
+        }
     }
-    for &flag in chunks.remainder() {
-        count += usize::from(flag);
+    for &b in chunks.remainder() {
+        if b {
+            count += 1;
+        }
     }
     count
 }
@@ -506,8 +505,8 @@ pub fn select_transfer_loop(ctx: TransferContext) -> Result<TransferLoopDecision
 
         // Same dtype, no cast needed.
         TransferDtypeRelation::Same => {
-            let src_unit = ctx.src_stride.unsigned_abs() == ctx.item_size;
-            let dst_unit = ctx.dst_stride.unsigned_abs() == ctx.item_size;
+            let src_unit = ctx.src_stride == ctx.item_size as isize;
+            let dst_unit = ctx.dst_stride == ctx.item_size as isize;
             if ctx.aligned && src_unit && dst_unit {
                 TransferLoopClass::SimpleContiguous
             } else {
@@ -517,8 +516,8 @@ pub fn select_transfer_loop(ctx: TransferContext) -> Result<TransferLoopDecision
 
         // Lossless cast.
         TransferDtypeRelation::LosslessCast => {
-            let src_unit = ctx.src_stride.unsigned_abs() == ctx.item_size;
-            let dst_unit = ctx.dst_stride.unsigned_abs() == ctx.item_size;
+            let src_unit = ctx.src_stride == ctx.item_size as isize;
+            let dst_unit = ctx.dst_stride == ctx.item_size as isize;
             if ctx.aligned && src_unit && dst_unit {
                 TransferLoopClass::ContiguousCast
             } else {
@@ -708,6 +707,10 @@ mod tests {
         assert_eq!(
             overlap_copy_policy(0, 32, 8).expect("disjoint ranges"),
             OverlapAction::NoCopy
+        );
+        assert_eq!(
+            overlap_copy_policy(0, 0, 8).expect("identity overlap"),
+            OverlapAction::ForwardCopy
         );
         assert_eq!(
             overlap_copy_policy(0, 4, 8).expect("overlap with forward dst"),
@@ -1277,7 +1280,7 @@ mod tests {
 
     #[test]
     fn negative_stride_preserves_loop_class_selection() {
-        // Negative unit stride with Same dtype
+        // Negative unit stride with Same dtype -> StridedNoCast (needs iteration)
         let ctx = TransferContext {
             src_stride: -8,
             dst_stride: -8,
@@ -1286,10 +1289,10 @@ mod tests {
         };
         assert_eq!(
             select_transfer_loop(ctx).expect("neg stride").loop_class,
-            TransferLoopClass::SimpleContiguous
+            TransferLoopClass::StridedNoCast
         );
 
-        // Negative unit stride with LosslessCast
+        // Negative unit stride with LosslessCast -> StridedWithCast
         let ctx = TransferContext {
             src_stride: -8,
             dst_stride: -8,
@@ -1299,7 +1302,7 @@ mod tests {
         };
         assert_eq!(
             select_transfer_loop(ctx).expect("neg lossless").loop_class,
-            TransferLoopClass::ContiguousCast
+            TransferLoopClass::StridedWithCast
         );
     }
 
