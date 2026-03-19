@@ -1421,7 +1421,10 @@ mod tests {
     #[test]
     fn flatiter_single_index_boundary() {
         // Last valid index
-        assert_eq!(validate_flatiter_read(10, &FlatIterIndex::Single(9)).unwrap(), 1);
+        assert_eq!(
+            validate_flatiter_read(10, &FlatIterIndex::Single(9)).unwrap(),
+            1
+        );
         // First out-of-bounds
         let err = validate_flatiter_read(10, &FlatIterIndex::Single(10))
             .expect_err("boundary index should fail");
@@ -1495,8 +1498,7 @@ mod tests {
             stop: 11,
             step: 1,
         };
-        let err =
-            validate_flatiter_read(10, &idx).expect_err("stop > length should fail");
+        let err = validate_flatiter_read(10, &idx).expect_err("stop > length should fail");
         assert_eq!(err.reason_code(), "flatiter_transfer_read_violation");
     }
 
@@ -1537,8 +1539,8 @@ mod tests {
             stop: 4,
             step: 1,
         };
-        let err = validate_flatiter_write(10, &idx, 3)
-            .expect_err("3 values for 4 lanes should fail");
+        let err =
+            validate_flatiter_write(10, &idx, 3).expect_err("3 values for 4 lanes should fail");
         assert_eq!(err.reason_code(), "flatiter_transfer_write_violation");
     }
 
@@ -1551,8 +1553,7 @@ mod tests {
     #[test]
     fn flatiter_write_propagates_read_violation_as_write() {
         let idx = FlatIterIndex::Single(100);
-        let err = validate_flatiter_write(10, &idx, 1)
-            .expect_err("out of bounds should fail");
+        let err = validate_flatiter_write(10, &idx, 1).expect_err("out of bounds should fail");
         assert_eq!(err.reason_code(), "flatiter_transfer_write_violation");
     }
 
@@ -1656,7 +1657,10 @@ mod tests {
             assert!(!display.is_empty(), "Display must be non-empty for {err:?}");
             // reason_code should be non-empty
             let code = err.reason_code();
-            assert!(!code.is_empty(), "reason_code must be non-empty for {err:?}");
+            assert!(
+                !code.is_empty(),
+                "reason_code must be non-empty for {err:?}"
+            );
         }
     }
 
@@ -1704,5 +1708,94 @@ mod tests {
             passed: true,
         };
         assert!(record.is_replay_complete());
+    }
+
+    // -----------------------------------------------------------------------
+    // Zero-element and boundary transfer edge cases (br-k36)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn select_transfer_class_rejects_zero_element_count() {
+        let input = TransferSelectorInput {
+            src_stride: 8,
+            dst_stride: 8,
+            item_size: 8,
+            element_count: 0,
+            aligned: true,
+            cast_is_lossless: true,
+            same_value_cast: false,
+        };
+        let err = select_transfer_class(input).unwrap_err();
+        assert!(matches!(err, TransferError::SelectorInvalidContext(_)));
+    }
+
+    #[test]
+    fn select_transfer_class_rejects_zero_item_size() {
+        let input = TransferSelectorInput {
+            src_stride: 0,
+            dst_stride: 0,
+            item_size: 0,
+            element_count: 10,
+            aligned: true,
+            cast_is_lossless: true,
+            same_value_cast: false,
+        };
+        let err = select_transfer_class(input).unwrap_err();
+        assert!(matches!(err, TransferError::SelectorInvalidContext(_)));
+    }
+
+    #[test]
+    fn overlap_policy_rejects_zero_byte_len() {
+        let err = overlap_copy_policy(0, 0, 0).unwrap_err();
+        assert!(matches!(err, TransferError::OverlapPolicyTriggered(_)));
+    }
+
+    #[test]
+    fn select_transfer_class_negative_strides_strided() {
+        // Negative strides with aligned and lossless should yield Strided
+        // (not Contiguous, since unit stride check uses unsigned_abs).
+        let input = TransferSelectorInput {
+            src_stride: -8,
+            dst_stride: -8,
+            item_size: 8,
+            element_count: 5,
+            aligned: true,
+            cast_is_lossless: true,
+            same_value_cast: false,
+        };
+        // unsigned_abs(-8) == 8 == item_size, so it IS unit stride.
+        let class = select_transfer_class(input).unwrap();
+        assert_eq!(class, TransferClass::Contiguous);
+    }
+
+    #[test]
+    fn select_transfer_class_mixed_sign_strides() {
+        // One positive, one negative stride.
+        let input = TransferSelectorInput {
+            src_stride: 8,
+            dst_stride: -8,
+            item_size: 8,
+            element_count: 3,
+            aligned: true,
+            cast_is_lossless: true,
+            same_value_cast: false,
+        };
+        let class = select_transfer_class(input).unwrap();
+        assert_eq!(class, TransferClass::Contiguous);
+    }
+
+    #[test]
+    fn flatiter_count_true_mask_empty() {
+        assert_eq!(count_true_mask(&[]), 0);
+    }
+
+    #[test]
+    fn flatiter_count_true_mask_all_false() {
+        assert_eq!(count_true_mask(&[false; 16]), 0);
+    }
+
+    #[test]
+    fn flatiter_count_true_mask_all_true() {
+        assert_eq!(count_true_mask(&[true; 17]), 17);
     }
 }

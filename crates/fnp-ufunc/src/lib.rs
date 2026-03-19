@@ -1683,6 +1683,137 @@ impl UFuncArrayView {
         Ok(view)
     }
 
+    /// Create a view with arbitrary shape and strides (NumPy `np.lib.stride_tricks.as_strided`).
+    ///
+    /// Negative strides are fully supported, enabling reverse-axis views and
+    /// other non-contiguous access patterns.  The new view must fit within the
+    /// byte-offset span of the current view's underlying buffer.  If the
+    /// resulting view has internal overlap the view is made read-only.
+    pub fn as_strided(&self, shape: Vec<usize>, strides: Vec<isize>) -> Result<Self, UFuncError> {
+        if shape.len() != strides.len() {
+            return Err(UFuncError::Msg(format!(
+                "as_strided: shape rank {} does not match stride rank {}",
+                shape.len(),
+                strides.len()
+            )));
+        }
+
+        // Compute required byte-offset span of the new view.
+        let required = Self::view_span(&shape, &strides)?;
+        // Compute available span from the current view.
+        let available = Self::view_span(&self.shape, &self.strides)?;
+
+        if required > available {
+            return Err(UFuncError::Msg(format!(
+                "as_strided: required span {required} exceeds available span {available}"
+            )));
+        }
+
+        // Detect internal overlap to decide writability.
+        let has_overlap = Self::detect_overlap(&shape, &strides)?;
+
+        Self::new_with_writable(
+            shape,
+            Arc::clone(&self.buffer),
+            self.offset,
+            strides,
+            self.dtype,
+            self.writable && !has_overlap,
+        )
+    }
+
+    /// Create a sliding window view (NumPy `np.lib.stride_tricks.sliding_window_view`).
+    ///
+    /// The output shape is `[d0 - w0 + 1, ..., w0, ...]` with doubled strides.
+    /// Adjacent windows share memory, so the view is always read-only.
+    pub fn sliding_window_view(&self, window_shape: &[usize]) -> Result<Self, UFuncError> {
+        let ndim = self.shape.len();
+        if window_shape.len() != ndim {
+            return Err(UFuncError::Msg(format!(
+                "sliding_window_view: window rank {} does not match array rank {}",
+                window_shape.len(),
+                ndim
+            )));
+        }
+
+        let mut out_shape = Vec::with_capacity(ndim * 2);
+        for (axis, (&dim, &win)) in self.shape.iter().zip(window_shape).enumerate() {
+            if win == 0 || win > dim {
+                return Err(UFuncError::Msg(format!(
+                    "sliding_window_view: window size {win} invalid for axis {axis} with size {dim}"
+                )));
+            }
+            out_shape.push(dim - win + 1);
+        }
+        out_shape.extend(window_shape.iter().copied());
+
+        let mut out_strides = Vec::with_capacity(ndim * 2);
+        out_strides.extend(self.strides.iter().copied());
+        out_strides.extend(self.strides.iter().copied());
+
+        Self::new_with_writable(
+            out_shape,
+            Arc::clone(&self.buffer),
+            self.offset,
+            out_strides,
+            self.dtype,
+            false, // sliding windows alias → readonly
+        )
+    }
+
+    /// Compute the byte-offset span for a given shape + strides combination
+    /// (distance from min to max reachable offset + 1 element).
+    fn view_span(shape: &[usize], strides: &[isize]) -> Result<usize, UFuncError> {
+        if shape.contains(&0) {
+            return Ok(0);
+        }
+        let mut max_off: isize = 0;
+        let mut min_off: isize = 0;
+        for (&dim, &stride) in shape.iter().zip(strides) {
+            if dim <= 1 {
+                continue;
+            }
+            let end = stride
+                .checked_mul((dim - 1) as isize)
+                .ok_or_else(|| UFuncError::Msg("as_strided: stride overflow".to_string()))?;
+            if end >= 0 {
+                max_off = max_off
+                    .checked_add(end)
+                    .ok_or_else(|| UFuncError::Msg("as_strided: span overflow".to_string()))?;
+            } else {
+                min_off = min_off
+                    .checked_add(end)
+                    .ok_or_else(|| UFuncError::Msg("as_strided: span overflow".to_string()))?;
+            }
+        }
+        let span = max_off
+            .checked_sub(min_off)
+            .ok_or_else(|| UFuncError::Msg("as_strided: span overflow".to_string()))?;
+        // Add 1 for the element itself.
+        usize::try_from(span)
+            .map_err(|_| UFuncError::Msg("as_strided: negative span".to_string()))?
+            .checked_add(1)
+            .ok_or_else(|| UFuncError::Msg("as_strided: span overflow".to_string()))
+    }
+
+    /// Detect internal overlap: any two distinct logical indices mapping to the
+    /// same buffer position.  Zero-stride or sub-element-stride axes overlap.
+    fn detect_overlap(shape: &[usize], strides: &[isize]) -> Result<bool, UFuncError> {
+        for (&dim, &stride) in shape.iter().zip(strides) {
+            if dim <= 1 {
+                continue;
+            }
+            let abs_stride = stride
+                .checked_abs()
+                .ok_or_else(|| UFuncError::Msg("as_strided: abs stride overflow".to_string()))?;
+            // Stride of 0 or less than 1 element means overlap.
+            if abs_stride == 0 || abs_stride < 1 {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     fn compute_offset(&self, index: &[i64], buffer_len: usize) -> Result<usize, UFuncError> {
         if index.len() != self.shape.len() {
             return Err(UFuncError::Msg(format!(
@@ -2400,6 +2531,30 @@ impl UFuncArray {
             self.dtype,
             false,
         )
+    }
+
+    /// Create a view with arbitrary shape and strides (`np.lib.stride_tricks.as_strided`).
+    ///
+    /// Negative strides are fully supported.  The new view shares the same
+    /// backing buffer as `self`.
+    pub fn as_strided_view(
+        &self,
+        shape: Vec<usize>,
+        strides: Vec<isize>,
+    ) -> Result<UFuncArrayView, UFuncError> {
+        self.shared_view()?.as_strided(shape, strides)
+    }
+
+    /// Create a zero-copy sliding-window view using shared memory.
+    ///
+    /// Unlike `sliding_window_view` which materializes the windows into a new
+    /// array, this returns a `UFuncArrayView` that shares the same backing
+    /// buffer.  The result is always read-only because adjacent windows alias.
+    pub fn sliding_window_shared_view(
+        &self,
+        window_shape: &[usize],
+    ) -> Result<UFuncArrayView, UFuncError> {
+        self.shared_view()?.sliding_window_view(window_shape)
     }
 
     #[must_use]
@@ -5183,12 +5338,14 @@ impl UFuncArray {
 
     /// Compute matrix rank (np.linalg.matrix_rank).
     pub fn matrix_rank(&self, rcond: f64) -> Result<usize, UFuncError> {
-        if self.shape.len() != 2 || self.shape[0] != self.shape[1] {
+        if self.shape.len() != 2 {
             return Err(UFuncError::Msg(
-                "matrix_rank: input must be a square 2-D array".into(),
+                "matrix_rank: input must be a 2-D array".into(),
             ));
         }
-        fnp_linalg::matrix_rank_nxn(&self.values, self.shape[0], rcond)
+        let m = self.shape[0];
+        let n = self.shape[1];
+        fnp_linalg::matrix_rank_mxn(&self.values, m, n, rcond)
             .map_err(|e| UFuncError::Msg(format!("{e}")))
     }
 
@@ -7027,10 +7184,10 @@ impl UFuncArray {
         self.cumulative_op(axis, |running, v| {
             if running.is_nan() || v.is_nan() {
                 f64::NAN
-            } else if v < running {
-                v
-            } else {
+            } else if running < v {
                 running
+            } else {
+                v
             }
         })
     }
@@ -7041,10 +7198,10 @@ impl UFuncArray {
         self.cumulative_op(axis, |running, v| {
             if running.is_nan() || v.is_nan() {
                 f64::NAN
-            } else if v > running {
-                v
-            } else {
+            } else if running > v {
                 running
+            } else {
+                v
             }
         })
     }
@@ -11812,8 +11969,9 @@ impl UFuncArray {
     ///
     /// `np.lib.stride_tricks.as_strided(x, shape, strides)`.
     /// `strides` are in **element counts** (not bytes), matching our internal representation.
+    /// Signed strides are supported so callers can express reverse views.
     /// Elements that map to indices beyond the source data yield 0.0.
-    pub fn as_strided(&self, shape: &[usize], strides: &[usize]) -> Result<Self, UFuncError> {
+    pub fn as_strided(&self, shape: &[usize], strides: &[isize]) -> Result<Self, UFuncError> {
         if shape.len() != strides.len() {
             return Err(UFuncError::Msg(
                 "as_strided: shape and strides must have same length".to_string(),
@@ -11821,23 +11979,52 @@ impl UFuncArray {
         }
         let out_count: usize = shape.iter().product();
         let out_strides = c_strides_elems(shape);
-        let src_len = self.values.len();
-        let values: Vec<f64> = (0..out_count)
-            .map(|flat_idx| {
-                let mut src_offset = 0usize;
-                let mut rem = flat_idx;
-                for d in 0..shape.len() {
-                    let idx = rem / out_strides[d];
-                    rem %= out_strides[d];
-                    src_offset += idx * strides[d];
-                }
-                if src_offset < src_len {
-                    self.values[src_offset]
-                } else {
-                    0.0
-                }
-            })
-            .collect();
+        let mut min_offset = 0i128;
+        for (&dim, &stride) in shape.iter().zip(strides.iter()) {
+            if dim <= 1 {
+                continue;
+            }
+            let end = (stride as i128)
+                .checked_mul(i128::try_from(dim - 1).map_err(|_| {
+                    UFuncError::Msg("as_strided: shape dimension overflow".to_string())
+                })?)
+                .ok_or_else(|| UFuncError::Msg("as_strided: offset overflow".to_string()))?;
+            if end < 0 {
+                min_offset = min_offset
+                    .checked_add(end)
+                    .ok_or_else(|| UFuncError::Msg("as_strided: offset overflow".to_string()))?;
+            }
+        }
+        let base_shift = min_offset
+            .checked_neg()
+            .ok_or_else(|| UFuncError::Msg("as_strided: offset overflow".to_string()))?;
+        let src_len = i128::try_from(self.values.len())
+            .map_err(|_| UFuncError::Msg("as_strided: source length overflow".to_string()))?;
+        let mut values = Vec::with_capacity(out_count);
+        for flat_idx in 0..out_count {
+            let mut src_offset = base_shift;
+            let mut rem = flat_idx;
+            let mut overflowed = false;
+            for d in 0..shape.len() {
+                let idx = rem / out_strides[d];
+                rem %= out_strides[d];
+                let delta = (idx as i128)
+                    .checked_mul(strides[d] as i128)
+                    .ok_or_else(|| UFuncError::Msg("as_strided: offset overflow".to_string()))?;
+                src_offset = match src_offset.checked_add(delta) {
+                    Some(offset) => offset,
+                    None => {
+                        overflowed = true;
+                        break;
+                    }
+                };
+            }
+            if !overflowed && src_offset >= 0 && src_offset < src_len {
+                values.push(self.values[src_offset as usize]);
+            } else {
+                values.push(0.0);
+            }
+        }
         Ok(Self {
             shape: shape.to_vec(),
             values,
@@ -15698,12 +15885,12 @@ impl MaskedArray {
                 data_vals[i] = self.fill_value;
             }
         }
-        self.data = UFuncArray::new(self.shape().to_vec(), data_vals, self.dtype())
-            .unwrap_or_else(|_| self.data.clone());
-        self.mask = Some(
-            UFuncArray::new(self.shape().to_vec(), mask_vals, DType::Bool)
-                .unwrap_or_else(|_| self.mask.clone().unwrap()),
-        );
+        if let Ok(new_data) = UFuncArray::new(self.shape().to_vec(), data_vals, self.dtype()) {
+            self.data = new_data;
+        }
+        if let Ok(new_mask) = UFuncArray::new(self.shape().to_vec(), mask_vals, DType::Bool) {
+            self.mask = Some(new_mask);
+        }
     }
 }
 
@@ -27531,6 +27718,35 @@ mod tests {
     }
 
     #[test]
+    fn as_strided_negative_stride_reverse() {
+        let a = UFuncArray::new(vec![5], vec![1.0, 2.0, 3.0, 4.0, 5.0], DType::F64).unwrap();
+        let r = a.as_strided(&[5], &[-1]).unwrap();
+        assert_eq!(r.shape(), &[5]);
+        assert_eq!(r.values(), &[5.0, 4.0, 3.0, 2.0, 1.0]);
+    }
+
+    #[test]
+    fn as_strided_negative_stride_reverse_rows() {
+        let a = UFuncArray::new(
+            vec![3, 3],
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+            DType::F64,
+        )
+        .unwrap();
+        let r = a.as_strided(&[3, 3], &[-3, 1]).unwrap();
+        assert_eq!(r.shape(), &[3, 3]);
+        assert_eq!(r.values(), &[7.0, 8.0, 9.0, 4.0, 5.0, 6.0, 1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn as_strided_overflowing_stride_yields_zero_fill_instead_of_panicking() {
+        let a = UFuncArray::new(vec![2], vec![10.0, 20.0], DType::F64).unwrap();
+        let r = a.as_strided(&[2, 2], &[0, isize::MAX]).unwrap();
+        assert_eq!(r.shape(), &[2, 2]);
+        assert_eq!(r.values(), &[10.0, 0.0, 10.0, 0.0]);
+    }
+
+    #[test]
     fn as_strided_mismatched_dims() {
         let a = UFuncArray::new(vec![5], vec![1.0; 5], DType::F64).unwrap();
         assert!(a.as_strided(&[2, 3], &[1]).is_err()); // shape.len != strides.len
@@ -31831,5 +32047,262 @@ mod tests {
         let a = UFuncArray::new(vec![5], vec![1.0, 2.0, 3.0, 4.0, 5.0], DType::F64).unwrap();
         let reversed = a.slice_axis(0, None, None, -1).unwrap();
         assert_eq!(reversed.values(), &[5.0, 4.0, 3.0, 2.0, 1.0]);
+    }
+
+    // ── as_strided / sliding_window_view on UFuncArrayView ──────────────
+
+    #[test]
+    fn test_as_strided_view_identity() {
+        // as_strided with the same shape and C-strides should be a no-op view.
+        let a =
+            UFuncArray::new(vec![3, 4], (0..12).map(|v| v as f64).collect(), DType::F64).unwrap();
+        let view = a.as_strided_view(vec![3, 4], vec![4, 1]).unwrap();
+        let mat = UFuncArray::from_shared_view(&view).unwrap();
+        assert_eq!(mat.shape(), &[3, 4]);
+        assert_eq!(mat.values(), a.values());
+    }
+
+    #[test]
+    fn test_as_strided_view_negative_stride_reverse_1d() {
+        // Reverse a 1-D array via negative stride (equivalent to arr[::-1]).
+        let a = UFuncArray::new(vec![5], vec![1.0, 2.0, 3.0, 4.0, 5.0], DType::F64).unwrap();
+        let base = a.shared_view().unwrap();
+        // offset must point to the last element so that negative stride walks back.
+        let reversed = UFuncArrayView::new(
+            vec![5],
+            Arc::clone(&base.buffer),
+            4, // last element index
+            vec![-1],
+            DType::F64,
+        )
+        .unwrap();
+        let arr = UFuncArray::from_shared_view(&reversed).unwrap();
+        assert_eq!(arr.values(), &[5.0, 4.0, 3.0, 2.0, 1.0]);
+    }
+
+    #[test]
+    fn test_as_strided_view_negative_stride_2d() {
+        // 3×3 matrix with rows reversed via negative stride on axis 0.
+        let a =
+            UFuncArray::new(vec![3, 3], (1..=9).map(|v| v as f64).collect(), DType::F64).unwrap();
+        let base = a.shared_view().unwrap();
+        // offset at start of last row (index 6), row stride = -3.
+        let view = UFuncArrayView::new(
+            vec![3, 3],
+            Arc::clone(&base.buffer),
+            6, // row 2, col 0
+            vec![-3, 1],
+            DType::F64,
+        )
+        .unwrap();
+        let mat = UFuncArray::from_shared_view(&view).unwrap();
+        // rows reversed: [7,8,9], [4,5,6], [1,2,3]
+        assert_eq!(mat.values(), &[7.0, 8.0, 9.0, 4.0, 5.0, 6.0, 1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn test_as_strided_view_broadcast_via_zero_stride() {
+        // Zero stride on one axis simulates broadcast (like np.broadcast_to).
+        let a = UFuncArray::new(vec![3], vec![10.0, 20.0, 30.0], DType::F64).unwrap();
+        let view = a.as_strided_view(vec![3, 3], vec![0, 1]).unwrap();
+        let mat = UFuncArray::from_shared_view(&view).unwrap();
+        // Each row is [10, 20, 30] repeated.
+        assert_eq!(mat.shape(), &[3, 3]);
+        assert_eq!(
+            mat.values(),
+            &[10.0, 20.0, 30.0, 10.0, 20.0, 30.0, 10.0, 20.0, 30.0]
+        );
+        // Zero stride → overlap → read-only.
+        assert!(!view.is_writable());
+    }
+
+    #[test]
+    fn test_as_strided_view_oob_rejected() {
+        let a = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        // Requesting a 10-element view from a 3-element buffer should fail.
+        let res = a.as_strided_view(vec![10], vec![1]);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_as_strided_view_rank_mismatch_rejected() {
+        let a = UFuncArray::new(vec![4], vec![1.0, 2.0, 3.0, 4.0], DType::F64).unwrap();
+        let res = a.as_strided_view(vec![2, 2], vec![1]);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_as_strided_view_empty_shape() {
+        let a = UFuncArray::new(vec![4], vec![1.0, 2.0, 3.0, 4.0], DType::F64).unwrap();
+        let view = a.as_strided_view(vec![0], vec![1]).unwrap();
+        let mat = UFuncArray::from_shared_view(&view).unwrap();
+        assert_eq!(mat.shape(), &[0]);
+        assert!(mat.values().is_empty());
+    }
+
+    #[test]
+    fn test_sliding_window_shared_view_1d() {
+        let a = UFuncArray::new(vec![5], vec![1.0, 2.0, 3.0, 4.0, 5.0], DType::F64).unwrap();
+        let view = a.sliding_window_shared_view(&[3]).unwrap();
+        assert_eq!(view.shape(), &[3, 3]); // 5 - 3 + 1 = 3 windows, each size 3
+        let mat = UFuncArray::from_shared_view(&view).unwrap();
+        assert_eq!(mat.values(), &[1.0, 2.0, 3.0, 2.0, 3.0, 4.0, 3.0, 4.0, 5.0]);
+        assert!(!view.is_writable()); // sliding windows are readonly
+    }
+
+    #[test]
+    fn test_sliding_window_shared_view_2d() {
+        let a =
+            UFuncArray::new(vec![3, 4], (1..=12).map(|v| v as f64).collect(), DType::F64).unwrap();
+        let view = a.sliding_window_shared_view(&[2, 2]).unwrap();
+        // shape: [3-2+1, 4-2+1, 2, 2] = [2, 3, 2, 2]
+        assert_eq!(view.shape(), &[2, 3, 2, 2]);
+    }
+
+    #[test]
+    fn test_sliding_window_shared_view_invalid_window() {
+        let a = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        // Window larger than axis.
+        assert!(a.sliding_window_shared_view(&[4]).is_err());
+        // Zero window.
+        assert!(a.sliding_window_shared_view(&[0]).is_err());
+        // Wrong rank.
+        assert!(a.sliding_window_shared_view(&[2, 2]).is_err());
+    }
+
+    #[test]
+    fn test_as_strided_on_view_negative_stride() {
+        // Test as_strided directly on UFuncArrayView.
+        let a = UFuncArray::new(vec![6], (0..6).map(|v| v as f64).collect(), DType::F64).unwrap();
+        let base = a.shared_view().unwrap();
+        // Reshape as 2×3 with standard C strides.
+        let reshaped = base.as_strided(vec![2, 3], vec![3, 1]).unwrap();
+        let mat = UFuncArray::from_shared_view(&reshaped).unwrap();
+        assert_eq!(mat.shape(), &[2, 3]);
+        assert_eq!(mat.values(), &[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+    }
+
+    #[test]
+    fn test_sliding_window_on_view() {
+        // Test sliding_window_view directly on UFuncArrayView.
+        let a = UFuncArray::new(vec![4], vec![10.0, 20.0, 30.0, 40.0], DType::F64).unwrap();
+        let base = a.shared_view().unwrap();
+        let sw = base.sliding_window_view(&[2]).unwrap();
+        assert_eq!(sw.shape(), &[3, 2]); // 4 - 2 + 1 = 3
+        let mat = UFuncArray::from_shared_view(&sw).unwrap();
+        assert_eq!(mat.values(), &[10.0, 20.0, 20.0, 30.0, 30.0, 40.0]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Reduction edge cases (br-k36)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_reduce_sum_all_nan() {
+        let a = UFuncArray::new(vec![3], vec![f64::NAN, f64::NAN, f64::NAN], DType::F64).unwrap();
+        let result = a.reduce_sum(None, false).unwrap();
+        assert!(result.values()[0].is_nan(), "sum of all-NaN should be NaN");
+    }
+
+    #[test]
+    fn test_reduce_mean_all_nan() {
+        let a = UFuncArray::new(vec![3], vec![f64::NAN, f64::NAN, f64::NAN], DType::F64).unwrap();
+        let result = a.reduce_mean(None, false).unwrap();
+        assert!(result.values()[0].is_nan(), "mean of all-NaN should be NaN");
+    }
+
+    #[test]
+    fn test_reduce_min_all_nan_propagates() {
+        let a = UFuncArray::new(vec![3], vec![f64::NAN, f64::NAN, f64::NAN], DType::F64).unwrap();
+        let result = a.reduce_min(None, false).unwrap();
+        assert!(
+            result.values()[0].is_nan(),
+            "min of all-NaN should propagate NaN"
+        );
+    }
+
+    #[test]
+    fn test_reduce_max_all_nan_propagates() {
+        let a = UFuncArray::new(vec![3], vec![f64::NAN, f64::NAN, f64::NAN], DType::F64).unwrap();
+        let result = a.reduce_max(None, false).unwrap();
+        assert!(
+            result.values()[0].is_nan(),
+            "max of all-NaN should propagate NaN"
+        );
+    }
+
+    #[test]
+    fn test_reduce_std_all_nan() {
+        let a = UFuncArray::new(vec![4], vec![f64::NAN; 4], DType::F64).unwrap();
+        let result = a.reduce_std(None, false, 0).unwrap();
+        assert!(result.values()[0].is_nan(), "std of all-NaN should be NaN");
+    }
+
+    #[test]
+    fn test_reduce_sum_axis_negative_equivalence() {
+        // axis=-1 should be equivalent to axis=ndim-1.
+        let a =
+            UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
+        let r1 = a.reduce_sum(Some(-1), false).unwrap();
+        let r2 = a.reduce_sum(Some(1), false).unwrap();
+        assert_eq!(r1.values(), r2.values());
+        assert_eq!(r1.shape(), r2.shape());
+    }
+
+    #[test]
+    fn test_reduce_mean_axis_negative_equivalence() {
+        let a =
+            UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
+        let r1 = a.reduce_mean(Some(-1), false).unwrap();
+        let r2 = a.reduce_mean(Some(1), false).unwrap();
+        assert_eq!(r1.values(), r2.values());
+    }
+
+    #[test]
+    fn test_reduce_sum_keepdims_preserves_rank() {
+        let a = UFuncArray::new(
+            vec![2, 3, 4],
+            (0..24).map(|v| v as f64).collect(),
+            DType::F64,
+        )
+        .unwrap();
+        let result = a.reduce_sum(Some(1), true).unwrap();
+        assert_eq!(result.shape().len(), 3, "keepdims should preserve rank");
+        assert_eq!(result.shape(), &[2, 1, 4]);
+    }
+
+    #[test]
+    fn test_reduce_sum_keepdims_none_axis_scalar() {
+        // reduce_sum(None, keepdims=true) should return shape [1] (or [1,1,...]).
+        let a = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        let result = a.reduce_sum(None, true).unwrap();
+        assert_eq!(result.values(), &[6.0]);
+    }
+
+    #[test]
+    fn test_reduce_prod_single_element() {
+        let a = UFuncArray::new(vec![1], vec![42.0], DType::F64).unwrap();
+        let result = a.reduce_prod(None, false).unwrap();
+        assert_eq!(result.values(), &[42.0]);
+    }
+
+    #[test]
+    fn test_reduce_min_single_nan() {
+        let a = UFuncArray::new(vec![3], vec![1.0, f64::NAN, 3.0], DType::F64).unwrap();
+        let result = a.reduce_min(None, false).unwrap();
+        assert!(
+            result.values()[0].is_nan(),
+            "min with any NaN should propagate NaN"
+        );
+    }
+
+    #[test]
+    fn test_reduce_max_single_nan() {
+        let a = UFuncArray::new(vec![3], vec![1.0, f64::NAN, 3.0], DType::F64).unwrap();
+        let result = a.reduce_max(None, false).unwrap();
+        assert!(
+            result.values()[0].is_nan(),
+            "max with any NaN should propagate NaN"
+        );
     }
 }

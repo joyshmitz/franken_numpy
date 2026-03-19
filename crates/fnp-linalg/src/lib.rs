@@ -2,6 +2,9 @@
 
 use core::fmt;
 
+/// Result of `lstsq_svd`: `(x, residuals, rank, singular_values)`.
+pub type LstsqResult = (Vec<f64>, Vec<f64>, usize, Vec<f64>);
+
 pub const LINALG_PACKET_ID: &str = "FNP-P2C-008";
 pub const MAX_TOLERANCE_SEARCH_DEPTH: usize = 128;
 pub const MAX_BACKEND_REVALIDATION_ATTEMPTS: usize = 64;
@@ -543,9 +546,12 @@ pub fn slogdet_nxn(a: &[f64], n: usize) -> Result<(f64, f64), LinAlgError> {
 pub fn inv_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
     let (lu, perm, _) = lu_decompose(a, n)?;
     let mut inv = vec![0.0; n * n];
+    let mut e_col = vec![0.0; n];
 
     for col in 0..n {
-        let e_col: Vec<f64> = (0..n).map(|i| if i == col { 1.0 } else { 0.0 }).collect();
+        for (i, e) in e_col.iter_mut().enumerate() {
+            *e = if i == col { 1.0 } else { 0.0 };
+        }
         let x = lu_forward_back(&lu, &perm, &e_col, n);
         for (row, &val) in x.iter().enumerate() {
             inv[row * n + col] = val;
@@ -1030,6 +1036,8 @@ pub fn qr_mxn(a: &[f64], m: usize, n: usize) -> Result<(Vec<f64>, Vec<f64>), Lin
     let mut r = a.to_vec();
     let k = m.min(n);
 
+    // Householder vector v
+    let mut v = vec![0.0; m];
     for col in 0..k {
         // Compute norm of column `col` below the diagonal
         let mut col_norm_sq = 0.0;
@@ -1041,11 +1049,12 @@ pub fn qr_mxn(a: &[f64], m: usize, n: usize) -> Result<(Vec<f64>, Vec<f64>), Lin
             continue;
         }
 
-        // Householder vector v
-        let mut v = vec![0.0; m];
         let sign = if r[col * n + col] >= 0.0 { 1.0 } else { -1.0 };
-        for i in col..m {
-            v[i] = r[i * n + col];
+        for vi in &mut v[..col] {
+            *vi = 0.0;
+        }
+        for (i, vi) in v[col..m].iter_mut().enumerate() {
+            *vi = r[(i + col) * n + col];
         }
         v[col] += sign * col_norm;
         let v_norm_sq: f64 = v[col..].iter().map(|x| x * x).sum();
@@ -1189,6 +1198,9 @@ fn svd_bidiag_full(a: &[f64], m: usize, n: usize) -> Result<SvdFullResult, LinAl
         vt[i * n + i] = 1.0;
     }
 
+    let mut v_house = vec![0.0; m];
+    let mut w_house = vec![0.0; n];
+
     for j in 0..n {
         // Left Householder: zero out column j below diagonal
         let col_norm = {
@@ -1200,9 +1212,11 @@ fn svd_bidiag_full(a: &[f64], m: usize, n: usize) -> Result<SvdFullResult, LinAl
         };
         if col_norm > 0.0 {
             let sign = if work[j * n + j] >= 0.0 { 1.0 } else { -1.0 };
-            let mut v_house = vec![0.0; m];
-            for i in j..m {
-                v_house[i] = work[i * n + j];
+            for vi in &mut v_house[..j] {
+                *vi = 0.0;
+            }
+            for (i, vi) in v_house[j..m].iter_mut().enumerate() {
+                *vi = work[(i + j) * n + j];
             }
             v_house[j] += sign * col_norm;
             let v_norm_sq: f64 = v_house[j..].iter().map(|x| x * x).sum();
@@ -1210,7 +1224,10 @@ fn svd_bidiag_full(a: &[f64], m: usize, n: usize) -> Result<SvdFullResult, LinAl
                 let scale = 2.0 / v_norm_sq;
                 // Apply to work (left): work = (I - scale*v*v^T) * work
                 for col in j..n {
-                    let dot: f64 = (j..m).map(|i| v_house[i] * work[i * n + col]).sum();
+                    let mut dot = 0.0;
+                    for i in j..m {
+                        dot += v_house[i] * work[i * n + col];
+                    }
                     let f = scale * dot;
                     for i in j..m {
                         work[i * n + col] -= f * v_house[i];
@@ -1218,7 +1235,10 @@ fn svd_bidiag_full(a: &[f64], m: usize, n: usize) -> Result<SvdFullResult, LinAl
                 }
                 // Accumulate into U: U = U * (I - scale*v*v^T)
                 for row in 0..m {
-                    let dot: f64 = (j..m).map(|i| u[row * m + i] * v_house[i]).sum();
+                    let mut dot = 0.0;
+                    for i in j..m {
+                        dot += u[row * m + i] * v_house[i];
+                    }
                     let f = scale * dot;
                     for i in j..m {
                         u[row * m + i] -= f * v_house[i];
@@ -1243,9 +1263,11 @@ fn svd_bidiag_full(a: &[f64], m: usize, n: usize) -> Result<SvdFullResult, LinAl
                 } else {
                     -1.0
                 };
-                let mut w_house = vec![0.0; n];
-                for col in (j + 1)..n {
-                    w_house[col] = work[j * n + col];
+                for wi in &mut w_house[..=j] {
+                    *wi = 0.0;
+                }
+                for (idx, wi) in w_house[(j + 1)..n].iter_mut().enumerate() {
+                    *wi = work[j * n + (j + 1 + idx)];
                 }
                 w_house[j + 1] += sign * row_norm;
                 let w_norm_sq: f64 = w_house[(j + 1)..].iter().map(|x| x * x).sum();
@@ -1253,9 +1275,10 @@ fn svd_bidiag_full(a: &[f64], m: usize, n: usize) -> Result<SvdFullResult, LinAl
                     let scale = 2.0 / w_norm_sq;
                     // Apply to work (right): work = work * (I - scale*w*w^T)
                     for row in j..m {
-                        let dot: f64 = ((j + 1)..n)
-                            .map(|col| work[row * n + col] * w_house[col])
-                            .sum();
+                        let mut dot = 0.0;
+                        for col in (j + 1)..n {
+                            dot += work[row * n + col] * w_house[col];
+                        }
                         let f = scale * dot;
                         for col in (j + 1)..n {
                             work[row * n + col] -= f * w_house[col];
@@ -1263,9 +1286,10 @@ fn svd_bidiag_full(a: &[f64], m: usize, n: usize) -> Result<SvdFullResult, LinAl
                     }
                     // Accumulate into Vt: Vt = (I - scale*w*w^T) * Vt
                     for col in 0..n {
-                        let dot: f64 = ((j + 1)..n)
-                            .map(|row| w_house[row] * vt[row * n + col])
-                            .sum();
+                        let mut dot = 0.0;
+                        for row in (j + 1)..n {
+                            dot += w_house[row] * vt[row * n + col];
+                        }
                         let f = scale * dot;
                         for row in (j + 1)..n {
                             vt[row * n + col] -= f * w_house[row];
@@ -1533,12 +1557,12 @@ pub fn trace_nxn(a: &[f64], n: usize) -> Result<f64, LinAlgError> {
     Ok((0..n).map(|i| a[i * n + i]).sum())
 }
 
-/// Matrix rank via SVD.
+/// Matrix rank via SVD for MxN matrices.
 /// Returns the number of singular values above `rcond * sigma_max`.
-pub fn matrix_rank_nxn(a: &[f64], n: usize, rcond: f64) -> Result<usize, LinAlgError> {
-    if a.len() != n * n || n == 0 {
+pub fn matrix_rank_mxn(a: &[f64], m: usize, n: usize, rcond: f64) -> Result<usize, LinAlgError> {
+    if a.len() != m * n || m == 0 || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
-            "matrix_rank_nxn: input must be n*n with n > 0",
+            "matrix_rank_mxn: input must be m*n with m,n > 0",
         ));
     }
     if !rcond.is_finite() || rcond < 0.0 {
@@ -1552,13 +1576,17 @@ pub fn matrix_rank_nxn(a: &[f64], n: usize, rcond: f64) -> Result<usize, LinAlgE
         ));
     }
 
-    let sigmas = svd_nxn(a, n)?;
+    let sigmas = svd_mxn(a, m, n)?;
     let sigma_max = sigmas.first().copied().unwrap_or(0.0);
     if sigma_max == 0.0 {
         return Ok(0);
     }
     let threshold = sigma_max * rcond;
     Ok(sigmas.iter().filter(|&&s| s > threshold).count())
+}
+
+pub fn matrix_rank_nxn(a: &[f64], n: usize, rcond: f64) -> Result<usize, LinAlgError> {
+    matrix_rank_mxn(a, n, n, rcond)
 }
 
 /// Compute singular values of an NxN matrix via QR iteration on A^T A.
@@ -1579,6 +1607,7 @@ fn tridiag_reduce(a: &[f64], n: usize) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
         q[i * n + i] = 1.0;
     }
 
+    let mut v = vec![0.0; n];
     for j in 0..n.saturating_sub(2) {
         // Householder to zero column j below row j+1
         let col_norm = {
@@ -1597,9 +1626,11 @@ fn tridiag_reduce(a: &[f64], n: usize) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
         } else {
             -1.0
         };
-        let mut v = vec![0.0; n];
-        for i in (j + 1)..n {
-            v[i] = work[i * n + j];
+        for vi in &mut v[..=j] {
+            *vi = 0.0;
+        }
+        for (idx, vi) in v[(j + 1)..n].iter_mut().enumerate() {
+            *vi = work[(j + 1 + idx) * n + j];
         }
         v[j + 1] += sign * col_norm;
 
@@ -1612,7 +1643,10 @@ fn tridiag_reduce(a: &[f64], n: usize) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
         // Similarity: work = H * work * H  where H = I - scale·v·v^T
         // Left: work = H * work
         for col in 0..n {
-            let dot: f64 = ((j + 1)..n).map(|i| v[i] * work[i * n + col]).sum();
+            let mut dot = 0.0;
+            for i in (j + 1)..n {
+                dot += v[i] * work[i * n + col];
+            }
             let f = scale * dot;
             for i in (j + 1)..n {
                 work[i * n + col] -= f * v[i];
@@ -1620,7 +1654,10 @@ fn tridiag_reduce(a: &[f64], n: usize) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
         }
         // Right: work = work * H
         for row in 0..n {
-            let dot: f64 = ((j + 1)..n).map(|i| v[i] * work[row * n + i]).sum();
+            let mut dot = 0.0;
+            for i in (j + 1)..n {
+                dot += v[i] * work[row * n + i];
+            }
             let f = scale * dot;
             for i in (j + 1)..n {
                 work[row * n + i] -= f * v[i];
@@ -1628,7 +1665,10 @@ fn tridiag_reduce(a: &[f64], n: usize) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
         }
         // Accumulate: Q = Q * H
         for row in 0..n {
-            let dot: f64 = ((j + 1)..n).map(|i| v[i] * q[row * n + i]).sum();
+            let mut dot = 0.0;
+            for i in (j + 1)..n {
+                dot += v[i] * q[row * n + i];
+            }
             let f = scale * dot;
             for i in (j + 1)..n {
                 q[row * n + i] -= f * v[i];
@@ -1801,6 +1841,10 @@ fn hessenberg_qr_iter(h: &mut [f64], mut z: Option<&mut [f64]>, n: usize) {
     let max_iter = 60 * n * n;
     let mut p = n; // active upper bound (exclusive of converged tail)
 
+    // QR factorization of H[lo..p, lo..p] using Givens rotations
+    let mut cos_vals = vec![0.0; n];
+    let mut sin_vals = vec![0.0; n];
+
     for iter in 0..max_iter {
         if p <= 1 {
             break;
@@ -1865,11 +1909,6 @@ fn hessenberg_qr_iter(h: &mut [f64], mut z: Option<&mut [f64]>, n: usize) {
             h[i * n + i] -= mu;
         }
 
-        // QR factorization of H[lo..p, lo..p] using Givens rotations
-        let block = p - lo;
-        let mut cos_vals = vec![0.0; block.saturating_sub(1)];
-        let mut sin_vals = vec![0.0; block.saturating_sub(1)];
-
         for k in lo..(p - 1) {
             let ff = h[k * n + k];
             let gg = h[(k + 1) * n + k];
@@ -1879,8 +1918,8 @@ fn hessenberg_qr_iter(h: &mut [f64], mut z: Option<&mut [f64]>, n: usize) {
             } else {
                 (1.0, 0.0)
             };
-            cos_vals[k - lo] = c;
-            sin_vals[k - lo] = s;
+            cos_vals[k] = c;
+            sin_vals[k] = s;
             // Apply left rotation to rows k, k+1 (columns k..n)
             for j in k..n {
                 let t1 = c * h[k * n + j] + s * h[(k + 1) * n + j];
@@ -1891,8 +1930,8 @@ fn hessenberg_qr_iter(h: &mut [f64], mut z: Option<&mut [f64]>, n: usize) {
 
         // Form R * Q (right-multiply by G_lo .. G_{p-2})
         for k in lo..(p - 1) {
-            let c = cos_vals[k - lo];
-            let s = sin_vals[k - lo];
+            let c = cos_vals[k];
+            let s = sin_vals[k];
             // Apply right rotation to columns k, k+1 (rows 0..min(k+2, p))
             let row_end = (k + 2).min(p);
             for i in 0..row_end {
@@ -1910,8 +1949,8 @@ fn hessenberg_qr_iter(h: &mut [f64], mut z: Option<&mut [f64]>, n: usize) {
         // Accumulate into Z: Z = Z * G_lo * ... * G_{p-2}
         if let Some(ref mut z) = z {
             for k in lo..(p - 1) {
-                let c = cos_vals[k - lo];
-                let s = sin_vals[k - lo];
+                let c = cos_vals[k];
+                let s = sin_vals[k];
                 for row in 0..n {
                     let t1 = c * z[row * n + k] + s * z[row * n + k + 1];
                     z[row * n + k + 1] = -s * z[row * n + k] + c * z[row * n + k + 1];
@@ -2687,10 +2726,19 @@ pub fn polar_nxn(a: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), LinAlgErro
 
 /// NxN least-squares solve: minimize ||Ax - b||_2 using normal equations.
 /// Returns the solution vector x.
-pub fn lstsq_nxn(a: &[f64], b: &[f64], m: usize, n: usize) -> Result<Vec<f64>, LinAlgError> {
+/// NxN least-squares solve: minimize ||Ax - b||_2 using SVD for numerical stability.
+///
+/// Matches `numpy.linalg.lstsq` semantics. Returns `(x, residuals, rank, singular_values)`.
+pub fn lstsq_svd(
+    a: &[f64],
+    b: &[f64],
+    m: usize,
+    n: usize,
+    rcond: f64,
+) -> Result<LstsqResult, LinAlgError> {
     if a.len() != m * n || b.len() != m || m == 0 || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
-            "lstsq_nxn: a must be m*n, b must be m",
+            "lstsq_svd: a must be m*n, b must be m",
         ));
     }
     if a.iter().any(|v| !v.is_finite()) || b.iter().any(|v| !v.is_finite()) {
@@ -2699,36 +2747,71 @@ pub fn lstsq_nxn(a: &[f64], b: &[f64], m: usize, n: usize) -> Result<Vec<f64>, L
         ));
     }
 
-    // Normal equations: A^T A x = A^T b
-    let mut ata = vec![0.0; n * n];
-    for i in 0..n {
-        for j in 0..n {
-            let mut sum = 0.0;
-            for k in 0..m {
-                sum += a[k * n + i] * a[k * n + j];
-            }
-            ata[i * n + j] = sum;
+    let (u, s, vt) = svd_mxn_full(a, m, n)?;
+    let k = s.len();
+    let sigma_max = s.first().copied().unwrap_or(0.0);
+    let threshold = if rcond < 0.0 {
+        f64::EPSILON * (m.max(n) as f64) * sigma_max
+    } else {
+        rcond * sigma_max
+    };
+
+    let mut s_inv = vec![0.0; k];
+    let mut rank = 0;
+    for i in 0..k {
+        if s[i] > threshold {
+            s_inv[i] = 1.0 / s[i];
+            rank += 1;
         }
     }
 
-    let mut atb = vec![0.0; n];
+    // x = V * S^+ * U^T * b
+    // 1. utb = U^T * b  (m x m) * (m x 1) -> (m x 1)
+    let mut utb = vec![0.0; m];
+    for i in 0..m {
+        let mut sum = 0.0;
+        for j in 0..m {
+            sum += u[j * m + i] * b[j]; // U^T[i,j] = U[j,i]
+        }
+        utb[i] = sum;
+    }
+
+    // 2. siutb = S^+ * utb  (n x m) * (m x 1) -> (n x 1)
+    let mut siutb = vec![0.0; n];
+    for i in 0..k {
+        siutb[i] = s_inv[i] * utb[i];
+    }
+
+    // 3. x = V * siutb = Vt^T * siutb  (n x n) * (n x 1) -> (n x 1)
+    let mut x = vec![0.0; n];
     for i in 0..n {
         let mut sum = 0.0;
-        for k in 0..m {
-            sum += a[k * n + i] * b[k];
+        for j in 0..n {
+            sum += vt[j * n + i] * siutb[j]; // V[i,j] = Vt^T[i,j] = Vt[j,i]
         }
-        atb[i] = sum;
+        x[i] = sum;
     }
 
-    solve_nxn(&ata, &atb, n)
+    // Residuals (only if full rank and m > n)
+    let mut residuals = Vec::new();
+    if rank == n && m > n {
+        let sum_sq: f64 = utb[n..m].iter().map(|v| v * v).sum();
+        residuals.push(sum_sq);
+    }
+
+    Ok((x, residuals, rank, s))
 }
 
-/// Pseudoinverse of an NxN matrix (np.linalg.pinv) via normal equations.
-/// Computes A^+ = (A^T A)^{-1} A^T for full column rank matrices.
-pub fn pinv_nxn(a: &[f64], m: usize, n: usize) -> Result<Vec<f64>, LinAlgError> {
+pub fn lstsq_nxn(a: &[f64], b: &[f64], m: usize, n: usize) -> Result<Vec<f64>, LinAlgError> {
+    let (x, _, _, _) = lstsq_svd(a, b, m, n, -1.0)?;
+    Ok(x)
+}
+
+/// Pseudoinverse of an MxN matrix (np.linalg.pinv) via SVD.
+pub fn pinv_mxn(a: &[f64], m: usize, n: usize, rcond: f64) -> Result<Vec<f64>, LinAlgError> {
     if a.len() != m * n || m == 0 || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
-            "pinv_nxn: a must be m*n with m,n > 0",
+            "pinv_mxn: a must be m*n with m,n > 0",
         ));
     }
     if a.iter().any(|v| !v.is_finite()) {
@@ -2737,17 +2820,41 @@ pub fn pinv_nxn(a: &[f64], m: usize, n: usize) -> Result<Vec<f64>, LinAlgError> 
         ));
     }
 
-    // Compute via lstsq for each column of identity
+    let (u, s, vt) = svd_mxn_full(a, m, n)?;
+    let k = s.len();
+    let sigma_max = s.first().copied().unwrap_or(0.0);
+    let threshold = if rcond < 0.0 {
+        f64::EPSILON * (m.max(n) as f64) * sigma_max
+    } else {
+        rcond * sigma_max
+    };
+
+    let mut s_inv = vec![0.0; k];
+    for i in 0..k {
+        if s[i] > threshold {
+            s_inv[i] = 1.0 / s[i];
+        }
+    }
+
+    // A^+ = V * S^+ * U^T
+    // result_{i,j} = sum_k Vt_{k,i} * s_inv[k] * U_{j,k}
     let mut result = vec![0.0; n * m];
-    for col in 0..m {
-        let mut e_col = vec![0.0; m];
-        e_col[col] = 1.0;
-        let x = lstsq_nxn(a, &e_col, m, n)?;
-        for row in 0..n {
-            result[row * m + col] = x[row];
+    for i in 0..n {
+        for j in 0..m {
+            let mut sum = 0.0;
+            for kk in 0..k {
+                if s_inv[kk] > 0.0 {
+                    sum += vt[kk * n + i] * s_inv[kk] * u[j * m + kk];
+                }
+            }
+            result[i * m + j] = sum;
         }
     }
     Ok(result)
+}
+
+pub fn pinv_nxn(a: &[f64], m: usize, n: usize) -> Result<Vec<f64>, LinAlgError> {
+    pinv_mxn(a, m, n, -1.0)
 }
 
 /// Helper: flat NxN matrix multiply C = A * B (row-major).
@@ -4451,6 +4558,28 @@ mod tests {
         }
 
         Ok((rows, cols))
+    }
+
+    #[test]
+    fn lstsq_rank_deficient_repro() {
+        // A = [[1, 1], [1, 1]], b = [2, 2]
+        // Rank 1, exact solution x = [1, 1]
+        let a = [1.0, 1.0, 1.0, 1.0];
+        let b = [2.0, 2.0];
+        let x = lstsq_nxn(&a, &b, 2, 2).expect("SVD lstsq should handle rank-deficient");
+        // Solution should satisfy A*x = b. [1, 1] * [1, 1]^T = 2.
+        assert!((x[0] + x[1] - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn pinv_rank_deficient_repro() {
+        // A = [[1, 1], [1, 1]]
+        // pinv(A) = [[0.25, 0.25], [0.25, 0.25]]
+        let a = [1.0, 1.0, 1.0, 1.0];
+        let pinv = pinv_nxn(&a, 2, 2).expect("SVD pinv should handle rank-deficient");
+        for &val in &pinv {
+            assert!((val - 0.25).abs() < 1e-10);
+        }
     }
 
     #[test]

@@ -1,15 +1,18 @@
 #![forbid(unsafe_code)]
 
 use fnp_conformance::{
-    HarnessConfig, SuiteReport, run_crash_signature_regression_suite, run_dtype_adversarial_suite,
-    run_dtype_differential_suite, run_dtype_metamorphic_suite, run_io_adversarial_suite,
-    run_io_differential_suite, run_io_metamorphic_suite, run_iter_adversarial_suite,
-    run_iter_differential_suite, run_iter_metamorphic_suite, run_linalg_adversarial_suite,
-    run_linalg_differential_suite, run_linalg_metamorphic_suite, run_rng_adversarial_suite,
+    HarnessConfig, SuiteReport, run_crash_signature_regression_suite,
+    run_datetime_differential_suite, run_dtype_adversarial_suite, run_dtype_differential_suite,
+    run_dtype_metamorphic_suite, run_dtype_promotion_suite, run_fft_differential_suite,
+    run_io_adversarial_suite, run_io_differential_suite, run_io_metamorphic_suite,
+    run_iter_adversarial_suite, run_iter_differential_suite, run_iter_metamorphic_suite,
+    run_linalg_adversarial_suite, run_linalg_differential_suite, run_linalg_metamorphic_suite,
+    run_masked_differential_suite, run_polynomial_differential_suite, run_rng_adversarial_suite,
     run_rng_differential_suite, run_rng_metamorphic_suite, run_rng_statistical_suite,
     run_runtime_policy_adversarial_suite, run_runtime_policy_suite,
     run_shape_stride_adversarial_suite, run_shape_stride_differential_suite,
-    run_shape_stride_metamorphic_suite, run_ufunc_adversarial_suite, run_ufunc_differential_suite,
+    run_shape_stride_metamorphic_suite, run_shape_stride_suite,
+    run_string_differential_suite, run_ufunc_adversarial_suite, run_ufunc_differential_suite,
     run_ufunc_metamorphic_suite, set_runtime_policy_log_path, test_contracts,
 };
 use serde::{Deserialize, Serialize};
@@ -373,6 +376,14 @@ fn run_gate_suites(cfg: &HarnessConfig, log_path: &Path) -> Result<Vec<SuiteRepo
         run_io_metamorphic_suite(cfg)?,
         run_io_adversarial_suite(cfg)?,
         run_crash_signature_regression_suite(cfg)?,
+        // Feature-family differential suites
+        run_fft_differential_suite(cfg)?,
+        run_polynomial_differential_suite(cfg)?,
+        run_string_differential_suite(cfg)?,
+        run_masked_differential_suite(cfg)?,
+        run_datetime_differential_suite(cfg)?,
+        run_dtype_promotion_suite(&packet002_dtype_cfg)?,
+        run_shape_stride_suite(cfg)?,
         validate_runtime_policy_log(log_path)?,
         validate_ci_gate_topology_contract()?,
     ])

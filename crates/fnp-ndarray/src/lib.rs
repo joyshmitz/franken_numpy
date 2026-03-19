@@ -1104,4 +1104,89 @@ mod tests {
             }
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Multi-axis negative stride tests (br-jn3)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn as_strided_both_axes_negative() {
+        // 3×3 array with both axes reversed: equivalent to arr[::-1, ::-1].
+        let base = NdLayout::contiguous(vec![3, 3], 8, MemoryOrder::C).expect("layout");
+        let view = base
+            .as_strided(vec![3, 3], vec![-24, -8])
+            .expect("both axes negative should be supported");
+        assert_eq!(view.strides, vec![-24, -8]);
+        assert!(view.is_writeable());
+        assert!(!view.has_internal_overlap());
+    }
+
+    #[test]
+    fn as_strided_3d_negative_middle_axis() {
+        // 2×3×4 array with middle axis reversed.
+        let base = NdLayout::contiguous(vec![2, 3, 4], 8, MemoryOrder::C).expect("layout");
+        let view = base
+            .as_strided(vec![2, 3, 4], vec![96, -32, 8])
+            .expect("negative stride on middle axis should work");
+        assert_eq!(view.strides, vec![96, -32, 8]);
+        assert!(!view.has_internal_overlap());
+    }
+
+    #[test]
+    fn as_strided_3d_all_axes_negative() {
+        // 2×3×4 array with all axes reversed: full reversal.
+        let base = NdLayout::contiguous(vec![2, 3, 4], 8, MemoryOrder::C).expect("layout");
+        let view = base
+            .as_strided(vec![2, 3, 4], vec![-96, -32, -8])
+            .expect("all axes negative should work");
+        assert_eq!(view.strides, vec![-96, -32, -8]);
+        assert!(!view.has_internal_overlap());
+    }
+
+    #[test]
+    fn as_strided_negative_stride_1d_single_element() {
+        // Single-element array: negative stride is a no-op since dim=1.
+        let base = NdLayout::contiguous(vec![1], 8, MemoryOrder::C).expect("layout");
+        let view = base
+            .as_strided(vec![1], vec![-8])
+            .expect("single-element negative stride is trivially valid");
+        assert_eq!(view.shape, vec![1]);
+    }
+
+    #[test]
+    fn as_strided_negative_with_zero_stride_axis() {
+        // Combine negative stride on one axis with zero stride (broadcast) on another.
+        let base = NdLayout::contiguous(vec![4], 8, MemoryOrder::C).expect("layout");
+        let view = base
+            .as_strided(vec![3, 4], vec![0, -8])
+            .expect("zero + negative stride combo should work");
+        assert_eq!(view.strides, vec![0, -8]);
+        assert!(view.has_internal_overlap()); // zero stride → overlap
+        assert!(!view.is_writeable()); // overlap → readonly
+    }
+
+    #[test]
+    fn as_strided_fortran_order_negative_stride() {
+        // Fortran-order base with negative stride on first axis.
+        let base = NdLayout::contiguous(vec![3, 4], 8, MemoryOrder::F).expect("layout");
+        assert!(base.is_fortran_contiguous());
+        let view = base
+            .as_strided(vec![3, 4], vec![-8, 24])
+            .expect("negative stride on F-order first axis");
+        assert_eq!(view.strides, vec![-8, 24]);
+        assert!(!view.has_internal_overlap());
+    }
+
+    #[test]
+    fn required_view_nbytes_symmetric_for_sign_flip() {
+        // The byte span should be the same for positive and negative strides
+        // of the same magnitude (the view covers the same range of memory).
+        let shape = vec![5];
+        let pos = super::required_view_nbytes(&shape, &[8], 8).expect("positive");
+        let neg = super::required_view_nbytes(&shape, &[-8], 8).expect("negative");
+        assert_eq!(
+            pos, neg,
+            "positive and negative strides of same magnitude should have same span"
+        );
+    }
 }

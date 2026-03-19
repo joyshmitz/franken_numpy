@@ -605,11 +605,9 @@ fn parse_header_dictionary_map(
     }
     idx += 1;
 
-    let end_idx = dictionary
-        .rfind('}')
-        .ok_or(IOError::HeaderSchemaInvalid(
-            "header dictionary must be wrapped in braces",
-        ))?;
+    let end_idx = dictionary.rfind('}').ok_or(IOError::HeaderSchemaInvalid(
+        "header dictionary must be wrapped in braces",
+    ))?;
 
     while idx < end_idx {
         // Find next key
@@ -732,14 +730,13 @@ fn parse_header_dictionary(header_bytes: &[u8], header_len: usize) -> Result<Npy
         .ok_or(IOError::HeaderSchemaInvalid(
             "shape field must begin with tuple syntax",
         ))?;
-    let shape_end = shape_tail
-        .rfind(')')
-        .ok_or(IOError::HeaderSchemaInvalid("shape tuple missing closing ')'"))?;
+    let shape_end = shape_tail.rfind(')').ok_or(IOError::HeaderSchemaInvalid(
+        "shape tuple missing closing ')'",
+    ))?;
     let shape = parse_shape_tuple(&shape_tail[..shape_end])?;
 
     validate_header_schema(&shape, fortran_order, &descr_literal, header_len)
 }
-
 
 fn validate_object_write_payload(shape: &[usize], payload: &[u8]) -> Result<(), IOError> {
     let expected_count = element_count(shape).map_err(|_| {
@@ -1731,7 +1728,14 @@ pub fn fromfile(
     }
     let max_elems = data.len() / item_size;
     let n = match count {
-        Some(c) => c.min(max_elems),
+        Some(c) => {
+            if c > max_elems {
+                return Err(IOError::ReadPayloadIncomplete(
+                    "insufficient data for requested element count",
+                ));
+            }
+            c
+        }
         None => max_elems,
     };
 
@@ -1869,7 +1873,14 @@ pub fn fromfile_complex(
     let item_size = dtype.item_size().ok_or(IOError::DTypeDescriptorInvalid)?;
     let max_elems = data.len() / item_size;
     let n = match count {
-        Some(c) => c.min(max_elems),
+        Some(c) => {
+            if c > max_elems {
+                return Err(IOError::ReadPayloadIncomplete(
+                    "insufficient data for requested element count",
+                ));
+            }
+            c
+        }
         None => max_elems,
     };
 
@@ -2638,7 +2649,14 @@ pub fn fromfile_structured(
     }
     let max_records = data.len() / record_size;
     let n = match count {
-        Some(c) => c.min(max_records),
+        Some(c) => {
+            if c > max_records {
+                return Err(IOError::ReadPayloadIncomplete(
+                    "insufficient data for requested structured record count",
+                ));
+            }
+            c
+        }
         None => max_records,
     };
 
@@ -2814,10 +2832,12 @@ pub fn load_structured(data: &[u8]) -> Result<StructuredNpyData, IOError> {
     ))?;
     let shape_tail = shape_tail
         .strip_prefix('(')
-        .ok_or(IOError::HeaderSchemaInvalid("shape field must begin with tuple syntax"))?;
-    let shape_end = shape_tail
-        .rfind(')')
-        .ok_or(IOError::HeaderSchemaInvalid("shape tuple missing closing ')'"))?;
+        .ok_or(IOError::HeaderSchemaInvalid(
+            "shape field must begin with tuple syntax",
+        ))?;
+    let shape_end = shape_tail.rfind(')').ok_or(IOError::HeaderSchemaInvalid(
+        "shape tuple missing closing ')'",
+    ))?;
     let shape = parse_shape_tuple(&shape_tail[..shape_end])?;
 
     // Parse structured descriptor
@@ -2916,7 +2936,14 @@ pub fn fromfile_strings(
     }
     let max_elems = data.len() / item_size;
     let n = match count {
-        Some(c) => c.min(max_elems),
+        Some(c) => {
+            if c > max_elems {
+                return Err(IOError::ReadPayloadIncomplete(
+                    "insufficient data for requested element count",
+                ));
+            }
+            c
+        }
         None => max_elems,
     };
 

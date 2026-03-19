@@ -4,10 +4,10 @@
   <img src="franken_numpy_illustration.webp" alt="FrankenNumPy - memory-safe clean-room NumPy reimplementation in Rust" width="400">
 
   **Memory-safe, clean-room NumPy reimplementation in Rust.**<br>
-  Zero unsafe code. 1,941 tests. Bit-exact RNG parity. Every feature family green.
+  Zero unsafe code. 2,184 tests. Bit-exact RNG parity. Every feature family green.
 
   ![Rust](https://img.shields.io/badge/Rust-nightly%202024-orange)
-  ![Tests](https://img.shields.io/badge/tests-1%2C941%20passing-brightgreen)
+  ![Tests](https://img.shields.io/badge/tests-2%2C146%20passing-brightgreen)
   ![Unsafe](https://img.shields.io/badge/unsafe-0%20blocks-blue)
   ![License](https://img.shields.io/badge/license-MIT-green)
 </div>
@@ -35,7 +35,7 @@ FrankenNumPy rebuilds NumPy's semantics from scratch in safe Rust with two non-n
 | Stride calculus | Evolved over decades | Clean-room deterministic engine (SCE) |
 | Runtime modes | Single mode | Strict (max compat) + Hardened (safety guards) |
 | Conformance | Self-referential | Differential oracle against real NumPy |
-| Test coverage | pytest suite | 1,941 Rust tests + 8-gate CI topology |
+| Test coverage | pytest suite | 2,184 Rust tests + 8-gate CI topology |
 
 ---
 
@@ -149,7 +149,7 @@ cargo test --workspace --all-features
       ▼           ▼               ▼              ▼           ▼
  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐
  │ fnp-ufunc│ │fnp-linalg│ │fnp-random│ │  fnp-io  │ │ fnp-fft  │
- │ 1141     │ │ 197      │ │ 179      │ │ 143      │ │ (in-ufunc│
+ │ 1237     │ │ 199      │ │ 182      │ │ 143      │ │ (in-ufunc│
  │ tests    │ │ tests    │ │ tests    │ │ tests    │ │  module) │
  └─────┬────┘ └──────────┘ └──────────┘ └──────────┘ └──────────┘
        │
@@ -158,7 +158,7 @@ cargo test --workspace --all-features
  ▼                                                          ▼
  ┌──────────┐ ┌────────────┐ ┌──────────┐ ┌──────────────┐
  │ fnp-dtype│ │ fnp-ndarray│ │ fnp-iter │ │ fnp-runtime  │
- │ 114 tests│ │ 44 tests   │ │ 13 tests │ │ 12 tests     │
+ │ 116 tests│ │ 54 tests   │ │ 79 tests │ │ 52 tests     │
  │ promote  │ │ SCE core   │ │ transfer │ │ strict/      │
  │ cast     │ │ strides    │ │ semantics│ │ hardened     │
  └──────────┘ └────────────┘ └──────────┘ └──────────────┘
@@ -342,7 +342,7 @@ The conformance crate is the quality backbone with four layers:
 
 FrankenNumPy's security posture covers more than memory safety:
 
-- **Zero unsafe Rust.** All 9 crates declare `#![forbid(unsafe_code)]`. The 88,000+ lines of Rust contain zero unsafe blocks.
+- **Zero unsafe Rust.** All 9 crates declare `#![forbid(unsafe_code)]`. The 92,000+ lines of Rust contain zero unsafe blocks.
 - **Fail-closed by default.** Unknown wire formats, unrecognized dtype descriptors, and metadata schema violations cause explicit errors, not silent fallbacks.
 - **Bounded resource consumption.** NPY header parsing caps at 64 KB. NPZ archives cap at 4,096 members and 2 GB uncompressed. Memmap validation retries cap at 64. These prevent denial-of-service via crafted inputs.
 - **Pickle rejection.** Object dtype arrays that could execute arbitrary code during deserialization require explicit opt-in, matching NumPy's `allow_pickle` security gate.
@@ -766,16 +766,16 @@ let restored = Generator::from_pickle_payload(payload)?;
 
 | Crate | Tests | What it covers |
 |---|---|---|
-| `fnp-ufunc` | 1,141 | Array ops, math, sorting, polynomials, NaN-correct reductions, 20 oracle tests, 4 workflow tests |
-| `fnp-linalg` | 197 | Decompositions, solvers, norms, 16 NumPy oracle tests |
-| `fnp-random` | 179 | 40 oracle-verified distributions, seeding, reproducibility |
+| `fnp-ufunc` | 1,237 | Array ops, math, sorting, polynomials, NaN-correct reductions, 20 oracle tests, 4 workflow tests |
+| `fnp-linalg` | 199 | Decompositions, solvers, norms, 16 NumPy oracle tests |
+| `fnp-random` | 182 | 40 oracle-verified distributions, seeding, reproducibility |
 | `fnp-io` | 143 | NPY/NPZ read/write, text formats, compression, 7 format oracle tests |
-| `fnp-dtype` | 114 | Dtype taxonomy, promotion table, cast policy |
-| `fnp-conformance` | 93 | Differential parity, metamorphic identities, adversarial fuzzing |
-| `fnp-ndarray` | 44 | Shape legality, stride calculus, broadcast contracts |
-| `fnp-iter` | 13 | Transfer semantics, overlap detection |
-| `fnp-runtime` | 12 | Mode split, fail-closed decoding, override-audit gate |
-| **Total** | **1,936** | **+ doc-tests = 1,941 in workspace** |
+| `fnp-dtype` | 116 | Dtype taxonomy, promotion table, cast policy |
+| `fnp-conformance` | 122 | Differential parity, metamorphic identities, adversarial fuzzing |
+| `fnp-ndarray` | 54 | Shape legality, stride calculus, broadcast contracts, multi-axis negative strides |
+| `fnp-iter` | 79 | Transfer semantics, overlap detection, stride tricks, FPE handling |
+| `fnp-runtime` | 52 | Mode split, fail-closed decoding, override-audit gate, Bayesian decision engine, evidence ledger |
+| **Total** | **2,184** | **All passing in workspace** |
 
 ### Oracle Test Strategy
 
@@ -944,7 +944,7 @@ Oracle tests: we run the same operations with the same inputs in both NumPy and 
 We use Rust Edition 2024 features. The toolchain is pinned to a specific nightly date for reproducibility.
 
 **Why zero unsafe code?**
-Memory safety is a core value. All 9 crates declare `#![forbid(unsafe_code)]`. The 88,000+ lines of Rust contain zero unsafe blocks.
+Memory safety is a core value. All 9 crates declare `#![forbid(unsafe_code)]`. The 92,000+ lines of Rust contain zero unsafe blocks.
 
 **How fast is it?**
 Performance is not the primary goal in this phase. Correctness and parity come first. That said, the release profile uses `opt-level = 3`, LTO, and single codegen unit.

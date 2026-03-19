@@ -831,10 +831,7 @@ mod tests {
 
     #[test]
     fn runtime_mode_from_wire_roundtrip() {
-        assert_eq!(
-            RuntimeMode::from_wire("strict"),
-            Some(RuntimeMode::Strict)
-        );
+        assert_eq!(RuntimeMode::from_wire("strict"), Some(RuntimeMode::Strict));
         assert_eq!(
             RuntimeMode::from_wire("hardened"),
             Some(RuntimeMode::Hardened)
@@ -886,7 +883,8 @@ mod tests {
 
     #[test]
     fn posterior_is_finite_for_nan_inputs() {
-        let (p, terms) = posterior_incompatibility(CompatibilityClass::KnownCompatible, f64::NAN, 0.5);
+        let (p, terms) =
+            posterior_incompatibility(CompatibilityClass::KnownCompatible, f64::NAN, 0.5);
         assert!(p.is_finite(), "posterior must be finite even with NaN risk");
         assert_eq!(terms.len(), 2);
     }
@@ -902,7 +900,10 @@ mod tests {
     #[test]
     fn posterior_known_incompatible_is_high() {
         let (p, _) = posterior_incompatibility(CompatibilityClass::KnownIncompatible, 0.5, 0.5);
-        assert!(p > 0.9, "known_incompatible prior should yield high posterior, got {p}");
+        assert!(
+            p > 0.9,
+            "known_incompatible prior should yield high posterior, got {p}"
+        );
     }
 
     #[test]
@@ -1184,8 +1185,235 @@ mod tests {
 
     #[test]
     fn compatibility_class_as_str_is_stable() {
-        assert_eq!(CompatibilityClass::KnownCompatible.as_str(), "known_compatible");
-        assert_eq!(CompatibilityClass::KnownIncompatible.as_str(), "known_incompatible");
+        assert_eq!(
+            CompatibilityClass::KnownCompatible.as_str(),
+            "known_compatible"
+        );
+        assert_eq!(
+            CompatibilityClass::KnownIncompatible.as_str(),
+            "known_incompatible"
+        );
         assert_eq!(CompatibilityClass::Unknown.as_str(), "unknown");
+    }
+
+    // -----------------------------------------------------------------------
+    // Bayesian decision engine edge cases (br-x2y)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn expected_loss_at_zero_posterior_favors_allow() {
+        // With posterior_incompatible ≈ 0.0 (clamped to 1e-9), the cost of
+        // allowing is near-zero while fail_closed costs ~125.
+        let model = DecisionLossModel::default();
+        let allow = expected_loss_for_action(DecisionAction::Allow, 0.0, model);
+        let fv = expected_loss_for_action(DecisionAction::FullValidate, 0.0, model);
+        let fc = expected_loss_for_action(DecisionAction::FailClosed, 0.0, model);
+        assert!(
+            allow < fv,
+            "allow should beat full_validate at ~0% posterior"
+        );
+        assert!(allow < fc, "allow should beat fail_closed at ~0% posterior");
+    }
+
+    #[test]
+    fn expected_loss_at_one_posterior_favors_fail_closed() {
+        // With posterior_incompatible ≈ 1.0 (clamped to 1-1e-9), fail_closed
+        // costs ~1.0 while allow costs ~100.
+        let model = DecisionLossModel::default();
+        let allow = expected_loss_for_action(DecisionAction::Allow, 1.0, model);
+        let fv = expected_loss_for_action(DecisionAction::FullValidate, 1.0, model);
+        let fc = expected_loss_for_action(DecisionAction::FailClosed, 1.0, model);
+        assert!(
+            fc < allow,
+            "fail_closed should beat allow at ~100% posterior"
+        );
+        assert!(
+            fc < fv,
+            "fail_closed should beat full_validate at ~100% posterior"
+        );
+    }
+
+    #[test]
+    fn expected_loss_all_equal_model_is_constant() {
+        // If all loss cells are identical, all actions produce the same expected loss.
+        let model = DecisionLossModel {
+            allow_if_compatible: 5.0,
+            allow_if_incompatible: 5.0,
+            full_validate_if_compatible: 5.0,
+            full_validate_if_incompatible: 5.0,
+            fail_closed_if_compatible: 5.0,
+            fail_closed_if_incompatible: 5.0,
+        };
+        for p in [0.0, 0.5, 1.0] {
+            let allow = expected_loss_for_action(DecisionAction::Allow, p, model);
+            let fv = expected_loss_for_action(DecisionAction::FullValidate, p, model);
+            let fc = expected_loss_for_action(DecisionAction::FailClosed, p, model);
+            assert!((allow - 5.0).abs() < 0.01, "all-5 model: allow={allow}");
+            assert!((fv - 5.0).abs() < 0.01, "all-5 model: fv={fv}");
+            assert!((fc - 5.0).abs() < 0.01, "all-5 model: fc={fc}");
+        }
+    }
+
+    #[test]
+    fn posterior_monotonicity_across_risk_values() {
+        // For each compatibility class, posterior should increase monotonically
+        // with risk_score when threshold is fixed.
+        let threshold = 0.5;
+        for class in [
+            CompatibilityClass::KnownCompatible,
+            CompatibilityClass::KnownIncompatible,
+            CompatibilityClass::Unknown,
+        ] {
+            let mut prev = 0.0;
+            for risk_pct in 1..=9 {
+                let risk = risk_pct as f64 / 10.0;
+                let (p, _) = posterior_incompatibility(class, risk, threshold);
+                assert!(
+                    p >= prev,
+                    "posterior should be monotonically non-decreasing with risk for {class:?}: \
+                     at risk={risk}, posterior {p} < prev {prev}"
+                );
+                prev = p;
+            }
+        }
+    }
+
+    #[test]
+    fn posterior_prior_dominance_at_equal_risk_threshold() {
+        // When risk == threshold, the risk_margin_llr is 0, so posterior is
+        // driven entirely by the class prior.
+        let (p_compat, _) =
+            posterior_incompatibility(CompatibilityClass::KnownCompatible, 0.5, 0.5);
+        let (p_unknown, _) = posterior_incompatibility(CompatibilityClass::Unknown, 0.5, 0.5);
+        let (p_incompat, _) =
+            posterior_incompatibility(CompatibilityClass::KnownIncompatible, 0.5, 0.5);
+        assert!(
+            p_compat < p_unknown,
+            "KnownCompatible prior (0.01) should yield lower posterior than Unknown (0.5)"
+        );
+        assert!(
+            p_unknown < p_incompat,
+            "Unknown prior (0.5) should yield lower posterior than KnownIncompatible (0.99)"
+        );
+    }
+
+    #[test]
+    fn decide_compatibility_full_grid() {
+        // Exhaustive decision matrix: every (mode, class) combination.
+        let cases = [
+            (
+                RuntimeMode::Strict,
+                CompatibilityClass::KnownCompatible,
+                0.1,
+                0.5,
+                DecisionAction::Allow,
+            ),
+            (
+                RuntimeMode::Strict,
+                CompatibilityClass::KnownCompatible,
+                0.9,
+                0.5,
+                DecisionAction::Allow,
+            ), // strict always allows KC
+            (
+                RuntimeMode::Strict,
+                CompatibilityClass::KnownIncompatible,
+                0.1,
+                0.5,
+                DecisionAction::FailClosed,
+            ),
+            (
+                RuntimeMode::Strict,
+                CompatibilityClass::Unknown,
+                0.1,
+                0.5,
+                DecisionAction::FailClosed,
+            ),
+            (
+                RuntimeMode::Hardened,
+                CompatibilityClass::KnownCompatible,
+                0.1,
+                0.5,
+                DecisionAction::Allow,
+            ),
+            (
+                RuntimeMode::Hardened,
+                CompatibilityClass::KnownCompatible,
+                0.9,
+                0.5,
+                DecisionAction::FullValidate,
+            ),
+            (
+                RuntimeMode::Hardened,
+                CompatibilityClass::KnownIncompatible,
+                0.1,
+                0.5,
+                DecisionAction::FailClosed,
+            ),
+            (
+                RuntimeMode::Hardened,
+                CompatibilityClass::Unknown,
+                0.1,
+                0.5,
+                DecisionAction::FailClosed,
+            ),
+        ];
+        for (mode, class, risk, threshold, expected) in cases {
+            let got = decide_compatibility(mode, class, risk, threshold);
+            assert_eq!(
+                got, expected,
+                "mode={:?} class={:?} risk={risk} threshold={threshold}: expected {expected:?}, got {got:?}",
+                mode, class
+            );
+        }
+    }
+
+    #[test]
+    fn ledger_empty_last_returns_none() {
+        let ledger = EvidenceLedger::new();
+        assert!(ledger.last().is_none());
+        assert!(ledger.events().is_empty());
+    }
+
+    #[test]
+    fn decide_and_record_captures_all_loss_components() {
+        let mut ledger = EvidenceLedger::new();
+        decide_and_record(
+            &mut ledger,
+            RuntimeMode::Hardened,
+            CompatibilityClass::KnownCompatible,
+            0.8,
+            0.5,
+            "high risk scenario",
+        );
+        let event = ledger.last().unwrap();
+        // All loss components should be finite and non-negative.
+        assert!(event.expected_loss_allow >= 0.0);
+        assert!(event.expected_loss_full_validate >= 0.0);
+        assert!(event.expected_loss_fail_closed >= 0.0);
+        assert!(event.expected_loss_allow.is_finite());
+        assert!(event.expected_loss_full_validate.is_finite());
+        assert!(event.expected_loss_fail_closed.is_finite());
+        // The selected loss should match the action chosen.
+        assert_eq!(event.action, DecisionAction::FullValidate);
+        assert!(
+            (event.selected_expected_loss - event.expected_loss_full_validate).abs() < 1e-12,
+            "selected loss must match the action's loss"
+        );
+    }
+
+    #[test]
+    fn override_with_empty_allowlist_always_denies() {
+        let event = evaluate_policy_override(
+            RuntimeMode::Hardened,
+            CompatibilityClass::KnownCompatible,
+            "any_class",
+            &[],
+            "FNP-P2C-001",
+            "admin",
+            "test",
+        );
+        assert!(!event.approved);
+        assert_eq!(event.action, DecisionAction::FailClosed);
     }
 }

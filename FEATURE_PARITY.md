@@ -14,7 +14,7 @@
 | Shape/stride/view semantics | parity_green | fixture-driven shape/stride suites green; reshape, transpose, flatten, broadcast, squeeze, expand_dims, swapaxes all implemented | — |
 | Broadcasting legality | parity_green | deterministic broadcast cases green; mixed-rank/multi-axis/scalar broadcasting verified | — |
 | Dtype promotion/casting | parity_green | scoped promotion table + fixture suite green; copyto casting implemented | — |
-| Core math (ufunc) | parity_green | 999 tests passing; frexp, modf, gcd, lcm, divmod, isposinf, isneginf, bitwise_count, sort_complex all implemented | — |
+| Core math (ufunc) | parity_green | 1,237 tests passing; frexp, modf, gcd, lcm, divmod, isposinf, isneginf, bitwise_count, sort_complex all implemented | — |
 | Reductions | parity_green | sum, prod, min, max, mean, var, std, argmin, argmax, cumsum, cumprod, count_nonzero(axis), nansum/nanprod/nanmin/nanmax/nanmean | — |
 | Sorting/searching | parity_green | sort, argsort, searchsorted(side,sorter), partition, argpartition, unique, unique_all/counts/inverse/values, where_nonzero, isin(invert) | — |
 | Set operations | parity_green | union1d, intersect1d, setdiff1d, setxor1d, in1d | — |
@@ -38,10 +38,10 @@
 | numpy.lib.scimath | parity_green | scimath_sqrt, scimath_log, scimath_log2, scimath_log10, scimath_power, scimath_arccos, scimath_arcsin, scimath_arctanh | — |
 | NumPy 2.0 API | parity_green | unique_all, unique_counts, unique_inverse, unique_values, permuted | — |
 | Parameter completeness | parity_green | count_nonzero(axis,keepdims), isin(invert), searchsorted(side,sorter), where(1-arg), sum/prod(initial), copyto(casting), partition/argpartition(axis), packbits/unpackbits(axis) | — |
-| Linalg | parity_green | solve, det, inv, eig, svd, qr, cholesky, lstsq, norm, matrix_rank, matrix_power, multi_dot, tensorsolve, tensorinv, pinv, cond, slogdet, funm; 147 tests | — |
-| Random (numpy.random) | parity_green | PCG64DXSM generator with 39 oracle-verified distributions; Lemire bounded integers + buffered uint32; BTPE binomial + inversion; HRUA hypergeometric + direct; PTRS Poisson + multiplicative; NumPy-exact gamma (shape<1 rejection, shape=1 exponential, Marsaglia-Tsang); zipf with Umin clamping; 39/39 oracle tests passing; 178 tests | — |
-| I/O (npy/npz) | parity_green | load, save, savez, savez_compressed, loadtxt, savetxt, genfromtxt, fromfile, tofile, array2string; DEFLATE compression; 76 tests | — |
-| Conformance harness | parity_green | 83 tests: differential corpus (40 unary, 20 binary, 30 reduction combos), metamorphic suite (13 algebraic identities), adversarial fuzzing (12 edge cases), oracle validation (5 tests) | — |
+| Linalg | parity_green | solve, det, inv, eig, svd, qr, cholesky, lstsq, norm, matrix_rank, matrix_power, multi_dot, tensorsolve, tensorinv, pinv, cond, slogdet, funm; 199 tests | — |
+| Random (numpy.random) | parity_green | PCG64DXSM generator with 39 oracle-verified distributions; Lemire bounded integers + buffered uint32; BTPE binomial + inversion; HRUA hypergeometric + direct; PTRS Poisson + multiplicative; NumPy-exact gamma (shape<1 rejection, shape=1 exponential, Marsaglia-Tsang); zipf with Umin clamping; 39/39 oracle tests passing; 182 tests | — |
+| I/O (npy/npz) | parity_green | load, save, savez, savez_compressed, loadtxt, savetxt, genfromtxt, fromfile, tofile, array2string; DEFLATE compression; 143 tests | — |
+| Conformance harness | parity_green | 122 tests: differential corpus, metamorphic suite (13 algebraic identities), adversarial fuzzing, oracle validation, P2C evidence packets | — |
 | Contract schema + artifact topology | in_progress | `phase2c-contract-v1` locked; packet readiness validator green | populate packet artifact directories in CI |
 | RaptorQ artifact durability | in_progress | sidecar + scrub + decode proof artifacts generated | integrate into CI |
 
@@ -49,16 +49,16 @@
 
 | Crate | Tests | Description |
 |---|---|---|
-| fnp-ufunc | 1,210 | Core array operations, math, sorting, polynomials, NaN-correct reductions, 20 oracle edge-case tests, integer sidecar lossless storage, gufunc signature edge cases, custom loop registry, reduction payload validation |
-| fnp-ndarray | 47 | Shape legality, stride calculus, broadcast contracts, overlap detection |
-| fnp-linalg | 197 | Linear algebra decompositions, solvers, norms, 16 NumPy oracle tests |
+| fnp-ufunc | 1,237 | Core array operations, math, sorting, polynomials, NaN-correct reductions, 20 oracle edge-case tests, integer sidecar lossless storage, gufunc signature edge cases, custom loop registry, reduction payload validation, as_strided/sliding_window views |
+| fnp-ndarray | 54 | Shape legality, stride calculus, broadcast contracts, overlap detection, multi-axis negative strides |
+| fnp-linalg | 199 | Linear algebra decompositions, solvers, norms, 16 NumPy oracle tests |
 | fnp-random | 182 | RNG distributions (40 oracle-verified), seeding, reproducibility, large-n binomial/multinomial |
-| fnp-iter | 71 | Transfer-loop selector state machine, overlap detection, where-mask validation, subarray transfer, FPE cast error handling, strided transfer properties, flatiter edge cases, nditer flag validation |
+| fnp-iter | 79 | Transfer-loop selector state machine, overlap detection, where-mask validation, subarray transfer, FPE cast error handling, strided transfer properties, flatiter edge cases, nditer flag validation, zero-element boundary tests |
 | fnp-io | 143 | NPY/NPZ read/write, text formats, compression, 7 format oracle tests |
-| fnp-conformance | 105 | Differential parity, metamorphic identities, adversarial fuzzing, witness stability, P2C003 transfer invariants |
+| fnp-conformance | 122 | Differential parity, metamorphic identities, adversarial fuzzing, witness stability, P2C evidence packets |
 | fnp-dtype | 116 | Dtype taxonomy, promotion table, cast policy primitives |
-| fnp-runtime | 43 | Mode split, fail-closed decoding, override-audit gate, decision matrix coverage, posterior edge cases, evidence ledger, context normalization |
-| **Total** | **2,132** | |
+| fnp-runtime | 52 | Mode split, fail-closed decoding, override-audit gate, Bayesian decision engine edge cases, posterior monotonicity, evidence ledger, context normalization |
+| **Total** | **2,184** | |
 
 ## Remaining Gaps (Python-specific, low priority)
 
