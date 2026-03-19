@@ -53,12 +53,12 @@
 | fnp-ndarray | 47 | Shape legality, stride calculus, broadcast contracts, overlap detection |
 | fnp-linalg | 197 | Linear algebra decompositions, solvers, norms, 16 NumPy oracle tests |
 | fnp-random | 182 | RNG distributions (40 oracle-verified), seeding, reproducibility, large-n binomial/multinomial |
-| fnp-iter | 46 | Transfer-loop selector state machine, overlap detection, where-mask validation, subarray transfer, FPE cast error handling, strided transfer properties, flatiter/nditer |
+| fnp-iter | 71 | Transfer-loop selector state machine, overlap detection, where-mask validation, subarray transfer, FPE cast error handling, strided transfer properties, flatiter edge cases, nditer flag validation |
 | fnp-io | 143 | NPY/NPZ read/write, text formats, compression, 7 format oracle tests |
 | fnp-conformance | 105 | Differential parity, metamorphic identities, adversarial fuzzing, witness stability, P2C003 transfer invariants |
 | fnp-dtype | 116 | Dtype taxonomy, promotion table, cast policy primitives |
-| fnp-runtime | 12 | Mode split, fail-closed decoding, override-audit gate |
-| **Total** | **2,073** | |
+| fnp-runtime | 43 | Mode split, fail-closed decoding, override-audit gate, decision matrix coverage, posterior edge cases, evidence ledger, context normalization |
+| **Total** | **2,132** | |
 
 ## Remaining Gaps (Python-specific, low priority)
 

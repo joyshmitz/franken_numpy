@@ -1413,4 +1413,296 @@ mod tests {
         assert_eq!(err.reason_code(), "transfer_fpe_cast_error");
         assert!(err.to_string().contains("division by zero"));
     }
+
+    // -----------------------------------------------------------------------
+    // Flatiter indexing edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn flatiter_single_index_boundary() {
+        // Last valid index
+        assert_eq!(validate_flatiter_read(10, &FlatIterIndex::Single(9)).unwrap(), 1);
+        // First out-of-bounds
+        let err = validate_flatiter_read(10, &FlatIterIndex::Single(10))
+            .expect_err("boundary index should fail");
+        assert_eq!(err.reason_code(), "flatiter_transfer_read_violation");
+    }
+
+    #[test]
+    fn flatiter_single_index_zero_length_array() {
+        let err = validate_flatiter_read(0, &FlatIterIndex::Single(0))
+            .expect_err("index 0 in empty array should fail");
+        assert_eq!(err.reason_code(), "flatiter_transfer_read_violation");
+    }
+
+    #[test]
+    fn flatiter_slice_full_range() {
+        let idx = FlatIterIndex::Slice {
+            start: 0,
+            stop: 8,
+            step: 1,
+        };
+        assert_eq!(validate_flatiter_read(8, &idx).unwrap(), 8);
+    }
+
+    #[test]
+    fn flatiter_slice_with_step() {
+        let idx = FlatIterIndex::Slice {
+            start: 0,
+            stop: 10,
+            step: 3,
+        };
+        // Elements at 0, 3, 6, 9 = 4 elements
+        assert_eq!(validate_flatiter_read(10, &idx).unwrap(), 4);
+    }
+
+    #[test]
+    fn flatiter_slice_empty_range() {
+        let idx = FlatIterIndex::Slice {
+            start: 5,
+            stop: 5,
+            step: 1,
+        };
+        assert_eq!(validate_flatiter_read(10, &idx).unwrap(), 0);
+    }
+
+    #[test]
+    fn flatiter_slice_zero_step_rejected() {
+        let idx = FlatIterIndex::Slice {
+            start: 0,
+            stop: 5,
+            step: 0,
+        };
+        let err = validate_flatiter_read(10, &idx).expect_err("zero step should fail");
+        assert_eq!(err.reason_code(), "flatiter_transfer_read_violation");
+    }
+
+    #[test]
+    fn flatiter_slice_start_exceeds_stop_rejected() {
+        let idx = FlatIterIndex::Slice {
+            start: 5,
+            stop: 3,
+            step: 1,
+        };
+        let err = validate_flatiter_read(10, &idx).expect_err("start > stop should fail");
+        assert_eq!(err.reason_code(), "flatiter_transfer_read_violation");
+    }
+
+    #[test]
+    fn flatiter_slice_stop_exceeds_length_rejected() {
+        let idx = FlatIterIndex::Slice {
+            start: 0,
+            stop: 11,
+            step: 1,
+        };
+        let err =
+            validate_flatiter_read(10, &idx).expect_err("stop > length should fail");
+        assert_eq!(err.reason_code(), "flatiter_transfer_read_violation");
+    }
+
+    #[test]
+    fn flatiter_fancy_empty_indices() {
+        let idx = FlatIterIndex::Fancy(vec![]);
+        assert_eq!(validate_flatiter_read(10, &idx).unwrap(), 0);
+    }
+
+    #[test]
+    fn flatiter_fancy_duplicate_indices_allowed() {
+        let idx = FlatIterIndex::Fancy(vec![0, 0, 1, 1, 2, 2]);
+        assert_eq!(validate_flatiter_read(10, &idx).unwrap(), 6);
+    }
+
+    #[test]
+    fn flatiter_bool_mask_all_true() {
+        let mask = FlatIterIndex::BoolMask(vec![true; 8]);
+        assert_eq!(validate_flatiter_read(8, &mask).unwrap(), 8);
+    }
+
+    #[test]
+    fn flatiter_bool_mask_all_false() {
+        let mask = FlatIterIndex::BoolMask(vec![false; 8]);
+        assert_eq!(validate_flatiter_read(8, &mask).unwrap(), 0);
+    }
+
+    #[test]
+    fn flatiter_bool_mask_empty() {
+        let mask = FlatIterIndex::BoolMask(vec![]);
+        assert_eq!(validate_flatiter_read(0, &mask).unwrap(), 0);
+    }
+
+    #[test]
+    fn flatiter_write_values_mismatch_rejected() {
+        let idx = FlatIterIndex::Slice {
+            start: 0,
+            stop: 4,
+            step: 1,
+        };
+        let err = validate_flatiter_write(10, &idx, 3)
+            .expect_err("3 values for 4 lanes should fail");
+        assert_eq!(err.reason_code(), "flatiter_transfer_write_violation");
+    }
+
+    #[test]
+    fn flatiter_write_correct_values_count() {
+        let idx = FlatIterIndex::Fancy(vec![0, 2, 4]);
+        assert_eq!(validate_flatiter_write(10, &idx, 3).unwrap(), 3);
+    }
+
+    #[test]
+    fn flatiter_write_propagates_read_violation_as_write() {
+        let idx = FlatIterIndex::Single(100);
+        let err = validate_flatiter_write(10, &idx, 1)
+            .expect_err("out of bounds should fail");
+        assert_eq!(err.reason_code(), "flatiter_transfer_write_violation");
+    }
+
+    // -----------------------------------------------------------------------
+    // Nditer flags validation edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn nditer_flags_all_false_is_valid() {
+        validate_nditer_flags(NditerTransferFlags {
+            copy_if_overlap: false,
+            no_broadcast: false,
+            observed_overlap: false,
+            observed_broadcast: false,
+        })
+        .expect("all false flags should pass");
+    }
+
+    #[test]
+    fn nditer_flags_all_true_is_valid() {
+        // copy_if_overlap=true handles observed_overlap, no_broadcast=false allows broadcast
+        validate_nditer_flags(NditerTransferFlags {
+            copy_if_overlap: true,
+            no_broadcast: false,
+            observed_overlap: true,
+            observed_broadcast: true,
+        })
+        .expect("valid combination should pass");
+    }
+
+    // -----------------------------------------------------------------------
+    // Transfer selector (old API) additional edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn selector_non_aligned_unit_stride_is_strided() {
+        let input = TransferSelectorInput {
+            src_stride: 8,
+            dst_stride: 8,
+            item_size: 8,
+            element_count: 4,
+            aligned: false,
+            cast_is_lossless: true,
+            same_value_cast: false,
+        };
+        let result = select_transfer_class(input).expect("should resolve");
+        assert_eq!(result, TransferClass::Strided);
+    }
+
+    #[test]
+    fn selector_non_unit_stride_with_cast_is_strided_cast() {
+        let input = TransferSelectorInput {
+            src_stride: 16,
+            dst_stride: 16,
+            item_size: 8,
+            element_count: 4,
+            aligned: true,
+            cast_is_lossless: false,
+            same_value_cast: false,
+        };
+        let result = select_transfer_class(input).expect("should resolve");
+        assert_eq!(result, TransferClass::StridedCast);
+    }
+
+    #[test]
+    fn selector_misaligned_stride_rejected() {
+        let input = TransferSelectorInput {
+            src_stride: 7, // not multiple of item_size=8
+            dst_stride: 8,
+            item_size: 8,
+            element_count: 4,
+            aligned: true,
+            cast_is_lossless: true,
+            same_value_cast: false,
+        };
+        let err = select_transfer_class(input).expect_err("misaligned stride should fail");
+        assert_eq!(err.reason_code(), "transfer_selector_invalid_context");
+    }
+
+    // -----------------------------------------------------------------------
+    // Transfer error Display coverage
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn transfer_error_display_and_reason_code_consistency() {
+        let errors = vec![
+            TransferError::SelectorInvalidContext("test context"),
+            TransferError::OverlapPolicyTriggered("test overlap"),
+            TransferError::WhereMaskContractViolation("test mask"),
+            TransferError::SameValueCastRejected,
+            TransferError::StringWidthMismatch("test width"),
+            TransferError::SubarrayBroadcastContractViolation("test subarray"),
+            TransferError::FlatiterReadViolation("test read"),
+            TransferError::FlatiterWriteViolation("test write"),
+            TransferError::NditerOverlapPolicy("test nditer"),
+            TransferError::FpeCastError("test fpe"),
+        ];
+        for err in &errors {
+            // Display should produce non-empty string
+            let display = err.to_string();
+            assert!(!display.is_empty(), "Display must be non-empty for {err:?}");
+            // reason_code should be non-empty
+            let code = err.reason_code();
+            assert!(!code.is_empty(), "reason_code must be non-empty for {err:?}");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Transfer log record completeness
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn transfer_log_record_rejects_empty_artifact_refs() {
+        let record = TransferLogRecord {
+            fixture_id: "test".to_string(),
+            seed: 1,
+            mode: RuntimeMode::Strict,
+            env_fingerprint: "test-env".to_string(),
+            artifact_refs: Vec::new(),
+            reason_code: "test_code".to_string(),
+            passed: true,
+        };
+        assert!(!record.is_replay_complete());
+    }
+
+    #[test]
+    fn transfer_log_record_rejects_whitespace_artifact_ref() {
+        let record = TransferLogRecord {
+            fixture_id: "test".to_string(),
+            seed: 1,
+            mode: RuntimeMode::Strict,
+            env_fingerprint: "test-env".to_string(),
+            artifact_refs: vec!["valid_ref".to_string(), "   ".to_string()],
+            reason_code: "test_code".to_string(),
+            passed: true,
+        };
+        assert!(!record.is_replay_complete());
+    }
+
+    #[test]
+    fn transfer_log_record_accepts_complete_record() {
+        let record = TransferLogRecord {
+            fixture_id: "UP-003-test".to_string(),
+            seed: 42,
+            mode: RuntimeMode::Hardened,
+            env_fingerprint: "fnp-iter-tests".to_string(),
+            artifact_refs: vec!["artifact1.json".to_string(), "artifact2.yaml".to_string()],
+            reason_code: "transfer_selector_invalid_context".to_string(),
+            passed: true,
+        };
+        assert!(record.is_replay_complete());
+    }
 }

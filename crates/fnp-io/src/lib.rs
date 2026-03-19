@@ -508,42 +508,40 @@ fn read_header_span(payload: &[u8], version: (u8, u8)) -> Result<(usize, usize),
     Ok((header_offset, header_len))
 }
 
-fn extract_after_key<'a>(dictionary: &'a str, key: &str) -> Result<&'a str, IOError> {
-    let single = format!("'{key}'");
-    let double = format!("\"{key}\"");
-    let key_start = dictionary
-        .find(&single)
-        .or_else(|| dictionary.find(&double))
-        .ok_or(IOError::HeaderSchemaInvalid(
-            "required header field is missing",
-        ))?;
-    let tail = &dictionary[key_start + single.len()..];
-    let tail = tail.trim_start();
-    let tail = tail.strip_prefix(':').ok_or(IOError::HeaderSchemaInvalid(
-        "header field is missing ':' separator",
-    ))?;
-    Ok(tail.trim_start())
-}
-
-fn parse_quoted_value(value: &str) -> Result<&str, IOError> {
-    let quote = value
-        .as_bytes()
-        .first()
-        .copied()
-        .ok_or(IOError::HeaderSchemaInvalid("header quoted value is empty"))?;
+fn parse_quoted_value(value: &str) -> Result<String, IOError> {
+    let bytes = value.as_bytes();
+    if bytes.len() < 2 {
+        return Err(IOError::HeaderSchemaInvalid("header quoted value is empty"));
+    }
+    let quote = bytes[0];
     if quote != b'\'' && quote != b'"' {
         return Err(IOError::HeaderSchemaInvalid(
             "header quoted value must start with quote",
         ));
     }
 
-    let tail = &value[1..];
-    let end = tail
-        .find(char::from(quote))
-        .ok_or(IOError::HeaderSchemaInvalid(
-            "header quoted value missing closing quote",
-        ))?;
-    Ok(&tail[..end])
+    let mut result = String::with_capacity(bytes.len());
+    let mut escaped = false;
+    let mut idx = 1usize;
+
+    while idx < bytes.len() {
+        let b = bytes[idx];
+        if b == quote && !escaped {
+            return Ok(result);
+        }
+
+        if b == b'\\' && !escaped {
+            escaped = true;
+        } else {
+            result.push(char::from(b));
+            escaped = false;
+        }
+        idx += 1;
+    }
+
+    Err(IOError::HeaderSchemaInvalid(
+        "header quoted value missing closing quote",
+    ))
 }
 
 fn parse_shape_tuple(tuple_literal: &str) -> Result<Vec<usize>, IOError> {
@@ -581,51 +579,116 @@ fn parse_shape_tuple(tuple_literal: &str) -> Result<Vec<usize>, IOError> {
     Ok(shape)
 }
 
+#[allow(dead_code)]
 fn parse_header_keys(dictionary: &str) -> Result<Vec<String>, IOError> {
+    let map = parse_header_dictionary_map(dictionary)?;
+    let mut keys: Vec<String> = map.keys().cloned().collect();
+    keys.sort(); // For determinism in tests if needed
+    Ok(keys)
+}
+
+fn parse_header_dictionary_map(
+    dictionary: &str,
+) -> Result<std::collections::HashMap<String, String>, IOError> {
     let bytes = dictionary.as_bytes();
-    let mut keys = Vec::new();
+    let mut map = std::collections::HashMap::new();
     let mut idx = 0usize;
 
-    while idx < bytes.len() {
-        let byte = bytes[idx];
-        if byte != b'\'' && byte != b'"' {
+    // Skip leading whitespace and '{'
+    while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+        idx += 1;
+    }
+    if idx >= bytes.len() || bytes[idx] != b'{' {
+        return Err(IOError::HeaderSchemaInvalid(
+            "header dictionary must be wrapped in braces",
+        ));
+    }
+    idx += 1;
+
+    let end_idx = dictionary
+        .rfind('}')
+        .ok_or(IOError::HeaderSchemaInvalid(
+            "header dictionary must be wrapped in braces",
+        ))?;
+
+    while idx < end_idx {
+        // Find next key
+        while idx < end_idx && !matches!(bytes[idx], b'\'' | b'"') {
             idx += 1;
-            continue;
+        }
+        if idx >= end_idx {
+            break;
         }
 
-        let quote = byte;
-        let start = idx + 1;
+        let quote = bytes[idx];
+        let key_start = idx + 1;
         idx += 1;
-        while idx < bytes.len() {
-            let escaped = idx > start && bytes[idx - 1] == b'\\';
+        let mut escaped = false;
+        while idx < end_idx {
             if bytes[idx] == quote && !escaped {
                 break;
             }
+            escaped = (bytes[idx] == b'\\') && !escaped;
             idx += 1;
         }
-        if idx >= bytes.len() {
-            return Err(IOError::HeaderSchemaInvalid(
-                "header key/value quote is not terminated",
-            ));
+        if idx >= end_idx {
+            return Err(IOError::HeaderSchemaInvalid("unterminated header key"));
         }
-
-        let token = &dictionary[start..idx];
+        let key = &dictionary[key_start..idx];
         idx += 1;
 
-        while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+        // Find ':'
+        while idx < end_idx && bytes[idx].is_ascii_whitespace() {
             idx += 1;
         }
-        if idx < bytes.len() && bytes[idx] == b':' {
-            if keys.iter().any(|existing| existing == token) {
-                return Err(IOError::HeaderSchemaInvalid(
-                    "header dictionary contains duplicate keys",
-                ));
+        if idx >= end_idx || bytes[idx] != b':' {
+            return Err(IOError::HeaderSchemaInvalid("missing ':' after header key"));
+        }
+        idx += 1;
+
+        // Find value
+        while idx < end_idx && bytes[idx].is_ascii_whitespace() {
+            idx += 1;
+        }
+        let val_start = idx;
+
+        let mut in_quote = None;
+        let mut depth = 0;
+        let mut escaped = false;
+        while idx < end_idx {
+            let b = bytes[idx];
+            if let Some(q) = in_quote {
+                if b == q && !escaped {
+                    in_quote = None;
+                }
+                escaped = (b == b'\\') && !escaped;
+            } else {
+                match b {
+                    b'\'' | b'"' => in_quote = Some(b),
+                    b'(' | b'[' | b'{' => depth += 1,
+                    b')' | b']' | b'}' => {
+                        if depth == 0 {
+                            break;
+                        }
+                        depth -= 1;
+                    }
+                    b',' if depth == 0 => break,
+                    _ => {}
+                }
             }
-            keys.push(token.to_string());
+            idx += 1;
+        }
+        let value = dictionary[val_start..idx].trim();
+        if map.insert(key.to_string(), value.to_string()).is_some() {
+            return Err(IOError::HeaderSchemaInvalid(
+                "header dictionary contains duplicate keys",
+            ));
+        }
+        if idx < end_idx && bytes[idx] == b',' {
+            idx += 1;
         }
     }
-
-    Ok(keys)
+    Ok(map)
 }
 
 fn parse_header_dictionary(header_bytes: &[u8], header_len: usize) -> Result<NpyHeader, IOError> {
@@ -633,26 +696,26 @@ fn parse_header_dictionary(header_bytes: &[u8], header_len: usize) -> Result<Npy
         IOError::HeaderSchemaInvalid("header bytes must decode as utf-8/ascii dictionary")
     })?;
     let dictionary = dictionary.trim_end();
-    if !(dictionary.starts_with('{') && dictionary.ends_with('}')) {
-        return Err(IOError::HeaderSchemaInvalid(
-            "header dictionary must be wrapped in braces",
-        ));
-    }
-    let keys = parse_header_keys(dictionary)?;
-    if keys.len() != NPY_HEADER_REQUIRED_KEYS.len()
-        || NPY_HEADER_REQUIRED_KEYS
-            .iter()
-            .any(|required| !keys.iter().any(|key| key == required))
-    {
+
+    let map = parse_header_dictionary_map(dictionary)?;
+
+    if map.len() != NPY_HEADER_REQUIRED_KEYS.len() {
         return Err(IOError::HeaderSchemaInvalid(
             "header dictionary must contain exactly descr/fortran_order/shape keys",
         ));
     }
 
-    let descr_tail = extract_after_key(dictionary, "descr")?;
-    let descr_literal = parse_quoted_value(descr_tail)?;
+    for required in &NPY_HEADER_REQUIRED_KEYS {
+        if !map.contains_key(*required) {
+            return Err(IOError::HeaderSchemaInvalid(
+                "required header field is missing",
+            ));
+        }
+    }
 
-    let fortran_tail = extract_after_key(dictionary, "fortran_order")?;
+    let descr_literal = parse_quoted_value(map.get("descr").unwrap())?;
+
+    let fortran_tail = map.get("fortran_order").unwrap();
     let fortran_order = if fortran_tail.starts_with("True") {
         true
     } else if fortran_tail.starts_with("False") {
@@ -663,19 +726,20 @@ fn parse_header_dictionary(header_bytes: &[u8], header_len: usize) -> Result<Npy
         ));
     };
 
-    let shape_tail = extract_after_key(dictionary, "shape")?;
+    let shape_tail = map.get("shape").unwrap();
     let shape_tail = shape_tail
         .strip_prefix('(')
         .ok_or(IOError::HeaderSchemaInvalid(
             "shape field must begin with tuple syntax",
         ))?;
-    let shape_end = shape_tail.find(')').ok_or(IOError::HeaderSchemaInvalid(
-        "shape tuple missing closing ')'",
-    ))?;
+    let shape_end = shape_tail
+        .rfind(')')
+        .ok_or(IOError::HeaderSchemaInvalid("shape tuple missing closing ')'"))?;
     let shape = parse_shape_tuple(&shape_tail[..shape_end])?;
 
-    validate_header_schema(&shape, fortran_order, descr_literal, header_len)
+    validate_header_schema(&shape, fortran_order, &descr_literal, header_len)
 }
+
 
 fn validate_object_write_payload(shape: &[usize], payload: &[u8]) -> Result<(), IOError> {
     let expected_count = element_count(shape).map_err(|_| {
@@ -2510,16 +2574,27 @@ fn parse_structured_quoted_string(s: &str, pos: usize) -> Result<(String, usize)
     if quote != b'\'' && quote != b'"' {
         return Err(IOError::DTypeDescriptorInvalid);
     }
-    let start = pos + 1;
-    let mut end = start;
-    while end < bytes.len() && bytes[end] != quote {
-        end += 1;
+
+    let mut result = String::new();
+    let mut escaped = false;
+    let mut idx = pos + 1;
+
+    while idx < bytes.len() {
+        let b = bytes[idx];
+        if b == quote && !escaped {
+            return Ok((result, idx + 1));
+        }
+
+        if b == b'\\' && !escaped {
+            escaped = true;
+        } else {
+            result.push(char::from(b));
+            escaped = false;
+        }
+        idx += 1;
     }
-    if end >= bytes.len() {
-        return Err(IOError::DTypeDescriptorInvalid);
-    }
-    let content = s[start..end].to_string();
-    Ok((content, end + 1))
+
+    Err(IOError::DTypeDescriptorInvalid)
 }
 
 /// Encode a structured NPY header dictionary line.
@@ -2731,32 +2806,28 @@ pub fn load_structured(data: &[u8]) -> Result<StructuredNpyData, IOError> {
         IOError::HeaderSchemaInvalid("header bytes must decode as utf-8/ascii dictionary")
     })?;
     let dictionary = dictionary.trim_end();
-    if !(dictionary.starts_with('{') && dictionary.ends_with('}')) {
-        return Err(IOError::HeaderSchemaInvalid(
-            "header dictionary must be wrapped in braces",
-        ));
-    }
+    let map = parse_header_dictionary_map(dictionary)?;
 
     // Parse shape
-    let shape_tail = extract_after_key(dictionary, "shape")?;
+    let shape_tail = map.get("shape").ok_or(IOError::HeaderSchemaInvalid(
+        "required header field 'shape' is missing",
+    ))?;
     let shape_tail = shape_tail
         .strip_prefix('(')
-        .ok_or(IOError::HeaderSchemaInvalid("shape tuple missing '('"))?;
+        .ok_or(IOError::HeaderSchemaInvalid("shape field must begin with tuple syntax"))?;
     let shape_end = shape_tail
-        .find(')')
-        .ok_or(IOError::HeaderSchemaInvalid("shape tuple missing ')'"))?;
+        .rfind(')')
+        .ok_or(IOError::HeaderSchemaInvalid("shape tuple missing closing ')'"))?;
     let shape = parse_shape_tuple(&shape_tail[..shape_end])?;
 
     // Parse structured descriptor
-    let descr_tail = extract_after_key(dictionary, "descr")?;
-    let descr_tail = descr_tail.trim_start();
+    let descr_tail = map.get("descr").ok_or(IOError::HeaderSchemaInvalid(
+        "required header field 'descr' is missing",
+    ))?;
     if !descr_tail.starts_with('[') {
         return Err(IOError::DTypeDescriptorInvalid);
     }
-    let list_end = descr_tail
-        .find(']')
-        .ok_or(IOError::DTypeDescriptorInvalid)?;
-    let descriptor = parse_structured_descr(&descr_tail[..=list_end])?;
+    let descriptor = parse_structured_descr(descr_tail)?;
 
     let body = &data[header_end..];
     let expected_records = element_count(&shape)?;
