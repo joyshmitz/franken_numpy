@@ -259,6 +259,38 @@
       "fixture_root": "default",
       "threat_classes": ["linalg_backend_bridge_tampering"],
       "ci_gate": "G5"
+    },
+    {
+      "name": "test_contracts::run_test_contract_suite",
+      "type": "contract",
+      "fixture": null,
+      "fixture_root": "default",
+      "threat_classes": [],
+      "ci_gate": "G5"
+    },
+    {
+      "name": "security_contracts::run_security_contract_suite",
+      "type": "contract",
+      "fixture": null,
+      "fixture_root": "default",
+      "threat_classes": ["corrupt_durable_artifact"],
+      "ci_gate": "G4"
+    },
+    {
+      "name": "workflow_scenarios::run_user_workflow_scenario_suite",
+      "type": "scenario",
+      "fixture": "workflow_scenario_corpus.json",
+      "fixture_root": "default",
+      "threat_classes": [],
+      "ci_gate": "G6"
+    },
+    {
+      "name": "raptorq_artifacts::run_raptorq_artifact_suite",
+      "type": "durability",
+      "fixture": null,
+      "fixture_root": "default",
+      "threat_classes": ["corrupt_durable_artifact"],
+      "ci_gate": "G8"
     }
   ],
   "threat_class_coverage": {
@@ -272,16 +304,19 @@
     "linalg_shape_tolerance_abuse": ["run_linalg_differential_suite", "run_linalg_metamorphic_suite", "run_linalg_adversarial_suite"],
     "linalg_backend_bridge_tampering": ["run_linalg_adversarial_suite", "run_crash_signature_regression_suite"],
     "linalg_policy_unknown_metadata": ["run_linalg_adversarial_suite", "run_runtime_policy_adversarial_suite"],
-    "corrupt_durable_artifact": ["validate_phase2c_packet (G8 gate)"],
+    "corrupt_durable_artifact": ["security_contracts::run_security_contract_suite", "raptorq_artifacts::run_raptorq_artifact_suite"],
     "policy_override_abuse": ["run_runtime_policy_suite", "run_runtime_policy_adversarial_suite"]
   },
   "suite_type_counts": {
-    "basic": 4,
+    "basic": 3,
     "differential": 12,
     "metamorphic": 7,
     "adversarial": 8,
     "statistical": 1,
     "regression": 1,
-    "total": 33
+    "contract": 2,
+    "scenario": 1,
+    "durability": 1,
+    "total": 36
   }
 }

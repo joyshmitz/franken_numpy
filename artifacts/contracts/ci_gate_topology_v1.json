@@ -73,7 +73,8 @@
         "sidecar",
         "scrub_report",
         "decode_proof",
-        "raptorq_reliability_report"
+        "raptorq_reliability_report",
+        "packet_readiness_reports"
       ]
     }
   ],

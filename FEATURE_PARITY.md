@@ -64,7 +64,7 @@
 
 1. `frompyfunc` — requires Python callable protocol (N/A for Rust)
 2. `nditer` — Python-level iterator protocol (N/A for Rust)
-3. Full CI pipeline wiring for oracle environment, RaptorQ gates, benchmark regression
+3. Expanded CI matrix for alternate oracle environments and longer-horizon benchmark trend regression
 
 ## API Surface Inventory
 

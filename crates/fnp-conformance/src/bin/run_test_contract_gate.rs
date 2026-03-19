@@ -11,9 +11,9 @@ use fnp_conformance::{
     run_rng_differential_suite, run_rng_metamorphic_suite, run_rng_statistical_suite,
     run_runtime_policy_adversarial_suite, run_runtime_policy_suite,
     run_shape_stride_adversarial_suite, run_shape_stride_differential_suite,
-    run_shape_stride_metamorphic_suite, run_shape_stride_suite,
-    run_string_differential_suite, run_ufunc_adversarial_suite, run_ufunc_differential_suite,
-    run_ufunc_metamorphic_suite, set_runtime_policy_log_path, test_contracts,
+    run_shape_stride_metamorphic_suite, run_shape_stride_suite, run_string_differential_suite,
+    run_ufunc_adversarial_suite, run_ufunc_differential_suite, run_ufunc_metamorphic_suite,
+    set_runtime_policy_log_path, test_contracts,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -49,12 +49,14 @@ const REQUIRED_MERGE_BLOCKERS: &[&str] =
     &["compatibility_drift", "missing_artifacts", "budget_breach"];
 const REQUIRED_G7_COMMAND_FRAGMENT: &str = "scripts/e2e/run_performance_budget_gate.sh";
 const REQUIRED_G8_COMMAND_FRAGMENT: &str = "scripts/e2e/run_raptorq_gate.sh";
+const REQUIRED_G8_PHASE2C_FRAGMENT: &str = "validate_phase2c_packets";
 const REQUIRED_G7_OUTPUTS: &[&str] = &["candidate_baseline", "performance_budget_report"];
 const REQUIRED_G8_OUTPUTS: &[&str] = &[
     "sidecar",
     "scrub_report",
     "decode_proof",
     "raptorq_reliability_report",
+    "packet_readiness_reports",
 ];
 
 #[derive(Debug, Deserialize)]
@@ -795,6 +797,15 @@ fn validate_ci_gate_topology_contract() -> Result<SuiteReport, String> {
                 ),
             );
         }
+        record_contract_check(
+            &mut report,
+            runner_raw.contains(REQUIRED_G8_PHASE2C_FRAGMENT),
+            format!(
+                "runner script {} missing G8 Phase2C fragment '{}'",
+                runner_path.display(),
+                REQUIRED_G8_PHASE2C_FRAGMENT
+            ),
+        );
     } else {
         record_contract_check(
             &mut report,

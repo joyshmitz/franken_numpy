@@ -689,14 +689,9 @@ fn parse_header_dictionary_map(
     Ok(map)
 }
 
-fn parse_header_dictionary(header_bytes: &[u8], header_len: usize) -> Result<NpyHeader, IOError> {
-    let dictionary = std::str::from_utf8(header_bytes).map_err(|_| {
-        IOError::HeaderSchemaInvalid("header bytes must decode as utf-8/ascii dictionary")
-    })?;
-    let dictionary = dictionary.trim_end();
-
-    let map = parse_header_dictionary_map(dictionary)?;
-
+fn validate_required_header_keys(
+    map: &std::collections::HashMap<String, String>,
+) -> Result<(), IOError> {
     if map.len() != NPY_HEADER_REQUIRED_KEYS.len() {
         return Err(IOError::HeaderSchemaInvalid(
             "header dictionary must contain exactly descr/fortran_order/shape keys",
@@ -711,20 +706,22 @@ fn parse_header_dictionary(header_bytes: &[u8], header_len: usize) -> Result<Npy
         }
     }
 
-    let descr_literal = parse_quoted_value(map.get("descr").unwrap())?;
+    Ok(())
+}
 
-    let fortran_tail = map.get("fortran_order").unwrap();
-    let fortran_order = if fortran_tail.starts_with("True") {
-        true
-    } else if fortran_tail.starts_with("False") {
-        false
+fn parse_fortran_order_value(value: &str) -> Result<bool, IOError> {
+    if value == "True" {
+        Ok(true)
+    } else if value == "False" {
+        Ok(false)
     } else {
-        return Err(IOError::HeaderSchemaInvalid(
+        Err(IOError::HeaderSchemaInvalid(
             "fortran_order field must be True or False",
-        ));
-    };
+        ))
+    }
+}
 
-    let shape_tail = map.get("shape").unwrap();
+fn parse_shape_field(shape_tail: &str) -> Result<Vec<usize>, IOError> {
     let shape_tail = shape_tail
         .strip_prefix('(')
         .ok_or(IOError::HeaderSchemaInvalid(
@@ -733,7 +730,22 @@ fn parse_header_dictionary(header_bytes: &[u8], header_len: usize) -> Result<Npy
     let shape_end = shape_tail.rfind(')').ok_or(IOError::HeaderSchemaInvalid(
         "shape tuple missing closing ')'",
     ))?;
-    let shape = parse_shape_tuple(&shape_tail[..shape_end])?;
+    parse_shape_tuple(&shape_tail[..shape_end])
+}
+
+fn parse_header_dictionary(header_bytes: &[u8], header_len: usize) -> Result<NpyHeader, IOError> {
+    let dictionary = std::str::from_utf8(header_bytes).map_err(|_| {
+        IOError::HeaderSchemaInvalid("header bytes must decode as utf-8/ascii dictionary")
+    })?;
+    let dictionary = dictionary.trim_end();
+
+    let map = parse_header_dictionary_map(dictionary)?;
+
+    validate_required_header_keys(&map)?;
+
+    let descr_literal = parse_quoted_value(map.get("descr").unwrap())?;
+    let fortran_order = parse_fortran_order_value(map.get("fortran_order").unwrap())?;
+    let shape = parse_shape_field(map.get("shape").unwrap())?;
 
     validate_header_schema(&shape, fortran_order, &descr_literal, header_len)
 }
@@ -2825,25 +2837,14 @@ pub fn load_structured(data: &[u8]) -> Result<StructuredNpyData, IOError> {
     })?;
     let dictionary = dictionary.trim_end();
     let map = parse_header_dictionary_map(dictionary)?;
+    validate_required_header_keys(&map)?;
 
     // Parse shape
-    let shape_tail = map.get("shape").ok_or(IOError::HeaderSchemaInvalid(
-        "required header field 'shape' is missing",
-    ))?;
-    let shape_tail = shape_tail
-        .strip_prefix('(')
-        .ok_or(IOError::HeaderSchemaInvalid(
-            "shape field must begin with tuple syntax",
-        ))?;
-    let shape_end = shape_tail.rfind(')').ok_or(IOError::HeaderSchemaInvalid(
-        "shape tuple missing closing ')'",
-    ))?;
-    let shape = parse_shape_tuple(&shape_tail[..shape_end])?;
+    let shape = parse_shape_field(map.get("shape").unwrap())?;
+    let _fortran_order = parse_fortran_order_value(map.get("fortran_order").unwrap())?;
 
     // Parse structured descriptor
-    let descr_tail = map.get("descr").ok_or(IOError::HeaderSchemaInvalid(
-        "required header field 'descr' is missing",
-    ))?;
+    let descr_tail = map.get("descr").unwrap();
     if !descr_tail.starts_with('[') {
         return Err(IOError::DTypeDescriptorInvalid);
     }
@@ -4662,6 +4663,40 @@ mod tests {
         assert_eq!(loaded.columns[0], col_a);
         assert_eq!(loaded.columns[1], col_b);
         assert_eq!(loaded.columns[2], col_c);
+    }
+
+    #[test]
+    fn load_structured_rejects_missing_fortran_order_key() {
+        let desc = make_test_descriptor();
+        let body = tofile_structured(
+            &desc,
+            &[
+                [1.5f64.to_le_bytes()].concat(),
+                [10i32.to_le_bytes()].concat(),
+            ],
+        )
+        .unwrap();
+        let header_literal = "{'descr': [('x', '<f8'), ('y', '<i4')], 'shape': (1,), }";
+        let payload = make_manual_npy_payload(header_literal, &body);
+        let err = load_structured(&payload).expect_err("missing fortran_order must be rejected");
+        assert_eq!(err.reason_code(), "io_header_schema_invalid");
+    }
+
+    #[test]
+    fn load_structured_rejects_extra_header_keys() {
+        let desc = make_test_descriptor();
+        let body = tofile_structured(
+            &desc,
+            &[
+                [1.5f64.to_le_bytes()].concat(),
+                [10i32.to_le_bytes()].concat(),
+            ],
+        )
+        .unwrap();
+        let header_literal = "{'descr': [('x', '<f8'), ('y', '<i4')], 'fortran_order': False, 'shape': (1,), 'extra': 1, }";
+        let payload = make_manual_npy_payload(header_literal, &body);
+        let err = load_structured(&payload).expect_err("extra keys must be rejected");
+        assert_eq!(err.reason_code(), "io_header_schema_invalid");
     }
 
     // ── Memmap (file-backed array) tests ──

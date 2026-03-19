@@ -2659,7 +2659,8 @@ impl UFuncArray {
             // NumPy true-division promotes integral/bool operands to floating output.
             DType::F64
         } else {
-            if op.is_integer_only() && !plan.out_dtype.is_integer() && plan.out_dtype != DType::Bool {
+            if op.is_integer_only() && !plan.out_dtype.is_integer() && plan.out_dtype != DType::Bool
+            {
                 return Err(UFuncError::Msg(format!(
                     "ufunc '{}' not supported for input types, and the inputs could not be safely coerced to any supported types",
                     op.name()
@@ -5387,13 +5388,11 @@ impl UFuncArray {
                 let j = i + l - 1;
                 cost[i][j] = u64::MAX;
                 for k in i..j {
-                    let c = cost[i][k]
-                        .saturating_add(cost[k + 1][j])
-                        .saturating_add(
-                            (dims[i] as u64)
-                                .saturating_mul(dims[k + 1] as u64)
-                                .saturating_mul(dims[j + 1] as u64),
-                        );
+                    let c = cost[i][k].saturating_add(cost[k + 1][j]).saturating_add(
+                        (dims[i] as u64)
+                            .saturating_mul(dims[k + 1] as u64)
+                            .saturating_mul(dims[j + 1] as u64),
+                    );
                     if c < cost[i][j] {
                         cost[i][j] = c;
                         split[i][j] = k;
@@ -21808,11 +21807,13 @@ mod tests {
     fn binary_nextafter_zero_transitions() {
         let lhs = UFuncArray::new(vec![4], vec![-0.0, 0.0, 0.0, -0.0], DType::F64).expect("lhs");
         let rhs = UFuncArray::new(vec![4], vec![1.0, -1.0, -0.0, 0.0], DType::F64).expect("rhs");
-        let out = lhs.elementwise_binary(&rhs, BinaryOp::Nextafter).expect("nextafter");
-        
+        let out = lhs
+            .elementwise_binary(&rhs, BinaryOp::Nextafter)
+            .expect("nextafter");
+
         // nextafter(-0.0, 1.0) should be 5e-324 (smallest positive subnormal)
         assert!(out.values()[0] > 0.0);
-        
+
         // nextafter(0.0, -1.0) should be -5e-324 (smallest negative subnormal)
         assert!(out.values()[1] < 0.0);
 
@@ -32215,7 +32216,13 @@ mod tests {
         let recovered = transformed.ifft().unwrap();
         // Recovered: shape [4, 2], interleaved (real, imag).
         let real_parts: Vec<f64> = recovered.values().iter().step_by(2).copied().collect();
-        let imag_parts: Vec<f64> = recovered.values().iter().skip(1).step_by(2).copied().collect();
+        let imag_parts: Vec<f64> = recovered
+            .values()
+            .iter()
+            .skip(1)
+            .step_by(2)
+            .copied()
+            .collect();
         for (i, (&got, &expected)) in real_parts.iter().zip(&[1.0, 2.0, 3.0, 4.0]).enumerate() {
             assert!(
                 (got - expected).abs() < 1e-10,
@@ -32259,8 +32266,14 @@ mod tests {
         let b = 3.0;
 
         // Compute a*x + b*y
-        let a_scalar = UFuncArray::new(vec![1], vec![a], DType::F64).unwrap().broadcast_to(&[4]).unwrap();
-        let b_scalar = UFuncArray::new(vec![1], vec![b], DType::F64).unwrap().broadcast_to(&[4]).unwrap();
+        let a_scalar = UFuncArray::new(vec![1], vec![a], DType::F64)
+            .unwrap()
+            .broadcast_to(&[4])
+            .unwrap();
+        let b_scalar = UFuncArray::new(vec![1], vec![b], DType::F64)
+            .unwrap()
+            .broadcast_to(&[4])
+            .unwrap();
         let ax = x.elementwise_binary(&a_scalar, BinaryOp::Mul).unwrap();
         let by = y.elementwise_binary(&b_scalar, BinaryOp::Mul).unwrap();
         let combined = ax.elementwise_binary(&by, BinaryOp::Add).unwrap();
@@ -32271,13 +32284,24 @@ mod tests {
         // a*fft(x) + b*fft(y) — output is [4, 2] interleaved
         let fft_x = x.fft(None).unwrap();
         let fft_y = y.fft(None).unwrap();
-        let a_bc = UFuncArray::new(vec![1], vec![a], DType::F64).unwrap().broadcast_to(fft_x.shape()).unwrap();
-        let b_bc = UFuncArray::new(vec![1], vec![b], DType::F64).unwrap().broadcast_to(fft_y.shape()).unwrap();
+        let a_bc = UFuncArray::new(vec![1], vec![a], DType::F64)
+            .unwrap()
+            .broadcast_to(fft_x.shape())
+            .unwrap();
+        let b_bc = UFuncArray::new(vec![1], vec![b], DType::F64)
+            .unwrap()
+            .broadcast_to(fft_y.shape())
+            .unwrap();
         let a_fft_x = fft_x.elementwise_binary(&a_bc, BinaryOp::Mul).unwrap();
         let b_fft_y = fft_y.elementwise_binary(&b_bc, BinaryOp::Mul).unwrap();
         let linear_combo = a_fft_x.elementwise_binary(&b_fft_y, BinaryOp::Add).unwrap();
 
-        for (i, (&got, &expected)) in fft_combined.values().iter().zip(linear_combo.values()).enumerate() {
+        for (i, (&got, &expected)) in fft_combined
+            .values()
+            .iter()
+            .zip(linear_combo.values())
+            .enumerate()
+        {
             assert!(
                 (got - expected).abs() < 1e-8,
                 "linearity: index {i}: got {got}, expected {expected}"
@@ -32314,8 +32338,14 @@ mod tests {
     #[test]
     fn test_multi_dot_two_arrays() {
         // 2 arrays: should just be a plain dot.
-        let a = UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
-        let b = UFuncArray::new(vec![3, 2], vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0], DType::F64).unwrap();
+        let a =
+            UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
+        let b = UFuncArray::new(
+            vec![3, 2],
+            vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+            DType::F64,
+        )
+        .unwrap();
         let result = UFuncArray::multi_dot(&[&a, &b]).unwrap();
         let expected = a.dot(&b).unwrap();
         assert_eq!(result.values(), expected.values());
@@ -32346,7 +32376,12 @@ mod tests {
     fn test_multi_dot_with_1d_endpoints() {
         // 1-D vector × 2-D matrix × 1-D vector (NumPy supports this).
         let v = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
-        let m = UFuncArray::new(vec![3, 3], vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], DType::F64).unwrap();
+        let m = UFuncArray::new(
+            vec![3, 3],
+            vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            DType::F64,
+        )
+        .unwrap();
         let w = UFuncArray::new(vec![3], vec![4.0, 5.0, 6.0], DType::F64).unwrap();
         let result = UFuncArray::multi_dot(&[&v, &m, &w]).unwrap();
         // v · I · w = v · w = 1*4 + 2*5 + 3*6 = 32

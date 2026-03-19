@@ -371,12 +371,27 @@ pub fn evaluate_policy_override(
 fn normalize_audit_context(mut context: DecisionAuditContext) -> DecisionAuditContext {
     if context.fixture_id.trim().is_empty() {
         context.fixture_id = "unknown_fixture".to_string();
+    } else {
+        context.fixture_id = context.fixture_id.trim().to_string();
     }
     if context.env_fingerprint.trim().is_empty() {
         context.env_fingerprint = "unknown_env".to_string();
+    } else {
+        context.env_fingerprint = context.env_fingerprint.trim().to_string();
     }
     if context.reason_code.trim().is_empty() {
         context.reason_code = "unspecified".to_string();
+    } else {
+        context.reason_code = context.reason_code.trim().to_string();
+    }
+    context.artifact_refs = context
+        .artifact_refs
+        .into_iter()
+        .map(|artifact| artifact.trim().to_string())
+        .filter(|artifact| !artifact.is_empty())
+        .collect();
+    if context.artifact_refs.is_empty() {
+        context.artifact_refs = vec!["unknown_artifact".to_string()];
     }
     context
 }
@@ -1137,17 +1152,18 @@ mod tests {
         assert_eq!(event.fixture_id, "unknown_fixture");
         assert_eq!(event.env_fingerprint, "unknown_env");
         assert_eq!(event.reason_code, "unspecified");
+        assert_eq!(event.artifact_refs, vec!["unknown_artifact"]);
     }
 
     #[test]
     fn context_preserves_non_empty_fields() {
         let mut ledger = EvidenceLedger::new();
         let context = DecisionAuditContext {
-            fixture_id: "test-42".to_string(),
+            fixture_id: " test-42 ".to_string(),
             seed: 42,
-            env_fingerprint: "linux-test".to_string(),
-            artifact_refs: vec!["ref1".to_string()],
-            reason_code: "test_reason".to_string(),
+            env_fingerprint: " linux-test ".to_string(),
+            artifact_refs: vec![" ref1 ".to_string()],
+            reason_code: " test_reason ".to_string(),
         };
         decide_and_record_with_context(
             &mut ledger,
@@ -1164,6 +1180,29 @@ mod tests {
         assert_eq!(event.env_fingerprint, "linux-test");
         assert_eq!(event.artifact_refs, vec!["ref1"]);
         assert_eq!(event.reason_code, "test_reason");
+    }
+
+    #[test]
+    fn context_normalization_drops_blank_artifact_refs() {
+        let mut ledger = EvidenceLedger::new();
+        let context = DecisionAuditContext {
+            fixture_id: "fixture".to_string(),
+            seed: 7,
+            env_fingerprint: "env".to_string(),
+            artifact_refs: vec![" artifact-a ".to_string(), "   ".to_string()],
+            reason_code: "reason".to_string(),
+        };
+        decide_and_record_with_context(
+            &mut ledger,
+            RuntimeMode::Hardened,
+            CompatibilityClass::KnownCompatible,
+            0.2,
+            0.5,
+            context,
+            "artifact normalization",
+        );
+        let event = ledger.last().unwrap();
+        assert_eq!(event.artifact_refs, vec!["artifact-a"]);
     }
 
     // -----------------------------------------------------------------------
