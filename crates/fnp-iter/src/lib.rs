@@ -1751,9 +1751,9 @@ mod tests {
     }
 
     #[test]
-    fn select_transfer_class_negative_strides_strided() {
-        // Negative strides with aligned and lossless should yield Strided
-        // (not Contiguous, since unit stride check uses unsigned_abs).
+    fn select_transfer_class_negative_strides_contiguous() {
+        // Negative strides with aligned and lossless: unsigned_abs(-8) == 8 == item_size,
+        // so the unit-stride check passes and the result is Contiguous.
         let input = TransferSelectorInput {
             src_stride: -8,
             dst_stride: -8,

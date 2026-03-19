@@ -1778,6 +1778,7 @@ fn hessenberg_reduce(a: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
         q[i * n + i] = 1.0;
     }
 
+    let mut v = vec![0.0; n];
     for j in 0..n.saturating_sub(2) {
         // Householder to zero column j below row j+1 (entries j+2..n)
         let col_norm = {
@@ -1792,9 +1793,11 @@ fn hessenberg_reduce(a: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
         }
 
         let sign = if h[(j + 1) * n + j] >= 0.0 { 1.0 } else { -1.0 };
-        let mut v = vec![0.0; n];
-        for i in (j + 1)..n {
-            v[i] = h[i * n + j];
+        for vi in &mut v[..=j] {
+            *vi = 0.0;
+        }
+        for (i, vi) in v[(j + 1)..n].iter_mut().enumerate() {
+            *vi = h[(i + j + 1) * n + j];
         }
         v[j + 1] += sign * col_norm;
 
@@ -1806,7 +1809,10 @@ fn hessenberg_reduce(a: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
 
         // Left: H = P * H
         for col in 0..n {
-            let dot: f64 = ((j + 1)..n).map(|i| v[i] * h[i * n + col]).sum();
+            let mut dot = 0.0;
+            for i in (j + 1)..n {
+                dot += v[i] * h[i * n + col];
+            }
             let f = scale * dot;
             for i in (j + 1)..n {
                 h[i * n + col] -= f * v[i];
@@ -1814,7 +1820,10 @@ fn hessenberg_reduce(a: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
         }
         // Right: H = H * P
         for row in 0..n {
-            let dot: f64 = ((j + 1)..n).map(|i| v[i] * h[row * n + i]).sum();
+            let mut dot = 0.0;
+            for i in (j + 1)..n {
+                dot += v[i] * h[row * n + i];
+            }
             let f = scale * dot;
             for i in (j + 1)..n {
                 h[row * n + i] -= f * v[i];
@@ -1822,7 +1831,10 @@ fn hessenberg_reduce(a: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
         }
         // Q = Q * P
         for row in 0..n {
-            let dot: f64 = ((j + 1)..n).map(|i| v[i] * q[row * n + i]).sum();
+            let mut dot = 0.0;
+            for i in (j + 1)..n {
+                dot += v[i] * q[row * n + i];
+            }
             let f = scale * dot;
             for i in (j + 1)..n {
                 q[row * n + i] -= f * v[i];

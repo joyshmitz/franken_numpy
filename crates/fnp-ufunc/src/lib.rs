@@ -571,6 +571,19 @@ impl BinaryOp {
         )
     }
 
+    /// Returns `true` if this operation is only supported for integer or bool dtypes.
+    #[must_use]
+    pub const fn is_integer_only(self) -> bool {
+        matches!(
+            self,
+            Self::BitwiseAnd
+                | Self::BitwiseOr
+                | Self::BitwiseXor
+                | Self::LeftShift
+                | Self::RightShift
+        )
+    }
+
     #[must_use]
     pub fn apply(self, lhs: f64, rhs: f64) -> f64 {
         match self {
@@ -580,11 +593,19 @@ impl BinaryOp {
             Self::Div => lhs / rhs,
             Self::Power => lhs.powf(rhs),
             Self::Remainder => {
-                // NumPy remainder follows Python semantics: sign of result matches divisor
+                // NumPy remainder follows Python semantics: sign of result matches divisor.
                 if rhs == 0.0 {
                     f64::NAN
                 } else {
-                    lhs - (lhs / rhs).floor() * rhs
+                    let mut rem = lhs % rhs;
+                    let rem_sign = rem.is_sign_negative();
+                    let rhs_sign = rhs.is_sign_negative();
+                    if rem != 0.0 && rem_sign != rhs_sign {
+                        rem += rhs;
+                    } else if rem == 0.0 && rem_sign != rhs_sign {
+                        rem = 0.0_f64.copysign(rhs);
+                    }
+                    rem
                 }
             }
             Self::Minimum => {
@@ -626,23 +647,28 @@ impl BinaryOp {
                     f64::NAN
                 } else if lhs == rhs {
                     rhs
-                } else if lhs < rhs {
-                    // Move toward +inf
-                    if lhs == 0.0 {
-                        f64::from_bits(1)
-                    } else if lhs > 0.0 {
-                        f64::from_bits(lhs.to_bits() + 1)
-                    } else {
-                        f64::from_bits(lhs.to_bits() - 1)
-                    }
                 } else {
-                    // Move toward -inf
+                    let bits = lhs.to_bits();
                     if lhs == 0.0 {
-                        f64::from_bits((1_u64 << 63) | 1)
-                    } else if lhs > 0.0 {
-                        f64::from_bits(lhs.to_bits() - 1)
+                        if rhs > 0.0 {
+                            f64::from_bits(1)
+                        } else {
+                            f64::from_bits(0x8000_0000_0000_0000 | 1)
+                        }
+                    } else if (lhs > 0.0 && rhs > lhs) || (lhs < 0.0 && rhs > lhs) {
+                        // Moving towards +inf
+                        if lhs > 0.0 {
+                            f64::from_bits(bits + 1)
+                        } else {
+                            f64::from_bits(bits - 1)
+                        }
                     } else {
-                        f64::from_bits(lhs.to_bits() + 1)
+                        // Moving towards -inf
+                        if lhs > 0.0 {
+                            f64::from_bits(bits - 1)
+                        } else {
+                            f64::from_bits(bits + 1)
+                        }
                     }
                 }
             }
@@ -894,6 +920,12 @@ impl UnaryOp {
             self,
             Self::LogicalNot | Self::Isnan | Self::Isinf | Self::Isfinite | Self::Signbit
         )
+    }
+
+    /// Returns `true` if this operation is only supported for integer or bool dtypes.
+    #[must_use]
+    pub const fn is_integer_only(self) -> bool {
+        matches!(self, Self::Invert)
     }
 
     #[must_use]
@@ -1687,7 +1719,7 @@ impl UFuncArrayView {
     ///
     /// Negative strides are fully supported, enabling reverse-axis views and
     /// other non-contiguous access patterns.  The new view must fit within the
-    /// byte-offset span of the current view's underlying buffer.  If the
+    /// element-offset span of the current view's underlying buffer.  If the
     /// resulting view has internal overlap the view is made read-only.
     pub fn as_strided(&self, shape: Vec<usize>, strides: Vec<isize>) -> Result<Self, UFuncError> {
         if shape.len() != strides.len() {
@@ -2627,6 +2659,12 @@ impl UFuncArray {
             // NumPy true-division promotes integral/bool operands to floating output.
             DType::F64
         } else {
+            if op.is_integer_only() && !plan.out_dtype.is_integer() && plan.out_dtype != DType::Bool {
+                return Err(UFuncError::Msg(format!(
+                    "ufunc '{}' not supported for input types, and the inputs could not be safely coerced to any supported types",
+                    op.name()
+                )));
+            }
             plan.out_dtype
         };
 
@@ -2744,6 +2782,12 @@ impl UFuncArray {
     }
 
     pub fn try_elementwise_unary(&self, op: UnaryOp) -> Result<Self, UFuncError> {
+        if op.is_integer_only() && !self.dtype.is_integer() && self.dtype != DType::Bool {
+            return Err(UFuncError::Msg(format!(
+                "ufunc '{}' not supported for input types, and the inputs could not be safely coerced to any supported types",
+                op.name()
+            )));
+        }
         let mut float_error_flags = FloatErrorFlags::default();
         let values = self
             .values
@@ -21672,6 +21716,27 @@ mod tests {
     }
 
     #[test]
+    fn binary_nextafter_zero_transitions() {
+        let lhs = UFuncArray::new(vec![4], vec![-0.0, 0.0, 0.0, -0.0], DType::F64).expect("lhs");
+        let rhs = UFuncArray::new(vec![4], vec![1.0, -1.0, -0.0, 0.0], DType::F64).expect("rhs");
+        let out = lhs.elementwise_binary(&rhs, BinaryOp::Nextafter).expect("nextafter");
+        
+        // nextafter(-0.0, 1.0) should be 5e-324 (smallest positive subnormal)
+        assert!(out.values()[0] > 0.0);
+        
+        // nextafter(0.0, -1.0) should be -5e-324 (smallest negative subnormal)
+        assert!(out.values()[1] < 0.0);
+
+        // nextafter(0.0, -0.0) should be -0.0
+        assert!(out.values()[2] == 0.0);
+        assert!(out.values()[2].is_sign_negative());
+
+        // nextafter(-0.0, 0.0) should be 0.0
+        assert!(out.values()[3] == 0.0);
+        assert!(out.values()[3].is_sign_positive());
+    }
+
+    #[test]
     fn binary_hypot() {
         let lhs = UFuncArray::new(vec![3], vec![3.0, 5.0, 1.0], DType::F64).expect("lhs");
         let rhs = UFuncArray::new(vec![3], vec![4.0, 12.0, 0.0], DType::F64).expect("rhs");
@@ -32171,8 +32236,8 @@ mod tests {
     }
 
     #[test]
-    fn test_as_strided_on_view_negative_stride() {
-        // Test as_strided directly on UFuncArrayView.
+    fn test_as_strided_on_view_reshape() {
+        // Test as_strided directly on UFuncArrayView to reshape 1D→2D.
         let a = UFuncArray::new(vec![6], (0..6).map(|v| v as f64).collect(), DType::F64).unwrap();
         let base = a.shared_view().unwrap();
         // Reshape as 2×3 with standard C strides.

@@ -3,6 +3,17 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ORACLE_OUTPUT_PATH="$ROOT_DIR/crates/fnp-conformance/fixtures/oracle_outputs/ufunc_oracle_output.json"
+readonly PHASE2C_PACKETS=(
+  "FNP-P2C-001"
+  "FNP-P2C-002"
+  "FNP-P2C-003"
+  "FNP-P2C-004"
+  "FNP-P2C-005"
+  "FNP-P2C-006"
+  "FNP-P2C-007"
+  "FNP-P2C-008"
+  "FNP-P2C-009"
+)
 
 cd "$ROOT_DIR"
 
@@ -29,6 +40,14 @@ with open(path, "r", encoding="utf-8") as fh:
     payload = json.load(fh)
 print(payload.get("oracle_source", ""))
 PY
+}
+
+validate_phase2c_packets() {
+  local packet_id
+  for packet_id in "${PHASE2C_PACKETS[@]}"; do
+    echo "[ci-topology] validating packet readiness for $packet_id"
+    rch exec -- cargo run -p fnp-conformance --bin validate_phase2c_packet -- --packet-id "$packet_id"
+  done
 }
 
 echo "[ci-topology] root=$ROOT_DIR"
@@ -65,5 +84,6 @@ scripts/e2e/run_performance_budget_gate.sh
 
 echo "[ci-topology] G8 durability+decode-proof"
 scripts/e2e/run_raptorq_gate.sh
+validate_phase2c_packets
 
 echo "[ci-topology] completed"

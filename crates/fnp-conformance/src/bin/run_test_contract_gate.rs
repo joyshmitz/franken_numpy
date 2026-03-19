@@ -382,7 +382,7 @@ fn run_gate_suites(cfg: &HarnessConfig, log_path: &Path) -> Result<Vec<SuiteRepo
         run_string_differential_suite(cfg)?,
         run_masked_differential_suite(cfg)?,
         run_datetime_differential_suite(cfg)?,
-        run_dtype_promotion_suite(&packet002_dtype_cfg)?,
+        run_dtype_promotion_suite(cfg)?,
         run_shape_stride_suite(cfg)?,
         validate_runtime_policy_log(log_path)?,
         validate_ci_gate_topology_contract()?,

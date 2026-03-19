@@ -603,7 +603,7 @@ pub const fn finfo(dtype: DType) -> Option<(u32, f64, f64, f64, i32, i32)> {
             f64::MAX_EXP,
         )),
         DType::Complex64 => Some((
-            64,
+            32,
             f32::EPSILON as f64,
             f32::MIN_POSITIVE as f64,
             f32::MAX as f64,
@@ -611,7 +611,7 @@ pub const fn finfo(dtype: DType) -> Option<(u32, f64, f64, f64, i32, i32)> {
             f32::MAX_EXP,
         )),
         DType::Complex128 => Some((
-            128,
+            64,
             f64::EPSILON,
             f64::MIN_POSITIVE,
             f64::MAX,
@@ -1998,12 +1998,12 @@ mod tests {
     fn finfo_complex_types() {
         // Complex64 has F32 components
         let (bits, eps, _, _, _, _) = finfo(DType::Complex64).unwrap();
-        assert_eq!(bits, 64);
+        assert_eq!(bits, 32);
         assert!((eps - f64::from(f32::EPSILON)).abs() < 1e-15);
 
         // Complex128 has F64 components
         let (bits, eps, _, _, _, _) = finfo(DType::Complex128).unwrap();
-        assert_eq!(bits, 128);
+        assert_eq!(bits, 64);
         assert!((eps - f64::EPSILON).abs() < 1e-30);
     }
 
