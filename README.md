@@ -4,10 +4,10 @@
   <img src="franken_numpy_illustration.webp" alt="FrankenNumPy - memory-safe clean-room NumPy reimplementation in Rust" width="400">
 
   **Memory-safe, clean-room NumPy reimplementation in Rust.**<br>
-  Zero unsafe code. 2,184 tests. Bit-exact RNG parity. Every feature family green.
+  Zero unsafe code. 2,196 tests. Bit-exact RNG parity. Every feature family green.
 
   ![Rust](https://img.shields.io/badge/Rust-nightly%202024-orange)
-  ![Tests](https://img.shields.io/badge/tests-2%2C146%20passing-brightgreen)
+  ![Tests](https://img.shields.io/badge/tests-2%2C196%20passing-brightgreen)
   ![Unsafe](https://img.shields.io/badge/unsafe-0%20blocks-blue)
   ![License](https://img.shields.io/badge/license-MIT-green)
 </div>
@@ -35,7 +35,7 @@ FrankenNumPy rebuilds NumPy's semantics from scratch in safe Rust with two non-n
 | Stride calculus | Evolved over decades | Clean-room deterministic engine (SCE) |
 | Runtime modes | Single mode | Strict (max compat) + Hardened (safety guards) |
 | Conformance | Self-referential | Differential oracle against real NumPy |
-| Test coverage | pytest suite | 2,184 Rust tests + 8-gate CI topology |
+| Test coverage | pytest suite | 2,196 Rust tests + 8-gate CI topology |
 
 ---
 
@@ -766,7 +766,7 @@ let restored = Generator::from_pickle_payload(payload)?;
 
 | Crate | Tests | What it covers |
 |---|---|---|
-| `fnp-ufunc` | 1,237 | Array ops, math, sorting, polynomials, NaN-correct reductions, 20 oracle tests, 4 workflow tests |
+| `fnp-ufunc` | 1,249 | Array ops, math, sorting, polynomials, NaN-correct reductions, 20 oracle tests, 4 workflow tests |
 | `fnp-linalg` | 199 | Decompositions, solvers, norms, 16 NumPy oracle tests |
 | `fnp-random` | 182 | 40 oracle-verified distributions, seeding, reproducibility |
 | `fnp-io` | 143 | NPY/NPZ read/write, text formats, compression, 7 format oracle tests |
@@ -775,7 +775,7 @@ let restored = Generator::from_pickle_payload(payload)?;
 | `fnp-ndarray` | 54 | Shape legality, stride calculus, broadcast contracts, multi-axis negative strides |
 | `fnp-iter` | 79 | Transfer semantics, overlap detection, stride tricks, FPE handling |
 | `fnp-runtime` | 52 | Mode split, fail-closed decoding, override-audit gate, Bayesian decision engine, evidence ledger |
-| **Total** | **2,184** | **All passing in workspace** |
+| **Total** | **2,196** | **All passing in workspace** |
 
 ### Oracle Test Strategy
 

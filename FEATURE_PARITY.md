@@ -49,7 +49,7 @@
 
 | Crate | Tests | Description |
 |---|---|---|
-| fnp-ufunc | 1,237 | Core array operations, math, sorting, polynomials, NaN-correct reductions, 20 oracle edge-case tests, integer sidecar lossless storage, gufunc signature edge cases, custom loop registry, reduction payload validation, as_strided/sliding_window views |
+| fnp-ufunc | 1,249 | Core array operations, math, sorting, polynomials, NaN-correct reductions, 20 oracle edge-case tests, integer sidecar lossless storage, gufunc signature edge cases, custom loop registry, reduction payload validation, as_strided/sliding_window views, optimal multi_dot chain ordering |
 | fnp-ndarray | 54 | Shape legality, stride calculus, broadcast contracts, overlap detection, multi-axis negative strides |
 | fnp-linalg | 199 | Linear algebra decompositions, solvers, norms, 16 NumPy oracle tests |
 | fnp-random | 182 | RNG distributions (40 oracle-verified), seeding, reproducibility, large-n binomial/multinomial |
@@ -58,7 +58,7 @@
 | fnp-conformance | 122 | Differential parity, metamorphic identities, adversarial fuzzing, witness stability, P2C evidence packets |
 | fnp-dtype | 116 | Dtype taxonomy, promotion table, cast policy primitives |
 | fnp-runtime | 52 | Mode split, fail-closed decoding, override-audit gate, Bayesian decision engine edge cases, posterior monotonicity, evidence ledger, context normalization |
-| **Total** | **2,184** | |
+| **Total** | **2,196** | |
 
 ## Remaining Gaps (Python-specific, low priority)
 

@@ -21,7 +21,6 @@ pub enum ShapeError {
         window: usize,
         dim: usize,
     },
-    NegativeStride(isize),
     OutOfBoundsView {
         required_nbytes: usize,
         available_nbytes: usize,
@@ -50,9 +49,6 @@ impl std::fmt::Display for ShapeError {
                 f,
                 "invalid sliding window on axis={axis} window={window} dim={dim}"
             ),
-            Self::NegativeStride(stride) => {
-                write!(f, "negative strides are not supported stride={stride}")
-            }
             Self::OutOfBoundsView {
                 required_nbytes,
                 available_nbytes,

@@ -655,7 +655,7 @@ impl BinaryOp {
                         } else {
                             f64::from_bits(0x8000_0000_0000_0000 | 1)
                         }
-                    } else if (lhs > 0.0 && rhs > lhs) || (lhs < 0.0 && rhs > lhs) {
+                    } else if rhs > lhs {
                         // Moving towards +inf
                         if lhs > 0.0 {
                             f64::from_bits(bits + 1)
@@ -5318,19 +5318,108 @@ impl UFuncArray {
         Ok(Self::scalar(sum, dtype))
     }
 
-    /// Compute the dot product of two or more arrays in an optimized order (np.multi_dot).
-    /// Uses simple left-to-right evaluation (optimal ordering not yet implemented).
+    /// Compute the dot product of two or more arrays in an optimized order (`np.multi_dot`).
+    ///
+    /// Uses dynamic programming (chain matrix multiplication) to find the
+    /// parenthesization that minimizes total scalar multiplications, matching
+    /// NumPy's `multi_dot` behaviour. For 2 arrays, this is equivalent to `dot`.
+    /// For 1-D arrays at the ends, they are treated as row/column vectors.
     pub fn multi_dot(arrays: &[&Self]) -> Result<Self, UFuncError> {
-        if arrays.len() < 2 {
+        let n = arrays.len();
+        if n < 2 {
             return Err(UFuncError::Msg(
                 "multi_dot: need at least 2 arrays".to_string(),
             ));
         }
-        let mut result = arrays[0].dot(arrays[1])?;
-        for arr in &arrays[2..] {
-            result = result.dot(arr)?;
+        if n == 2 {
+            return arrays[0].dot(arrays[1]);
         }
-        Ok(result)
+
+        // Extract the dimension chain for the DP cost model.
+        // For a chain A0 × A1 × ... × A_{n-1} where Ai is (dims[i] × dims[i+1]),
+        // we need n+1 dimensions.
+        let mut dims = Vec::with_capacity(n + 1);
+
+        // First array: handle 1-D (treat as row vector 1×k).
+        let first = arrays[0];
+        if first.shape().len() == 1 {
+            dims.push(1usize);
+            dims.push(first.shape()[0]);
+        } else if first.shape().len() == 2 {
+            dims.push(first.shape()[0]);
+            dims.push(first.shape()[1]);
+        } else {
+            return Err(UFuncError::Msg(
+                "multi_dot: arrays must be 1-D or 2-D".to_string(),
+            ));
+        }
+
+        // Middle arrays: must be 2-D.
+        for &arr in &arrays[1..n - 1] {
+            if arr.shape().len() != 2 {
+                return Err(UFuncError::Msg(
+                    "multi_dot: inner arrays must be 2-D".to_string(),
+                ));
+            }
+            dims.push(arr.shape()[1]);
+        }
+
+        // Last array: handle 1-D (treat as column vector k×1).
+        let last = arrays[n - 1];
+        if last.shape().len() == 1 {
+            dims.push(1);
+        } else if last.shape().len() == 2 {
+            dims.push(last.shape()[1]);
+        } else {
+            return Err(UFuncError::Msg(
+                "multi_dot: arrays must be 1-D or 2-D".to_string(),
+            ));
+        }
+
+        // DP: cost[i][j] = min cost to multiply arrays i..=j
+        // split[i][j] = optimal split point k such that (i..=k) * (k+1..=j)
+        let mut cost = vec![vec![0u64; n]; n];
+        let mut split = vec![vec![0usize; n]; n];
+
+        // chain length l from 2 to n
+        for l in 2..=n {
+            for i in 0..=(n - l) {
+                let j = i + l - 1;
+                cost[i][j] = u64::MAX;
+                for k in i..j {
+                    let c = cost[i][k]
+                        .saturating_add(cost[k + 1][j])
+                        .saturating_add(
+                            (dims[i] as u64)
+                                .saturating_mul(dims[k + 1] as u64)
+                                .saturating_mul(dims[j + 1] as u64),
+                        );
+                    if c < cost[i][j] {
+                        cost[i][j] = c;
+                        split[i][j] = k;
+                    }
+                }
+            }
+        }
+
+        // Recursively evaluate the optimal parenthesization.
+        Self::multi_dot_eval(arrays, &split, 0, n - 1)
+    }
+
+    /// Recursively evaluate the optimal chain parenthesization.
+    fn multi_dot_eval(
+        arrays: &[&Self],
+        split: &[Vec<usize>],
+        i: usize,
+        j: usize,
+    ) -> Result<Self, UFuncError> {
+        if i == j {
+            return Ok(arrays[i].clone());
+        }
+        let k = split[i][j];
+        let left = Self::multi_dot_eval(arrays, split, i, k)?;
+        let right = Self::multi_dot_eval(arrays, split, k + 1, j)?;
+        left.dot(&right)
     }
 
     // ── linalg bridge methods ─────────────────────────────────────
@@ -8876,8 +8965,8 @@ impl UFuncArray {
 
     /// Find the roots of a polynomial using the companion matrix eigenvalue method.
     ///
-    /// Mimics `np.roots(p)`. Only supports degree 1 and 2 polynomials analytically.
-    /// Higher degrees return an error (full eigenvalue solver not yet implemented).
+    /// Mimics `np.roots(p)`. Degree 1 and 2 use analytical formulas.
+    /// Degree >= 3 uses companion matrix eigenvalues via `fnp_linalg::eig_nxn`.
     pub fn roots(&self) -> Result<Self, UFuncError> {
         if self.shape.len() != 1 {
             return Err(UFuncError::Msg(
@@ -32112,6 +32201,177 @@ mod tests {
         let a = UFuncArray::new(vec![5], vec![1.0, 2.0, 3.0, 4.0, 5.0], DType::F64).unwrap();
         let reversed = a.slice_axis(0, None, None, -1).unwrap();
         assert_eq!(reversed.values(), &[5.0, 4.0, 3.0, 2.0, 1.0]);
+    }
+
+    // ── FFT metamorphic properties (br-w62) ────────────────────────
+
+    #[test]
+    fn test_fft_ifft_inverse_identity() {
+        // ifft(fft(x)) should recover the original signal.
+        // fft takes flat real values, returns shape [n, 2] interleaved.
+        let x = UFuncArray::new(vec![4], vec![1.0, 2.0, 3.0, 4.0], DType::F64).unwrap();
+        let transformed = x.fft(None).unwrap();
+        assert_eq!(transformed.shape(), &[4, 2]); // 4 complex output values
+        let recovered = transformed.ifft().unwrap();
+        // Recovered: shape [4, 2], interleaved (real, imag).
+        let real_parts: Vec<f64> = recovered.values().iter().step_by(2).copied().collect();
+        let imag_parts: Vec<f64> = recovered.values().iter().skip(1).step_by(2).copied().collect();
+        for (i, (&got, &expected)) in real_parts.iter().zip(&[1.0, 2.0, 3.0, 4.0]).enumerate() {
+            assert!(
+                (got - expected).abs() < 1e-10,
+                "real[{i}]: expected {expected}, got {got}"
+            );
+        }
+        for (i, &im) in imag_parts.iter().enumerate() {
+            assert!(im.abs() < 1e-10, "imag[{i}] should be ~0, got {im}");
+        }
+    }
+
+    #[test]
+    fn test_fft_parsevals_theorem() {
+        // Parseval: sum(|x|²) = sum(|X|²) / N for real input x.
+        let x = UFuncArray::new(vec![4], vec![1.0, 3.0, -2.0, 5.0], DType::F64).unwrap();
+        let n = 4usize;
+
+        // Energy in time domain: 1² + 3² + (-2)² + 5² = 1 + 9 + 4 + 25 = 39
+        let time_energy: f64 = x.values().iter().map(|v| v * v).sum();
+
+        let transformed = x.fft(None).unwrap();
+        let freq_energy: f64 = transformed
+            .values()
+            .chunks(2)
+            .map(|c| c[0] * c[0] + c[1] * c[1])
+            .sum::<f64>()
+            / n as f64;
+
+        assert!(
+            (time_energy - freq_energy).abs() < 1e-8,
+            "Parseval: time_energy={time_energy}, freq_energy={freq_energy}"
+        );
+    }
+
+    #[test]
+    fn test_fft_linearity() {
+        // fft(a*x + b*y) = a*fft(x) + b*fft(y)
+        let x = UFuncArray::new(vec![4], vec![1.0, 2.0, 3.0, 4.0], DType::F64).unwrap();
+        let y = UFuncArray::new(vec![4], vec![5.0, 6.0, 7.0, 8.0], DType::F64).unwrap();
+        let a = 2.0;
+        let b = 3.0;
+
+        // Compute a*x + b*y
+        let a_scalar = UFuncArray::new(vec![1], vec![a], DType::F64).unwrap().broadcast_to(&[4]).unwrap();
+        let b_scalar = UFuncArray::new(vec![1], vec![b], DType::F64).unwrap().broadcast_to(&[4]).unwrap();
+        let ax = x.elementwise_binary(&a_scalar, BinaryOp::Mul).unwrap();
+        let by = y.elementwise_binary(&b_scalar, BinaryOp::Mul).unwrap();
+        let combined = ax.elementwise_binary(&by, BinaryOp::Add).unwrap();
+
+        // fft(a*x + b*y)
+        let fft_combined = combined.fft(None).unwrap();
+
+        // a*fft(x) + b*fft(y) — output is [4, 2] interleaved
+        let fft_x = x.fft(None).unwrap();
+        let fft_y = y.fft(None).unwrap();
+        let a_bc = UFuncArray::new(vec![1], vec![a], DType::F64).unwrap().broadcast_to(fft_x.shape()).unwrap();
+        let b_bc = UFuncArray::new(vec![1], vec![b], DType::F64).unwrap().broadcast_to(fft_y.shape()).unwrap();
+        let a_fft_x = fft_x.elementwise_binary(&a_bc, BinaryOp::Mul).unwrap();
+        let b_fft_y = fft_y.elementwise_binary(&b_bc, BinaryOp::Mul).unwrap();
+        let linear_combo = a_fft_x.elementwise_binary(&b_fft_y, BinaryOp::Add).unwrap();
+
+        for (i, (&got, &expected)) in fft_combined.values().iter().zip(linear_combo.values()).enumerate() {
+            assert!(
+                (got - expected).abs() < 1e-8,
+                "linearity: index {i}: got {got}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_fft_zero_input() {
+        // fft of all zeros should be all zeros.
+        let zeros = UFuncArray::new(vec![4], vec![0.0; 4], DType::F64).unwrap();
+        let result = zeros.fft(None).unwrap();
+        for (i, &v) in result.values().iter().enumerate() {
+            assert!(v.abs() < 1e-15, "fft(0)[{i}] should be 0, got {v}");
+        }
+    }
+
+    #[test]
+    fn test_fft_dc_component() {
+        // For real input, fft(x)[0] (DC component real part) = sum(x).
+        let x = UFuncArray::new(vec![4], vec![1.0, 2.0, 3.0, 4.0], DType::F64).unwrap();
+        let result = x.fft(None).unwrap();
+        let dc_real = result.values()[0];
+        let dc_imag = result.values()[1];
+        assert!(
+            (dc_real - 10.0).abs() < 1e-10,
+            "DC real should be 10.0, got {dc_real}"
+        );
+        assert!(dc_imag.abs() < 1e-10, "DC imag should be 0, got {dc_imag}");
+    }
+
+    // ── multi_dot optimal chain ordering ──────────────────────────
+
+    #[test]
+    fn test_multi_dot_two_arrays() {
+        // 2 arrays: should just be a plain dot.
+        let a = UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![3, 2], vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0], DType::F64).unwrap();
+        let result = UFuncArray::multi_dot(&[&a, &b]).unwrap();
+        let expected = a.dot(&b).unwrap();
+        assert_eq!(result.values(), expected.values());
+        assert_eq!(result.shape(), expected.shape());
+    }
+
+    #[test]
+    fn test_multi_dot_three_arrays_correctness() {
+        // A(10×30) × B(30×5) × C(5×60): result should be (10×60).
+        // Optimal order: (A×B)×C since A×B gives 10×5 (1500 muls),
+        // then ×C gives 10×60 (3000 muls) = 4500 total.
+        // Naive A×(B×C) would give 30×60 (9000 muls) then 10×60 (18000) = 27000.
+        let a = UFuncArray::new(vec![10, 30], vec![1.0; 300], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![30, 5], vec![1.0; 150], DType::F64).unwrap();
+        let c = UFuncArray::new(vec![5, 60], vec![1.0; 300], DType::F64).unwrap();
+
+        let result = UFuncArray::multi_dot(&[&a, &b, &c]).unwrap();
+        assert_eq!(result.shape(), &[10, 60]);
+
+        // Verify correctness: A×B×C with all 1.0 entries:
+        // (A×B)[i,j] = sum of 30 ones = 30.0  (10×5 matrix of 30s)
+        // ((A×B)×C)[i,j] = sum of 5 * 30 = 150.0  (10×60 matrix of 150s)
+        assert!((result.values()[0] - 150.0).abs() < 1e-10);
+        assert!((result.values()[599] - 150.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_multi_dot_with_1d_endpoints() {
+        // 1-D vector × 2-D matrix × 1-D vector (NumPy supports this).
+        let v = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        let m = UFuncArray::new(vec![3, 3], vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], DType::F64).unwrap();
+        let w = UFuncArray::new(vec![3], vec![4.0, 5.0, 6.0], DType::F64).unwrap();
+        let result = UFuncArray::multi_dot(&[&v, &m, &w]).unwrap();
+        // v · I · w = v · w = 1*4 + 2*5 + 3*6 = 32
+        assert_eq!(result.values(), &[32.0]);
+    }
+
+    #[test]
+    fn test_multi_dot_single_array_rejected() {
+        let a = UFuncArray::new(vec![2, 2], vec![1.0; 4], DType::F64).unwrap();
+        assert!(UFuncArray::multi_dot(&[&a]).is_err());
+    }
+
+    #[test]
+    fn test_multi_dot_four_arrays() {
+        // Chain of 4: A(2×3) × B(3×4) × C(4×2) × D(2×5)
+        let a = UFuncArray::new(vec![2, 3], vec![1.0; 6], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![3, 4], vec![1.0; 12], DType::F64).unwrap();
+        let c = UFuncArray::new(vec![4, 2], vec![1.0; 8], DType::F64).unwrap();
+        let d = UFuncArray::new(vec![2, 5], vec![1.0; 10], DType::F64).unwrap();
+
+        let result = UFuncArray::multi_dot(&[&a, &b, &c, &d]).unwrap();
+        assert_eq!(result.shape(), &[2, 5]);
+
+        // All 1s: A×B = 3s (2×4), (A×B)×C = 12s (2×2), ((A×B)×C)×D = 24s (2×5)
+        assert!((result.values()[0] - 24.0).abs() < 1e-10);
     }
 
     // ── as_strided / sliding_window_view on UFuncArrayView ──────────────

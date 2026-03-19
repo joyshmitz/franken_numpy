@@ -1,0 +1,287 @@
+{
+  "schema_version": "conformance-suite-manifest-v1",
+  "generated_by": "GoldMaple (claude-code, opus-4.6)",
+  "generated_at": "2026-03-19",
+  "description": "Maps each conformance suite to its type, fixture file, threat classes covered, and CI gate membership.",
+  "suites": [
+    {
+      "name": "run_shape_stride_suite",
+      "type": "basic",
+      "fixture": "shape_stride_cases.json",
+      "fixture_root": "default",
+      "threat_classes": ["malformed_shape", "malicious_stride_alias"],
+      "ci_gate": "G5"
+    },
+    {
+      "name": "run_shape_stride_differential_suite",
+      "type": "differential",
+      "fixture": "shape_stride_cases.json",
+      "fixture_root": "default",
+      "threat_classes": ["malformed_shape"],
+      "ci_gate": "G5"
+    },
+    {
+      "name": "run_shape_stride_metamorphic_suite",
+      "type": "metamorphic",
+      "fixture": "shape_stride_cases.json",
+      "fixture_root": "default",
+      "threat_classes": ["malformed_shape"],
+      "ci_gate": "G5"
+    },
+    {
+      "name": "run_shape_stride_adversarial_suite",
+      "type": "adversarial",
+      "fixture": "shape_stride_cases.json",
+      "fixture_root": "default",
+      "threat_classes": ["malformed_shape", "malicious_stride_alias"],
+      "ci_gate": "G5"
+    },
+    {
+      "name": "run_dtype_promotion_suite",
+      "type": "basic",
+      "fixture": "dtype_promotion_cases.json",
+      "fixture_root": "default",
+      "threat_classes": ["unsafe_cast_path"],
+      "ci_gate": "G5"
+    },
+    {
+      "name": "run_dtype_differential_suite",
+      "type": "differential",
+      "fixture": "dtype_differential_cases.json",
+      "fixture_root": "packet002_dtype",
+      "threat_classes": ["unsafe_cast_path"],
+      "ci_gate": "G5"
+    },
+    {
+      "name": "run_dtype_metamorphic_suite",
+      "type": "metamorphic",
+      "fixture": "dtype_metamorphic_cases.json",
+      "fixture_root": "packet002_dtype",
+      "threat_classes": ["unsafe_cast_path"],
+      "ci_gate": "G5"
+    },
+    {
+      "name": "run_dtype_adversarial_suite",
+      "type": "adversarial",
+      "fixture": "dtype_adversarial_cases.json",
+      "fixture_root": "packet002_dtype",
+      "threat_classes": ["unsafe_cast_path"],
+      "ci_gate": "G5"
+    },
+    {
+      "name": "run_iter_differential_suite",
+      "type": "differential",
+      "fixture": "iter_differential_cases.json",
+      "fixture_root": "default",
+      "threat_classes": [],
+      "ci_gate": "G5"
+    },
+    {
+      "name": "run_iter_metamorphic_suite",
+      "type": "metamorphic",
+      "fixture": "iter_metamorphic_cases.json",
+      "fixture_root": "default",
+      "threat_classes": [],
+      "ci_gate": "G5"
+    },
+    {
+      "name": "run_iter_adversarial_suite",
+      "type": "adversarial",
+      "fixture": "iter_adversarial_cases.json",
+      "fixture_root": "default",
+      "threat_classes": [],
+      "ci_gate": "G5"
+    },
+    {
+      "name": "run_ufunc_differential_suite",
+      "type": "differential",
+      "fixture": "ufunc_input_cases.json",
+      "fixture_root": "default",
+      "threat_classes": [],
+      "ci_gate": "G5"
+    },
+    {
+      "name": "run_ufunc_metamorphic_suite",
+      "type": "metamorphic",
+      "fixture": "ufunc_metamorphic_cases.json",
+      "fixture_root": "default",
+      "threat_classes": [],
+      "ci_gate": "G5"
+    },
+    {
+      "name": "run_ufunc_adversarial_suite",
+      "type": "adversarial",
+      "fixture": "ufunc_adversarial_cases.json",
+      "fixture_root": "default",
+      "threat_classes": ["adversarial_fixture"],
+      "ci_gate": "G5"
+    },
+    {
+      "name": "run_runtime_policy_suite",
+      "type": "basic",
+      "fixture": "runtime_policy_cases.json",
+      "fixture_root": "default",
+      "threat_classes": ["unknown_metadata_version", "policy_override_abuse"],
+      "ci_gate": "G5"
+    },
+    {
+      "name": "run_runtime_policy_adversarial_suite",
+      "type": "adversarial",
+      "fixture": "runtime_policy_adversarial_cases.json",
+      "fixture_root": "default",
+      "threat_classes": ["malformed_shape", "malformed_npy_npz", "unknown_metadata_version", "adversarial_fixture", "linalg_policy_unknown_metadata", "policy_override_abuse"],
+      "ci_gate": "G5"
+    },
+    {
+      "name": "run_linalg_differential_suite",
+      "type": "differential",
+      "fixture": "linalg_differential_cases.json",
+      "fixture_root": "default",
+      "threat_classes": ["linalg_shape_tolerance_abuse"],
+      "ci_gate": "G5"
+    },
+    {
+      "name": "run_linalg_metamorphic_suite",
+      "type": "metamorphic",
+      "fixture": "linalg_metamorphic_cases.json",
+      "fixture_root": "default",
+      "threat_classes": ["linalg_shape_tolerance_abuse"],
+      "ci_gate": "G5"
+    },
+    {
+      "name": "run_linalg_adversarial_suite",
+      "type": "adversarial",
+      "fixture": "linalg_adversarial_cases.json",
+      "fixture_root": "default",
+      "threat_classes": ["adversarial_fixture", "linalg_shape_tolerance_abuse", "linalg_backend_bridge_tampering", "linalg_policy_unknown_metadata"],
+      "ci_gate": "G5"
+    },
+    {
+      "name": "run_rng_differential_suite",
+      "type": "differential",
+      "fixture": "rng_differential_cases.json",
+      "fixture_root": "default",
+      "threat_classes": ["rng_reproducibility_drift"],
+      "ci_gate": "G5"
+    },
+    {
+      "name": "run_rng_metamorphic_suite",
+      "type": "metamorphic",
+      "fixture": "rng_metamorphic_cases.json",
+      "fixture_root": "default",
+      "threat_classes": ["rng_reproducibility_drift"],
+      "ci_gate": "G5"
+    },
+    {
+      "name": "run_rng_adversarial_suite",
+      "type": "adversarial",
+      "fixture": "rng_adversarial_cases.json",
+      "fixture_root": "default",
+      "threat_classes": ["adversarial_fixture", "rng_reproducibility_drift"],
+      "ci_gate": "G5"
+    },
+    {
+      "name": "run_rng_statistical_suite",
+      "type": "statistical",
+      "fixture": "rng_statistical_cases.json",
+      "fixture_root": "default",
+      "threat_classes": ["rng_reproducibility_drift"],
+      "ci_gate": "G5"
+    },
+    {
+      "name": "run_io_differential_suite",
+      "type": "differential",
+      "fixture": "io_differential_cases.json",
+      "fixture_root": "default",
+      "threat_classes": ["malformed_npy_npz"],
+      "ci_gate": "G5"
+    },
+    {
+      "name": "run_io_metamorphic_suite",
+      "type": "metamorphic",
+      "fixture": "io_metamorphic_cases.json",
+      "fixture_root": "default",
+      "threat_classes": ["malformed_npy_npz"],
+      "ci_gate": "G5"
+    },
+    {
+      "name": "run_io_adversarial_suite",
+      "type": "adversarial",
+      "fixture": "io_adversarial_cases.json",
+      "fixture_root": "default",
+      "threat_classes": ["malformed_npy_npz", "adversarial_fixture"],
+      "ci_gate": "G5"
+    },
+    {
+      "name": "run_fft_differential_suite",
+      "type": "differential",
+      "fixture": "fft_differential_cases.json",
+      "fixture_root": "default",
+      "threat_classes": [],
+      "ci_gate": "G5"
+    },
+    {
+      "name": "run_polynomial_differential_suite",
+      "type": "differential",
+      "fixture": "polynomial_differential_cases.json",
+      "fixture_root": "default",
+      "threat_classes": [],
+      "ci_gate": "G5"
+    },
+    {
+      "name": "run_string_differential_suite",
+      "type": "differential",
+      "fixture": "string_differential_cases.json",
+      "fixture_root": "default",
+      "threat_classes": [],
+      "ci_gate": "G5"
+    },
+    {
+      "name": "run_masked_differential_suite",
+      "type": "differential",
+      "fixture": "masked_differential_cases.json",
+      "fixture_root": "default",
+      "threat_classes": [],
+      "ci_gate": "G5"
+    },
+    {
+      "name": "run_datetime_differential_suite",
+      "type": "differential",
+      "fixture": "datetime_differential_cases.json",
+      "fixture_root": "default",
+      "threat_classes": [],
+      "ci_gate": "G5"
+    },
+    {
+      "name": "run_crash_signature_regression_suite",
+      "type": "regression",
+      "fixture": null,
+      "fixture_root": "default",
+      "threat_classes": ["linalg_backend_bridge_tampering"],
+      "ci_gate": "G5"
+    }
+  ],
+  "threat_class_coverage": {
+    "malformed_shape": ["run_shape_stride_suite", "run_shape_stride_differential_suite", "run_shape_stride_metamorphic_suite", "run_shape_stride_adversarial_suite", "run_runtime_policy_adversarial_suite"],
+    "unsafe_cast_path": ["run_dtype_promotion_suite", "run_dtype_differential_suite", "run_dtype_metamorphic_suite", "run_dtype_adversarial_suite"],
+    "malicious_stride_alias": ["run_shape_stride_suite", "run_shape_stride_adversarial_suite"],
+    "malformed_npy_npz": ["run_runtime_policy_adversarial_suite", "run_io_differential_suite", "run_io_metamorphic_suite", "run_io_adversarial_suite"],
+    "unknown_metadata_version": ["run_runtime_policy_suite", "run_runtime_policy_adversarial_suite"],
+    "adversarial_fixture": ["run_runtime_policy_adversarial_suite", "run_io_adversarial_suite", "run_rng_adversarial_suite", "run_linalg_adversarial_suite", "run_ufunc_adversarial_suite"],
+    "rng_reproducibility_drift": ["run_rng_differential_suite", "run_rng_metamorphic_suite", "run_rng_adversarial_suite", "run_rng_statistical_suite"],
+    "linalg_shape_tolerance_abuse": ["run_linalg_differential_suite", "run_linalg_metamorphic_suite", "run_linalg_adversarial_suite"],
+    "linalg_backend_bridge_tampering": ["run_linalg_adversarial_suite", "run_crash_signature_regression_suite"],
+    "linalg_policy_unknown_metadata": ["run_linalg_adversarial_suite", "run_runtime_policy_adversarial_suite"],
+    "corrupt_durable_artifact": ["validate_phase2c_packet (G8 gate)"],
+    "policy_override_abuse": ["run_runtime_policy_suite", "run_runtime_policy_adversarial_suite"]
+  },
+  "suite_type_counts": {
+    "basic": 4,
+    "differential": 12,
+    "metamorphic": 7,
+    "adversarial": 8,
+    "statistical": 1,
+    "regression": 1,
+    "total": 33
+  }
+}
