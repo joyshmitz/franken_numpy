@@ -10,6 +10,7 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   RUSTFLAGS: "-D warnings"
+  PHASE2C_PACKETS: "FNP-P2C-001 FNP-P2C-002 FNP-P2C-003 FNP-P2C-004 FNP-P2C-005 FNP-P2C-006 FNP-P2C-007 FNP-P2C-008 FNP-P2C-009"
 
 jobs:
   g1-fmt-lint:
@@ -137,3 +138,8 @@ jobs:
       - run: >
           cargo run -p fnp-conformance --bin run_raptorq_gate --
           --retries 1 --flake-budget 0 --coverage-floor 1.0
+      - name: Validate Phase2C packet readiness
+        run: |
+          for packet in $PHASE2C_PACKETS; do
+            cargo run -p fnp-conformance --bin validate_phase2c_packet -- --packet-id "$packet"
+          done

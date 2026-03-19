@@ -42,8 +42,8 @@
 | Random (numpy.random) | parity_green | PCG64DXSM generator with 39 oracle-verified distributions; Lemire bounded integers + buffered uint32; BTPE binomial + inversion; HRUA hypergeometric + direct; PTRS Poisson + multiplicative; NumPy-exact gamma (shape<1 rejection, shape=1 exponential, Marsaglia-Tsang); zipf with Umin clamping; 39/39 oracle tests passing; 182 tests | — |
 | I/O (npy/npz) | parity_green | load, save, savez, savez_compressed, loadtxt, savetxt, genfromtxt, fromfile, tofile, array2string; DEFLATE compression; 143 tests | — |
 | Conformance harness | parity_green | 122 tests: differential corpus, metamorphic suite (13 algebraic identities), adversarial fuzzing, oracle validation, P2C evidence packets | — |
-| Contract schema + artifact topology | in_progress | `phase2c-contract-v1` locked; packet readiness validator green | populate packet artifact directories in CI |
-| RaptorQ artifact durability | in_progress | sidecar + scrub + decode proof artifacts generated | integrate into CI |
+| Contract schema + artifact topology | parity_green | `phase2c-contract-v1` locked; packet readiness validator green and enforced in CI across `FNP-P2C-001`..`FNP-P2C-009` | — |
+| RaptorQ artifact durability | parity_green | sidecar + scrub + decode proof artifacts generated and enforced by the G8 CI gate | — |
 
 ## Test Coverage Summary
 
