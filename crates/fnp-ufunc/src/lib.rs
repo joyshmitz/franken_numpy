@@ -12167,7 +12167,7 @@ impl UFuncArray {
     /// `np.lib.stride_tricks.as_strided(x, shape, strides)`.
     /// `strides` are in **element counts** (not bytes), matching our internal representation.
     /// Signed strides are supported so callers can express reverse views.
-    /// Elements that map to indices beyond the source data yield 0.0.
+    /// Requests whose computed offsets exceed the source data are rejected.
     pub fn as_strided(&self, shape: &[usize], strides: &[isize]) -> Result<Self, UFuncError> {
         if shape.len() != strides.len() {
             return Err(UFuncError::Msg(
@@ -12201,26 +12201,22 @@ impl UFuncArray {
         for flat_idx in 0..out_count {
             let mut src_offset = base_shift;
             let mut rem = flat_idx;
-            let mut overflowed = false;
             for d in 0..shape.len() {
                 let idx = rem / out_strides[d];
                 rem %= out_strides[d];
                 let delta = (idx as i128)
                     .checked_mul(strides[d] as i128)
                     .ok_or_else(|| UFuncError::Msg("as_strided: offset overflow".to_string()))?;
-                src_offset = match src_offset.checked_add(delta) {
-                    Some(offset) => offset,
-                    None => {
-                        overflowed = true;
-                        break;
-                    }
-                };
+                src_offset = src_offset
+                    .checked_add(delta)
+                    .ok_or_else(|| UFuncError::Msg("as_strided: offset overflow".to_string()))?;
             }
-            if !overflowed && src_offset >= 0 && src_offset < src_len {
-                values.push(self.values[src_offset as usize]);
-            } else {
-                values.push(0.0);
+            if src_offset < 0 || src_offset >= src_len {
+                return Err(UFuncError::Msg(
+                    "as_strided: requested view exceeds source data".to_string(),
+                ));
             }
+            values.push(self.values[src_offset as usize]);
         }
         Ok(Self {
             shape: shape.to_vec(),
@@ -27968,11 +27964,9 @@ mod tests {
     }
 
     #[test]
-    fn as_strided_overflowing_stride_yields_zero_fill_instead_of_panicking() {
+    fn as_strided_overflowing_stride_is_rejected() {
         let a = UFuncArray::new(vec![2], vec![10.0, 20.0], DType::F64).unwrap();
-        let r = a.as_strided(&[2, 2], &[0, isize::MAX]).unwrap();
-        assert_eq!(r.shape(), &[2, 2]);
-        assert_eq!(r.values(), &[10.0, 0.0, 10.0, 0.0]);
+        assert!(a.as_strided(&[2, 2], &[0, isize::MAX]).is_err());
     }
 
     #[test]
