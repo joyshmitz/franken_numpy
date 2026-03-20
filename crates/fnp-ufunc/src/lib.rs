@@ -1730,14 +1730,13 @@ impl UFuncArrayView {
             )));
         }
 
-        // Compute required byte-offset span of the new view.
-        let required = Self::view_span(&shape, &strides)?;
-        // Compute available span from the current view.
-        let available = Self::view_span(&self.shape, &self.strides)?;
+        // Compute required absolute bounds of the new view.
+        let (new_min, new_max) = Self::view_bounds(&shape, &strides)?;
+        let (cur_min, cur_max) = Self::view_bounds(&self.shape, &self.strides)?;
 
-        if required > available {
+        if new_min < cur_min || new_max > cur_max {
             return Err(UFuncError::Msg(format!(
-                "as_strided: required span {required} exceeds available span {available}"
+                "as_strided: requested view [{new_min}, {new_max}] exceeds current view bounds [{cur_min}, {cur_max}]"
             )));
         }
 
@@ -1793,11 +1792,10 @@ impl UFuncArrayView {
         )
     }
 
-    /// Compute the byte-offset span for a given shape + strides combination
-    /// (distance from min to max reachable offset + 1 element).
-    fn view_span(shape: &[usize], strides: &[isize]) -> Result<usize, UFuncError> {
+    /// Compute the element-offset bounds for a given shape + strides combination.
+    fn view_bounds(shape: &[usize], strides: &[isize]) -> Result<(isize, isize), UFuncError> {
         if shape.contains(&0) {
-            return Ok(0);
+            return Ok((0, 0));
         }
         let mut max_off: isize = 0;
         let mut min_off: isize = 0;
@@ -1818,19 +1816,13 @@ impl UFuncArrayView {
                     .ok_or_else(|| UFuncError::Msg("as_strided: span overflow".to_string()))?;
             }
         }
-        let span = max_off
-            .checked_sub(min_off)
-            .ok_or_else(|| UFuncError::Msg("as_strided: span overflow".to_string()))?;
-        // Add 1 for the element itself.
-        usize::try_from(span)
-            .map_err(|_| UFuncError::Msg("as_strided: negative span".to_string()))?
-            .checked_add(1)
-            .ok_or_else(|| UFuncError::Msg("as_strided: span overflow".to_string()))
+        Ok((min_off, max_off))
     }
 
     /// Detect internal overlap: any two distinct logical indices mapping to the
-    /// same buffer position.  A zero-stride axis (broadcast) always overlaps.
+    /// same buffer position.
     fn detect_overlap(shape: &[usize], strides: &[isize]) -> Result<bool, UFuncError> {
+        let mut axes = Vec::new();
         for (&dim, &stride) in shape.iter().zip(strides) {
             if dim <= 1 {
                 continue;
@@ -1842,6 +1834,23 @@ impl UFuncArrayView {
             if abs_stride == 0 {
                 return Ok(true);
             }
+            axes.push((abs_stride, dim));
+        }
+        if axes.is_empty() {
+            return Ok(false);
+        }
+
+        axes.sort_unstable_by_key(|&(stride, _)| stride);
+        let mut required_stride = 1isize;
+        for (stride, dim) in axes {
+            if stride < required_stride {
+                return Ok(true);
+            }
+            let dim = isize::try_from(dim)
+                .map_err(|_| UFuncError::Msg("as_strided: dimension overflow".to_string()))?;
+            required_stride = stride
+                .checked_mul(dim)
+                .ok_or_else(|| UFuncError::Msg("as_strided: required stride overflow".to_string()))?;
         }
         Ok(false)
     }
@@ -2232,7 +2241,11 @@ impl UFuncArray {
             return Self::from_values_with_dtype(vec![1], vec![start], dtype);
         }
         let step = (stop - start) / (num - 1) as f64;
-        let values: Vec<f64> = (0..num).map(|i| start + step * i as f64).collect();
+        let mut values: Vec<f64> = (0..num).map(|i| start + step * i as f64).collect();
+        // Guarantee exact endpoint
+        if let Some(last) = values.last_mut() {
+            *last = stop;
+        }
         Self::from_values_with_dtype(vec![num], values, dtype)
     }
 
@@ -5057,7 +5070,7 @@ impl UFuncArray {
             }
         }
         if rows.len() == 1 {
-            return Ok(rows.into_iter().next().unwrap());
+            return Ok(rows.remove(0));
         }
         let refs: Vec<&Self> = rows.iter().collect();
         Self::concatenate(&refs, 0)
@@ -6418,6 +6431,14 @@ impl UFuncArray {
             )));
         }
         let ax = normalize_axis(axis, ndim)?;
+        for d in 0..ndim {
+            if d != ax && self.shape[d] != 1 && self.shape[d] != indices.shape[d] {
+                return Err(UFuncError::Msg(format!(
+                    "take_along_axis: non-axis dimension {d} mismatch: {} vs {}",
+                    self.shape[d], indices.shape[d]
+                )));
+            }
+        }
         let axis_len = self.shape[ax];
         let strides = c_strides_elems(&self.shape);
         let idx_strides = c_strides_elems(&indices.shape);
@@ -6440,7 +6461,8 @@ impl UFuncArray {
                     }
                     src_flat += resolved as usize * strides[d];
                 } else {
-                    src_flat += coord * strides[d];
+                    let c = if self.shape[d] == 1 { 0 } else { coord };
+                    src_flat += c * strides[d];
                 }
             }
             values.push(self.values[src_flat]);
@@ -6467,6 +6489,14 @@ impl UFuncArray {
             ));
         }
         let ax = normalize_axis(axis, ndim)?;
+        for d in 0..ndim {
+            if d != ax && self.shape[d] != 1 && self.shape[d] != indices.shape[d] {
+                return Err(UFuncError::Msg(format!(
+                    "put_along_axis: non-axis dimension {d} mismatch: {} vs {}",
+                    self.shape[d], indices.shape[d]
+                )));
+            }
+        }
         let axis_len = self.shape[ax];
         let strides = c_strides_elems(&self.shape);
         let idx_strides = c_strides_elems(&indices.shape);
@@ -6487,7 +6517,8 @@ impl UFuncArray {
                     }
                     dst_flat += resolved as usize * strides[d];
                 } else {
-                    dst_flat += coord * strides[d];
+                    let c = if self.shape[d] == 1 { 0 } else { coord };
+                    dst_flat += c * strides[d];
                 }
             }
             self.values[dst_flat] = values.values[flat];
@@ -6948,36 +6979,69 @@ impl UFuncArray {
     }
 
     /// Element-wise comparison: |a - b| <= atol + rtol * |b| (np.isclose).
-    /// Returns a boolean array.
+    /// Returns a boolean array where two arrays are element-wise equal within tolerance.
+    ///
+    /// Mimics `np.isclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False)`.
+    /// Broadcasting is fully supported.
     pub fn isclose(&self, other: &Self, rtol: f64, atol: f64) -> Result<Self, UFuncError> {
-        if self.values.len() != other.values.len() {
-            return Err(UFuncError::Msg(format!(
-                "isclose: size mismatch {} vs {}",
-                self.values.len(),
-                other.values.len()
-            )));
-        }
-        let values: Vec<f64> = self
-            .values
-            .iter()
-            .zip(&other.values)
-            .map(|(&a, &b)| {
-                if (a - b).abs() <= atol + rtol * b.abs() {
-                    1.0
-                } else {
-                    0.0
+        let out_shape = broadcast_shape(&self.shape, &other.shape).map_err(UFuncError::Shape)?;
+        let out_count = element_count(&out_shape).map_err(UFuncError::Shape)?;
+
+        let lhs_strides = contiguous_strides_elems(&self.shape);
+        let rhs_strides = contiguous_strides_elems(&other.shape);
+        let lhs_axis_steps =
+            aligned_broadcast_axis_steps(out_shape.len(), &self.shape, &lhs_strides);
+        let rhs_axis_steps =
+            aligned_broadcast_axis_steps(out_shape.len(), &other.shape, &rhs_strides);
+
+        let mut out_multi = vec![0usize; out_shape.len()];
+        let mut lhs_flat = 0usize;
+        let mut rhs_flat = 0usize;
+        let mut out_values = Vec::with_capacity(out_count);
+
+        for flat in 0..out_count {
+            let a = self.values[lhs_flat];
+            let b = other.values[rhs_flat];
+
+            let is_close = if a.is_nan() || b.is_nan() {
+                false
+            } else if a.is_infinite() || b.is_infinite() {
+                a == b
+            } else {
+                (a - b).abs() <= (atol + rtol * b.abs())
+            };
+
+            out_values.push(if is_close { 1.0 } else { 0.0 });
+
+            if flat + 1 == out_count || out_shape.is_empty() {
+                continue;
+            }
+
+            for axis in (0..out_shape.len()).rev() {
+                out_multi[axis] += 1;
+                lhs_flat += lhs_axis_steps[axis];
+                rhs_flat += rhs_axis_steps[axis];
+
+                if out_multi[axis] < out_shape[axis] {
+                    break;
                 }
-            })
-            .collect();
+
+                out_multi[axis] = 0;
+                lhs_flat -= lhs_axis_steps[axis] * out_shape[axis];
+                rhs_flat -= rhs_axis_steps[axis] * out_shape[axis];
+            }
+        }
+
         Ok(Self {
-            shape: self.shape.clone(),
-            values,
+            shape: out_shape,
+            values: out_values,
             dtype: DType::Bool,
             integer_sidecar: None,
         })
     }
 
     /// Returns true if two arrays are element-wise equal within tolerance (np.allclose).
+    /// Supports broadcasting.
     pub fn allclose(&self, other: &Self, rtol: f64, atol: f64) -> Result<bool, UFuncError> {
         let close = self.isclose(other, rtol, atol)?;
         Ok(close.values.iter().all(|&v| v != 0.0))
@@ -9758,8 +9822,7 @@ impl UFuncArray {
         let total: usize = self.shape.iter().product();
         if total == 0 {
             let mut out_shape = self.shape.clone();
-            let last = out_shape.last_mut().unwrap();
-            *last = *last / 2 + 1;
+            out_shape[ndim - 1] = out_shape[ndim - 1] / 2 + 1;
             out_shape.push(2);
             return Ok(Self {
                 shape: out_shape,
@@ -9797,7 +9860,7 @@ impl UFuncArray {
             }
         }
         let mut out_shape = self.shape.clone();
-        *out_shape.last_mut().unwrap() = half_n;
+        out_shape[ndim - 1] = half_n;
         out_shape.push(2);
         Ok(Self {
             shape: out_shape,
@@ -10783,7 +10846,9 @@ impl UFuncArray {
                     group += 1;
                 }
             } else {
-                *counts_vec.last_mut().unwrap() += 1.0;
+                if let Some(last) = counts_vec.last_mut() {
+                    *last += 1.0;
+                }
             }
             group_of_sorted[i] = group;
         }
@@ -12459,7 +12524,7 @@ impl UFuncArray {
     /// Input must have trailing dimension 2 (interleaved complex).
     /// Returns a real array with shape equal to input shape minus the trailing dim.
     pub fn angle(&self) -> Result<Self, UFuncError> {
-        if self.shape.is_empty() || *self.shape.last().unwrap() != 2 {
+        if self.shape.last().copied() != Some(2) {
             return Err(UFuncError::Msg(
                 "angle: input must have trailing dimension 2 (interleaved complex)".to_string(),
             ));
@@ -12486,7 +12551,7 @@ impl UFuncArray {
     /// Extract the real part of each complex element (np.real).
     /// Input must have trailing dimension 2 (interleaved complex).
     pub fn real(&self) -> Result<Self, UFuncError> {
-        if self.shape.is_empty() || *self.shape.last().unwrap() != 2 {
+        if self.shape.last().copied() != Some(2) {
             return Err(UFuncError::Msg(
                 "real: input must have trailing dimension 2 (interleaved complex)".to_string(),
             ));
@@ -12511,7 +12576,7 @@ impl UFuncArray {
     /// Extract the imaginary part of each complex element (np.imag).
     /// Input must have trailing dimension 2 (interleaved complex).
     pub fn imag(&self) -> Result<Self, UFuncError> {
-        if self.shape.is_empty() || *self.shape.last().unwrap() != 2 {
+        if self.shape.last().copied() != Some(2) {
             return Err(UFuncError::Msg(
                 "imag: input must have trailing dimension 2 (interleaved complex)".to_string(),
             ));
@@ -12537,7 +12602,7 @@ impl UFuncArray {
     /// Input must have trailing dimension 2 (interleaved complex).
     /// Output has the same shape with imaginary parts negated.
     pub fn conj(&self) -> Result<Self, UFuncError> {
-        if self.shape.is_empty() || *self.shape.last().unwrap() != 2 {
+        if self.shape.last().copied() != Some(2) {
             return Err(UFuncError::Msg(
                 "conj: input must have trailing dimension 2 (interleaved complex)".to_string(),
             ));
@@ -12760,7 +12825,7 @@ impl UFuncArray {
     /// Return the absolute value of complex elements (np.abs for complex arrays).
     /// Input must have trailing dimension 2 (interleaved complex).
     pub fn abs_complex(&self) -> Result<Self, UFuncError> {
-        if self.shape.is_empty() || *self.shape.last().unwrap() != 2 {
+        if self.shape.last().copied() != Some(2) {
             return Err(UFuncError::Msg(
                 "abs_complex: input must have trailing dimension 2 (interleaved complex)"
                     .to_string(),
@@ -13452,8 +13517,7 @@ fn nan_last_cmp(a: &f64, b: &f64) -> std::cmp::Ordering {
         (true, true) => std::cmp::Ordering::Equal,
         (true, false) => std::cmp::Ordering::Greater,
         (false, true) => std::cmp::Ordering::Less,
-        // Safety: neither is NaN, so partial_cmp always returns Some.
-        (false, false) => a.partial_cmp(b).unwrap(),
+        (false, false) => a.total_cmp(b),
     }
 }
 
@@ -14699,8 +14763,8 @@ fn reduced_shape(shape: &[usize], axis: usize, keepdims: bool) -> Vec<usize> {
 }
 
 fn normalize_axis(axis: isize, ndim: usize) -> Result<usize, UFuncError> {
-    let ndim_i128 = i128::try_from(ndim).expect("ndim should always fit into i128");
-    let axis_i128 = i128::try_from(axis).expect("isize should always fit into i128");
+    let ndim_i128 = ndim as i128;
+    let axis_i128 = axis as i128;
     let normalized = if axis_i128 < 0 {
         ndim_i128 + axis_i128
     } else {
@@ -16046,7 +16110,12 @@ pub fn ma_make_mask(arr: &UFuncArray) -> UFuncArray {
         .iter()
         .map(|&v| if v != 0.0 { 1.0 } else { 0.0 })
         .collect();
-    UFuncArray::new(arr.shape().to_vec(), vals, DType::Bool).unwrap()
+    UFuncArray {
+        shape: arr.shape().to_vec(),
+        values: vals,
+        dtype: DType::Bool,
+        integer_sidecar: None,
+    }
 }
 
 /// Combine two masks with logical OR (np.ma.mask_or).
@@ -16062,7 +16131,12 @@ pub fn ma_mask_or(m1: Option<&UFuncArray>, m2: Option<&UFuncArray>) -> Option<UF
                 .zip(b.values().iter())
                 .map(|(&va, &vb)| if va != 0.0 || vb != 0.0 { 1.0 } else { 0.0 })
                 .collect();
-            Some(UFuncArray::new(a.shape().to_vec(), vals, DType::Bool).unwrap())
+            Some(UFuncArray {
+                shape: a.shape().to_vec(),
+                values: vals,
+                dtype: DType::Bool,
+                integer_sidecar: None,
+            })
         }
     }
 }
@@ -16450,7 +16524,7 @@ pub fn chebint(c: &[f64], m: usize) -> Vec<f64> {
 pub fn chebroots(c: &[f64]) -> Result<Vec<f64>, UFuncError> {
     // Remove trailing zeros
     let mut coeffs: Vec<f64> = c.to_vec();
-    while coeffs.len() > 1 && *coeffs.last().unwrap() == 0.0 {
+    while coeffs.len() > 1 && coeffs.last().is_some_and(|&v| v == 0.0) {
         coeffs.pop();
     }
     let n = coeffs.len();
@@ -16710,13 +16784,13 @@ fn poly_div(num: &[f64], den: &[f64]) -> Result<(Vec<f64>, Vec<f64>), UFuncError
     let mut num = num.to_vec();
     // Trim trailing zeros from denominator
     let mut d = den.to_vec();
-    while d.len() > 1 && *d.last().unwrap() == 0.0 {
+    while d.len() > 1 && d.last().is_some_and(|&v| v == 0.0) {
         d.pop();
     }
     if d.is_empty() || (d.len() == 1 && d[0] == 0.0) {
         return Err(UFuncError::Msg("poly_div: division by zero".to_string()));
     }
-    while num.len() > 1 && *num.last().unwrap() == 0.0 {
+    while num.len() > 1 && num.last().is_some_and(|&v| v == 0.0) {
         num.pop();
     }
     if num.len() < d.len() {
@@ -16732,7 +16806,7 @@ fn poly_div(num: &[f64], den: &[f64]) -> Result<(Vec<f64>, Vec<f64>), UFuncError
     }
     // Remainder
     let mut rem = num[..d.len() - 1].to_vec();
-    while rem.len() > 1 && rem.last().unwrap().abs() < 1e-14 {
+    while rem.len() > 1 && rem.last().is_some_and(|v| v.abs() < 1e-14) {
         rem.pop();
     }
     if rem.is_empty() {
@@ -16922,7 +16996,7 @@ pub fn legdiv(c1: &[f64], c2: &[f64]) -> Result<(Vec<f64>, Vec<f64>), UFuncError
 pub fn legroots(c: &[f64]) -> Result<Vec<f64>, UFuncError> {
     // Remove trailing zeros
     let mut coeffs: Vec<f64> = c.to_vec();
-    while coeffs.len() > 1 && *coeffs.last().unwrap() == 0.0 {
+    while coeffs.len() > 1 && coeffs.last().is_some_and(|&v| v == 0.0) {
         coeffs.pop();
     }
     let n = coeffs.len();
@@ -17212,7 +17286,7 @@ pub fn hermdiv(c1: &[f64], c2: &[f64]) -> Result<(Vec<f64>, Vec<f64>), UFuncErro
 /// Find roots of a physicist's Hermite series.
 pub fn hermroots(c: &[f64]) -> Result<Vec<f64>, UFuncError> {
     let mut coeffs: Vec<f64> = c.to_vec();
-    while coeffs.len() > 1 && *coeffs.last().unwrap() == 0.0 {
+    while coeffs.len() > 1 && coeffs.last().is_some_and(|&v| v == 0.0) {
         coeffs.pop();
     }
     let n = coeffs.len();
@@ -17370,7 +17444,7 @@ pub fn hermediv(c1: &[f64], c2: &[f64]) -> Result<(Vec<f64>, Vec<f64>), UFuncErr
 /// Find roots of a probabilist's Hermite series.
 pub fn hermeroots(c: &[f64]) -> Result<Vec<f64>, UFuncError> {
     let mut coeffs: Vec<f64> = c.to_vec();
-    while coeffs.len() > 1 && *coeffs.last().unwrap() == 0.0 {
+    while coeffs.len() > 1 && coeffs.last().is_some_and(|&v| v == 0.0) {
         coeffs.pop();
     }
     let n = coeffs.len();
@@ -17617,7 +17691,7 @@ pub fn lagdiv(c1: &[f64], c2: &[f64]) -> Result<(Vec<f64>, Vec<f64>), UFuncError
 /// Find roots of a Laguerre series.
 pub fn lagroots(c: &[f64]) -> Result<Vec<f64>, UFuncError> {
     let mut coeffs: Vec<f64> = c.to_vec();
-    while coeffs.len() > 1 && *coeffs.last().unwrap() == 0.0 {
+    while coeffs.len() > 1 && coeffs.last().is_some_and(|&v| v == 0.0) {
         coeffs.pop();
     }
     let n = coeffs.len();
@@ -32664,5 +32738,273 @@ mod tests {
             result.values()[0].is_nan(),
             "max with any NaN should propagate NaN"
         );
+    }
+
+    // ── Linalg bridge method tests (br-dya) ─────────────────────
+
+    #[test]
+    fn test_linalg_det_identity() {
+        let eye = UFuncArray::new(vec![3, 3], vec![
+            1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 1.0,
+        ], DType::F64).unwrap();
+        let d = eye.det().unwrap();
+        assert!((d - 1.0).abs() < 1e-12, "det(I) should be 1, got {d}");
+    }
+
+    #[test]
+    fn test_linalg_det_2x2() {
+        // det([[3,8],[4,6]]) = 3*6 - 8*4 = -14
+        let a = UFuncArray::new(vec![2, 2], vec![3.0, 8.0, 4.0, 6.0], DType::F64).unwrap();
+        let d = a.det().unwrap();
+        assert!((d - (-14.0)).abs() < 1e-10, "det should be -14, got {d}");
+    }
+
+    #[test]
+    fn test_linalg_det_rejects_non_square() {
+        let a = UFuncArray::new(vec![2, 3], vec![0.0; 6], DType::F64).unwrap();
+        assert!(a.det().is_err());
+    }
+
+    #[test]
+    fn test_linalg_inv_identity() {
+        let eye = UFuncArray::new(vec![2, 2], vec![1.0, 0.0, 0.0, 1.0], DType::F64).unwrap();
+        let inv = eye.inv().unwrap();
+        assert_eq!(inv.shape(), &[2, 2]);
+        for (i, (&got, &expected)) in inv.values().iter().zip(&[1.0, 0.0, 0.0, 1.0]).enumerate() {
+            assert!((got - expected).abs() < 1e-12, "inv(I)[{i}]: {got} != {expected}");
+        }
+    }
+
+    #[test]
+    fn test_linalg_inv_times_original_is_identity() {
+        let a = UFuncArray::new(vec![2, 2], vec![4.0, 7.0, 2.0, 6.0], DType::F64).unwrap();
+        let a_inv = a.inv().unwrap();
+        let product = a.dot(&a_inv).unwrap();
+        // Should be approximately identity
+        let expected = [1.0, 0.0, 0.0, 1.0];
+        for (i, (&got, &exp)) in product.values().iter().zip(&expected).enumerate() {
+            assert!((got - exp).abs() < 1e-10, "A*A_inv[{i}]: {got} != {exp}");
+        }
+    }
+
+    #[test]
+    fn test_linalg_solve_simple() {
+        // Solve [[3,1],[1,2]] x = [9,8] → x = [2,3]
+        let a = UFuncArray::new(vec![2, 2], vec![3.0, 1.0, 1.0, 2.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![2], vec![9.0, 8.0], DType::F64).unwrap();
+        let x = a.solve(&b).unwrap();
+        assert_eq!(x.shape(), &[2]);
+        assert!((x.values()[0] - 2.0).abs() < 1e-10, "x[0] should be 2");
+        assert!((x.values()[1] - 3.0).abs() < 1e-10, "x[1] should be 3");
+    }
+
+    #[test]
+    fn test_linalg_solve_rejects_nonsquare_a() {
+        let a = UFuncArray::new(vec![2, 3], vec![0.0; 6], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![2], vec![1.0, 2.0], DType::F64).unwrap();
+        assert!(a.solve(&b).is_err());
+    }
+
+    #[test]
+    fn test_linalg_solve_rejects_dimension_mismatch() {
+        let a = UFuncArray::new(vec![2, 2], vec![1.0, 0.0, 0.0, 1.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        assert!(a.solve(&b).is_err());
+    }
+
+    #[test]
+    fn test_linalg_cholesky_spd_matrix() {
+        // Symmetric positive definite: [[4,2],[2,3]]
+        let a = UFuncArray::new(vec![2, 2], vec![4.0, 2.0, 2.0, 3.0], DType::F64).unwrap();
+        let l = a.cholesky().unwrap();
+        assert_eq!(l.shape(), &[2, 2]);
+        // L * L^T should equal A
+        let lt = l.transpose(None).unwrap();
+        let product = l.dot(&lt).unwrap();
+        for (i, (&got, &exp)) in product.values().iter().zip(&[4.0, 2.0, 2.0, 3.0]).enumerate() {
+            assert!((got - exp).abs() < 1e-10, "L*L^T[{i}]: {got} != {exp}");
+        }
+    }
+
+    #[test]
+    fn test_linalg_svd_identity() {
+        let eye = UFuncArray::new(vec![2, 2], vec![1.0, 0.0, 0.0, 1.0], DType::F64).unwrap();
+        let (u, s, vt) = eye.svd().unwrap();
+        assert_eq!(u.shape(), &[2, 2]);
+        assert_eq!(s.shape(), &[2]);
+        assert_eq!(vt.shape(), &[2, 2]);
+        // Singular values of identity should be [1, 1]
+        for &sv in s.values() {
+            assert!((sv - 1.0).abs() < 1e-10, "singular value should be 1, got {sv}");
+        }
+    }
+
+    #[test]
+    fn test_linalg_svd_reconstruction() {
+        // A = U * diag(S) * Vt
+        let a = UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
+        let (u, s, vt) = a.svd().unwrap();
+        // Verify shapes: U is 2×2, S is 2, Vt is 3×3
+        assert_eq!(u.shape(), &[2, 2]);
+        assert_eq!(s.shape(), &[2]);
+        assert_eq!(vt.shape(), &[3, 3]);
+    }
+
+    #[test]
+    fn test_linalg_qr_decomposition() {
+        let a = UFuncArray::new(vec![3, 3], vec![
+            12.0, -51.0, 4.0,
+            6.0, 167.0, -68.0,
+            -4.0, 24.0, -41.0,
+        ], DType::F64).unwrap();
+        let (q, r) = a.qr().unwrap();
+        assert_eq!(q.shape(), &[3, 3]);
+        assert_eq!(r.shape(), &[3, 3]);
+        // Q * R should reconstruct A
+        let reconstructed = q.dot(&r).unwrap();
+        for (i, (&got, &exp)) in reconstructed.values().iter().zip(a.values()).enumerate() {
+            assert!((got - exp).abs() < 1e-8, "Q*R[{i}]: {got} != {exp}");
+        }
+    }
+
+    #[test]
+    fn test_linalg_qr_orthogonality() {
+        let a = UFuncArray::new(vec![3, 3], vec![
+            12.0, -51.0, 4.0,
+            6.0, 167.0, -68.0,
+            -4.0, 24.0, -41.0,
+        ], DType::F64).unwrap();
+        let (q, _) = a.qr().unwrap();
+        // Q^T * Q should be identity
+        let qt = q.transpose(None).unwrap();
+        let qtq = qt.dot(&q).unwrap();
+        let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        for (i, (&got, &exp)) in qtq.values().iter().zip(&identity).enumerate() {
+            assert!((got - exp).abs() < 1e-10, "Q^T*Q[{i}]: {got} != {exp}");
+        }
+    }
+
+    #[test]
+    fn test_linalg_eig_diagonal() {
+        // Eigenvalues of a diagonal matrix are the diagonal entries.
+        let a = UFuncArray::new(vec![2, 2], vec![3.0, 0.0, 0.0, 5.0], DType::F64).unwrap();
+        let (vals, _vecs) = a.eig().unwrap();
+        // eig returns interleaved (real, imag) pairs
+        let real_vals: Vec<f64> = vals.values().iter().step_by(2).copied().collect();
+        let mut sorted = real_vals.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert!((sorted[0] - 3.0).abs() < 1e-10, "eigenvalue should be 3");
+        assert!((sorted[1] - 5.0).abs() < 1e-10, "eigenvalue should be 5");
+    }
+
+    #[test]
+    fn test_linalg_eigh_symmetric() {
+        // eigh for symmetric matrix — eigenvalues sorted descending (fnp-linalg convention).
+        let a = UFuncArray::new(vec![2, 2], vec![2.0, 1.0, 1.0, 3.0], DType::F64).unwrap();
+        let (vals, vecs) = a.eigh().unwrap();
+        assert_eq!(vals.shape(), &[2]);
+        assert_eq!(vecs.shape(), &[2, 2]);
+        // Check they're the correct eigenvalues of [[2,1],[1,3]]:
+        // λ² - 5λ + 5 = 0 → λ = (5 ± √5)/2 ≈ 1.382, 3.618
+        let mut sorted_vals = vals.values().to_vec();
+        sorted_vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert!((sorted_vals[0] - 1.381966).abs() < 1e-4);
+        assert!((sorted_vals[1] - 3.618034).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_linalg_slogdet() {
+        let a = UFuncArray::new(vec![2, 2], vec![3.0, 8.0, 4.0, 6.0], DType::F64).unwrap();
+        let (sign, logabsdet) = a.slogdet().unwrap();
+        // det = -14, so sign = -1, logabsdet = ln(14)
+        assert!((sign - (-1.0)).abs() < 1e-10, "sign should be -1, got {sign}");
+        assert!((logabsdet - 14.0_f64.ln()).abs() < 1e-10, "logabsdet should be ln(14), got {logabsdet}");
+    }
+
+    #[test]
+    fn test_linalg_norm_vector() {
+        let v = UFuncArray::new(vec![3], vec![3.0, 4.0, 0.0], DType::F64).unwrap();
+        let n = v.norm(None).unwrap(); // L2 norm by default
+        assert!((n - 5.0).abs() < 1e-12, "||[3,4,0]||₂ should be 5, got {n}");
+    }
+
+    #[test]
+    fn test_linalg_norm_vector_l1() {
+        let v = UFuncArray::new(vec![3], vec![3.0, -4.0, 0.0], DType::F64).unwrap();
+        let n = v.norm(Some("1")).unwrap();
+        assert!((n - 7.0).abs() < 1e-12, "||[3,-4,0]||₁ should be 7, got {n}");
+    }
+
+    #[test]
+    fn test_linalg_cond_identity() {
+        let eye = UFuncArray::new(vec![2, 2], vec![1.0, 0.0, 0.0, 1.0], DType::F64).unwrap();
+        let c = eye.cond().unwrap();
+        assert!((c - 1.0).abs() < 1e-10, "cond(I) should be 1, got {c}");
+    }
+
+    #[test]
+    fn test_linalg_pinv_of_invertible() {
+        // For an invertible matrix, pinv should equal inv.
+        let a = UFuncArray::new(vec![2, 2], vec![4.0, 7.0, 2.0, 6.0], DType::F64).unwrap();
+        let inv = a.inv().unwrap();
+        let pinv = a.pinv().unwrap();
+        for (i, (&g, &e)) in pinv.values().iter().zip(inv.values()).enumerate() {
+            assert!((g - e).abs() < 1e-8, "pinv[{i}]: {g} != inv {e}");
+        }
+    }
+
+    #[test]
+    fn test_linalg_lstsq_overdetermined() {
+        // Least squares: A (3×2) x = b (3×1)
+        // A = [[1,1],[1,2],[1,3]], b = [1,2,2] → x ≈ [2/3, 1/2]
+        let a = UFuncArray::new(vec![3, 2], vec![1.0, 1.0, 1.0, 2.0, 1.0, 3.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![3], vec![1.0, 2.0, 2.0], DType::F64).unwrap();
+        let x = a.lstsq(&b).unwrap();
+        assert_eq!(x.shape(), &[2]);
+        // Verify Ax ≈ b in least-squares sense (residual should be small)
+        let ax = a.dot(&x).unwrap();
+        let residual: f64 = ax.values().iter().zip(b.values()).map(|(a, b)| (a - b).powi(2)).sum();
+        assert!(residual < 1.0, "residual should be small, got {residual}");
+    }
+
+    #[test]
+    fn test_linalg_matrix_rank_identity() {
+        let eye = UFuncArray::new(vec![3, 3], vec![
+            1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 1.0,
+        ], DType::F64).unwrap();
+        let rank = eye.matrix_rank(0.0).unwrap();
+        assert_eq!(rank, 3, "rank(I_3) should be 3");
+    }
+
+    #[test]
+    fn test_linalg_matrix_rank_rank_deficient() {
+        // Rank-1 matrix: [[1,2],[2,4]]
+        let a = UFuncArray::new(vec![2, 2], vec![1.0, 2.0, 2.0, 4.0], DType::F64).unwrap();
+        // Use small rcond to detect near-zero singular values
+        let rank = a.matrix_rank(1e-10).unwrap();
+        assert_eq!(rank, 1, "rank of [[1,2],[2,4]] should be 1");
+    }
+
+    #[test]
+    fn test_linalg_matrix_power_identity() {
+        let a = UFuncArray::new(vec![2, 2], vec![2.0, 1.0, 0.0, 2.0], DType::F64).unwrap();
+        let a0 = a.matrix_power(0).unwrap();
+        // A^0 = I
+        assert_eq!(a0.values(), &[1.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn test_linalg_matrix_power_squared() {
+        let a = UFuncArray::new(vec![2, 2], vec![1.0, 1.0, 0.0, 1.0], DType::F64).unwrap();
+        let a2 = a.matrix_power(2).unwrap();
+        // [[1,1],[0,1]]² = [[1,2],[0,1]]
+        assert!((a2.values()[0] - 1.0).abs() < 1e-12);
+        assert!((a2.values()[1] - 2.0).abs() < 1e-12);
+        assert!((a2.values()[2] - 0.0).abs() < 1e-12);
+        assert!((a2.values()[3] - 1.0).abs() < 1e-12);
     }
 }
