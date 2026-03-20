@@ -545,20 +545,54 @@ pub fn slogdet_nxn(a: &[f64], n: usize) -> Result<(f64, f64), LinAlgError> {
 /// row-major.
 pub fn inv_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
     let (lu, perm, _) = lu_decompose(a, n)?;
-    let mut inv = vec![0.0; n * n];
-    let mut e_col = vec![0.0; n];
+    // Create identity matrix as RHS
+    let mut eye = vec![0.0; n * n];
+    for i in 0..n {
+        eye[i * n + i] = 1.0;
+    }
+    lu_solve_multi(&lu, &perm, &eye, n, n)
+}
 
-    for col in 0..n {
-        for (i, e) in e_col.iter_mut().enumerate() {
-            *e = if i == col { 1.0 } else { 0.0 };
+/// Solve A*X = B for multiple right-hand sides given the LU factor.
+/// `lu` and `perm` are from `lu_decompose`. `b` is n*m (row-major).
+pub fn lu_solve_multi(
+    lu: &[f64],
+    perm: &[usize],
+    b: &[f64],
+    n: usize,
+    m: usize,
+) -> Result<Vec<f64>, LinAlgError> {
+    if lu.len() != n * n || b.len() != n * m || n == 0 || m == 0 {
+        return Err(LinAlgError::ShapeContractViolation(
+            "lu_solve_multi: LU must be n*n, B must be n*m, with n,m > 0",
+        ));
+    }
+
+    let mut x = vec![0.0; n * m];
+
+    // Process each column of B
+    for col in 0..m {
+        // Forward substitution (Ly = Pb)
+        // We do this in-place in the output buffer for this column
+        for i in 0..n {
+            let mut sum = b[perm[i] * m + col];
+            for j in 0..i {
+                sum -= lu[i * n + j] * x[j * m + col];
+            }
+            x[i * m + col] = sum;
         }
-        let x = lu_forward_back(&lu, &perm, &e_col, n);
-        for (row, &val) in x.iter().enumerate() {
-            inv[row * n + col] = val;
+
+        // Backward substitution (Ux = y)
+        for i in (0..n).rev() {
+            let mut sum = x[i * m + col];
+            for j in (i + 1)..n {
+                sum -= lu[i * n + j] * x[j * m + col];
+            }
+            x[i * m + col] = sum / lu[i * n + i];
         }
     }
 
-    Ok(inv)
+    Ok(x)
 }
 
 /// LU factorization of an NxN matrix with partial pivoting.
@@ -808,20 +842,33 @@ pub fn cholesky_solve_multi(
             "cholesky_solve_multi: L must be n*n, B must be n*m, with n,m > 0",
         ));
     }
-    let mut result = Vec::with_capacity(n * m);
+
+    let mut x = vec![0.0; n * m];
+
+    // Process each column of B
     for col in 0..m {
-        let rhs: Vec<f64> = (0..n).map(|row| b[row * m + col]).collect();
-        let sol = cholesky_solve(l, &rhs, n)?;
-        result.extend_from_slice(&sol);
-    }
-    // result is currently column-major (m columns of n elements), convert to row-major
-    let mut out = vec![0.0; n * m];
-    for col in 0..m {
-        for row in 0..n {
-            out[row * m + col] = result[col * n + row];
+        // Forward substitution: L*y = b
+        // Store y temporarily in x
+        for i in 0..n {
+            let mut sum = b[i * m + col];
+            for j in 0..i {
+                sum -= l[i * n + j] * x[j * m + col];
+            }
+            x[i * m + col] = sum / l[i * n + i];
+        }
+
+        // Backward substitution: L^T*x = y
+        // We read the 'y' values from x and overwrite them with 'x' values
+        for i in (0..n).rev() {
+            let mut sum = x[i * m + col];
+            for j in (i + 1)..n {
+                sum -= l[j * n + i] * x[j * m + col]; // L^T[i,j] = L[j,i]
+            }
+            x[i * m + col] = sum / l[i * n + i];
         }
     }
-    Ok(out)
+
+    Ok(x)
 }
 
 /// Solve the tensor equation `a x = b` for x.
