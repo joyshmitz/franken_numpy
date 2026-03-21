@@ -5465,20 +5465,42 @@ impl UFuncArray {
     /// Solve a linear system (np.linalg.lstsq) using least-squares.
     /// `self` is the coefficient matrix A, `b` is the RHS.
     /// Returns the least-squares solution x.
-    pub fn lstsq(&self, b: &Self) -> Result<Self, UFuncError> {
+    /// Least-squares solution (`np.linalg.lstsq`).
+    ///
+    /// Returns `(x, residuals, rank, singular_values)` matching NumPy's 4-tuple:
+    /// - `x`: least-squares solution (shape `[n]`)
+    /// - `residuals`: sum of squared residuals (shape `[1]` if `m > n` and full rank, else `[0]`)
+    /// - `rank`: effective rank of A
+    /// - `singular_values`: singular values of A in descending order
+    pub fn lstsq(&self, b: &Self) -> Result<(Self, Self, usize, Self), UFuncError> {
         if self.shape.len() != 2 {
             return Err(UFuncError::Msg("lstsq: A must be 2-D".into()));
         }
         let m = self.shape[0];
         let n = self.shape[1];
-        let x = fnp_linalg::lstsq_nxn(&self.values, &b.values, m, n)
+        let (x, residuals, rank, s) = fnp_linalg::lstsq_svd(&self.values, &b.values, m, n, -1.0)
             .map_err(|e| UFuncError::Msg(format!("{e}")))?;
-        Ok(Self {
-            shape: vec![x.len()],
-            values: x,
-            dtype: DType::F64,
-            integer_sidecar: None,
-        })
+        Ok((
+            Self {
+                shape: vec![x.len()],
+                values: x,
+                dtype: DType::F64,
+                integer_sidecar: None,
+            },
+            Self {
+                shape: vec![residuals.len()],
+                values: residuals,
+                dtype: DType::F64,
+                integer_sidecar: None,
+            },
+            rank,
+            Self {
+                shape: vec![s.len()],
+                values: s,
+                dtype: DType::F64,
+                integer_sidecar: None,
+            },
+        ))
     }
 
     /// Compute matrix rank (np.linalg.matrix_rank).
@@ -29596,9 +29618,11 @@ mod tests {
         // Solve [[1,0],[0,1]] * x = [3, 4] => x = [3, 4]
         let a = UFuncArray::new(vec![2, 2], vec![1.0, 0.0, 0.0, 1.0], DType::F64).unwrap();
         let b = UFuncArray::new(vec![2], vec![3.0, 4.0], DType::F64).unwrap();
-        let x = a.lstsq(&b).unwrap();
+        let (x, _residuals, rank, s) = a.lstsq(&b).unwrap();
         assert!((x.values()[0] - 3.0).abs() < 1e-10);
         assert!((x.values()[1] - 4.0).abs() < 1e-10);
+        assert_eq!(rank, 2, "identity should be full rank");
+        assert_eq!(s.shape(), &[2], "should have 2 singular values");
     }
 
     // --- additional linalg bridge tests ---
@@ -33017,12 +33041,16 @@ mod tests {
         // A = [[1,1],[1,2],[1,3]], b = [1,2,2] → x ≈ [2/3, 1/2]
         let a = UFuncArray::new(vec![3, 2], vec![1.0, 1.0, 1.0, 2.0, 1.0, 3.0], DType::F64).unwrap();
         let b = UFuncArray::new(vec![3], vec![1.0, 2.0, 2.0], DType::F64).unwrap();
-        let x = a.lstsq(&b).unwrap();
+        let (x, residuals, rank, s) = a.lstsq(&b).unwrap();
         assert_eq!(x.shape(), &[2]);
         // Verify Ax ≈ b in least-squares sense (residual should be small)
         let ax = a.dot(&x).unwrap();
         let residual: f64 = ax.values().iter().zip(b.values()).map(|(a, b)| (a - b).powi(2)).sum();
         assert!(residual < 1.0, "residual should be small, got {residual}");
+        // m > n and full rank → residuals should have one entry
+        assert_eq!(rank, 2);
+        assert_eq!(residuals.shape(), &[1], "overdetermined full-rank should return residuals");
+        assert_eq!(s.shape(), &[2], "should have min(m,n)=2 singular values");
     }
 
     #[test]
