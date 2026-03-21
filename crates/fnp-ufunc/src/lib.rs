@@ -32895,17 +32895,16 @@ mod tests {
 
     #[test]
     fn test_linalg_eigh_symmetric() {
-        // eigh for symmetric matrix — eigenvalues sorted descending (fnp-linalg convention).
+        // eigh for symmetric matrix — eigenvalues sorted ascending (NumPy convention).
         let a = UFuncArray::new(vec![2, 2], vec![2.0, 1.0, 1.0, 3.0], DType::F64).unwrap();
         let (vals, vecs) = a.eigh().unwrap();
         assert_eq!(vals.shape(), &[2]);
         assert_eq!(vecs.shape(), &[2, 2]);
-        // Check they're the correct eigenvalues of [[2,1],[1,3]]:
-        // λ² - 5λ + 5 = 0 → λ = (5 ± √5)/2 ≈ 1.382, 3.618
-        let mut sorted_vals = vals.values().to_vec();
-        sorted_vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        assert!((sorted_vals[0] - 1.381966).abs() < 1e-4);
-        assert!((sorted_vals[1] - 3.618034).abs() < 1e-4);
+        // Eigenvalues of [[2,1],[1,3]]: λ = (5 ± √5)/2 ≈ 1.382, 3.618
+        // Should be in ascending order.
+        assert!((vals.values()[0] - 1.381966).abs() < 1e-4);
+        assert!((vals.values()[1] - 3.618034).abs() < 1e-4);
+        assert!(vals.values()[0] <= vals.values()[1], "eigh must return ascending eigenvalues");
     }
 
     #[test]

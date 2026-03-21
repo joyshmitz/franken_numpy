@@ -7334,10 +7334,10 @@ mod tests {
         let shape = [2, 3, 3];
         let eigvals = batch_eigvalsh(&data, &shape).expect("batch_eigvalsh");
         assert_eq!(eigvals.len(), 6); // 2 × 3
-        // First matrix: sorted descending [5, 3, 2]
-        assert!((eigvals[0] - 5.0).abs() < 1e-10);
+        // First matrix: sorted ascending [2, 3, 5] (NumPy convention)
+        assert!((eigvals[0] - 2.0).abs() < 1e-10);
         assert!((eigvals[1] - 3.0).abs() < 1e-10);
-        assert!((eigvals[2] - 2.0).abs() < 1e-10);
+        assert!((eigvals[2] - 5.0).abs() < 1e-10);
         // Second matrix: [1, 1, 1]
         for (i, eigval) in eigvals.iter().enumerate().skip(3).take(3) {
             assert!((*eigval - 1.0).abs() < 1e-10, "eig[{i}]={eigval}");
