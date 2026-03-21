@@ -5973,36 +5973,77 @@ impl UFuncArray {
         })
     }
 
-    /// Full SVD (np.linalg.svd with full_matrices=True).
-    /// Returns (U, S, Vt) where U is m x m, S is min(m,n), Vt is n x n.
-    pub fn svd(&self) -> Result<(Self, Self, Self), UFuncError> {
+    /// SVD decomposition (`np.linalg.svd`).
+    ///
+    /// When `full_matrices` is `true` (default), returns (U, S, Vt) where
+    /// U is m×m and Vt is n×n. When `false`, returns reduced SVD where
+    /// U is m×k and Vt is k×n with k = min(m, n).
+    pub fn svd_full(&self, full_matrices: bool) -> Result<(Self, Self, Self), UFuncError> {
         if self.shape.len() != 2 {
             return Err(UFuncError::Msg("svd: input must be a 2-D array".into()));
         }
         let m = self.shape[0];
         let n = self.shape[1];
-        let (u, s, vt) = fnp_linalg::svd_mxn_full(&self.values, m, n)
+        let k = m.min(n);
+        let (u_full, s, vt_full) = fnp_linalg::svd_mxn_full(&self.values, m, n)
             .map_err(|e| UFuncError::Msg(format!("{e}")))?;
-        Ok((
-            Self {
-                shape: vec![m, m],
-                values: u,
-                dtype: DType::F64,
-                integer_sidecar: None,
-            },
-            Self {
-                shape: vec![s.len()],
-                values: s,
-                dtype: DType::F64,
-                integer_sidecar: None,
-            },
-            Self {
-                shape: vec![n, n],
-                values: vt,
-                dtype: DType::F64,
-                integer_sidecar: None,
-            },
-        ))
+
+        if full_matrices {
+            Ok((
+                Self {
+                    shape: vec![m, m],
+                    values: u_full,
+                    dtype: DType::F64,
+                    integer_sidecar: None,
+                },
+                Self {
+                    shape: vec![s.len()],
+                    values: s,
+                    dtype: DType::F64,
+                    integer_sidecar: None,
+                },
+                Self {
+                    shape: vec![n, n],
+                    values: vt_full,
+                    dtype: DType::F64,
+                    integer_sidecar: None,
+                },
+            ))
+        } else {
+            // Truncate U to m×k (take first k columns)
+            let mut u_reduced = Vec::with_capacity(m * k);
+            for row in 0..m {
+                u_reduced.extend_from_slice(&u_full[row * m..row * m + k]);
+            }
+            // Truncate Vt to k×n (take first k rows)
+            let vt_reduced = vt_full[..k * n].to_vec();
+
+            Ok((
+                Self {
+                    shape: vec![m, k],
+                    values: u_reduced,
+                    dtype: DType::F64,
+                    integer_sidecar: None,
+                },
+                Self {
+                    shape: vec![s.len()],
+                    values: s,
+                    dtype: DType::F64,
+                    integer_sidecar: None,
+                },
+                Self {
+                    shape: vec![k, n],
+                    values: vt_reduced,
+                    dtype: DType::F64,
+                    integer_sidecar: None,
+                },
+            ))
+        }
+    }
+
+    /// Full SVD (convenience wrapper, equivalent to `svd_full(true)`).
+    pub fn svd(&self) -> Result<(Self, Self, Self), UFuncError> {
+        self.svd_full(true)
     }
 
     /// Singular values only (np.linalg.svdvals).
@@ -32844,6 +32885,28 @@ mod tests {
         assert_eq!(u.shape(), &[2, 2]);
         assert_eq!(s.shape(), &[2]);
         assert_eq!(vt.shape(), &[3, 3]);
+    }
+
+    #[test]
+    fn test_linalg_svd_reduced() {
+        // Reduced SVD: U is m×k, Vt is k×n with k=min(m,n)
+        let a = UFuncArray::new(vec![3, 5], (0..15).map(|v| v as f64).collect(), DType::F64).unwrap();
+        let (u, s, vt) = a.svd_full(false).unwrap();
+        // k = min(3,5) = 3
+        assert_eq!(u.shape(), &[3, 3], "reduced U should be m×k");
+        assert_eq!(s.shape(), &[3], "S has min(m,n) values");
+        assert_eq!(vt.shape(), &[3, 5], "reduced Vt should be k×n");
+    }
+
+    #[test]
+    fn test_linalg_svd_reduced_tall() {
+        // Tall matrix: m > n
+        let a = UFuncArray::new(vec![5, 2], (0..10).map(|v| v as f64).collect(), DType::F64).unwrap();
+        let (u, s, vt) = a.svd_full(false).unwrap();
+        // k = min(5,2) = 2
+        assert_eq!(u.shape(), &[5, 2], "reduced U should be m×k");
+        assert_eq!(s.shape(), &[2]);
+        assert_eq!(vt.shape(), &[2, 2], "reduced Vt should be k×n");
     }
 
     #[test]
