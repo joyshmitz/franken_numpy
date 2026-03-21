@@ -18955,6 +18955,100 @@ pub struct StringArray {
     values: Vec<String>,
 }
 
+fn trim_start_whitespace_index(s: &str) -> usize {
+    for (idx, ch) in s.char_indices() {
+        if !ch.is_whitespace() {
+            return idx;
+        }
+    }
+    s.len()
+}
+
+fn trim_end_whitespace_index(s: &str, end: usize) -> usize {
+    let mut cur = end;
+    while cur > 0 {
+        let ch = s[..cur]
+            .chars()
+            .next_back()
+            .expect("valid char when cur > 0");
+        if !ch.is_whitespace() {
+            break;
+        }
+        cur -= ch.len_utf8();
+    }
+    cur
+}
+
+fn split_whitespace_python(s: &str, maxsplit: usize) -> Vec<String> {
+    let mut start = trim_start_whitespace_index(s);
+    if start == s.len() {
+        return Vec::new();
+    }
+    if maxsplit == 0 {
+        return vec![s[start..].to_string()];
+    }
+
+    let mut parts = Vec::new();
+    while start < s.len() && parts.len() < maxsplit {
+        let mut end = s.len();
+        for (offset, ch) in s[start..].char_indices() {
+            if ch.is_whitespace() {
+                end = start + offset;
+                break;
+            }
+        }
+        parts.push(s[start..end].to_string());
+        if end == s.len() {
+            return parts;
+        }
+        start = trim_start_whitespace_index(&s[end..]) + end;
+        if start == s.len() {
+            return parts;
+        }
+    }
+    parts.push(s[start..].to_string());
+    parts
+}
+
+fn rsplit_whitespace_python(s: &str, maxsplit: usize) -> Vec<String> {
+    let mut end = trim_end_whitespace_index(s, s.len());
+    if end == 0 {
+        return Vec::new();
+    }
+    if maxsplit == 0 {
+        return vec![s[..end].to_string()];
+    }
+
+    let mut parts = Vec::new();
+    while end > 0 && parts.len() < maxsplit {
+        let mut start = 0usize;
+        let mut split_idx = None;
+        for (idx, ch) in s[..end].char_indices().rev() {
+            if ch.is_whitespace() {
+                start = idx + ch.len_utf8();
+                split_idx = Some(idx);
+                break;
+            }
+        }
+        parts.push(s[start..end].to_string());
+        if start == 0 {
+            parts.reverse();
+            return parts;
+        }
+        end = trim_end_whitespace_index(
+            s,
+            split_idx.expect("whitespace split index present when start > 0"),
+        );
+        if end == 0 {
+            parts.reverse();
+            return parts;
+        }
+    }
+    parts.push(s[..end].to_string());
+    parts.reverse();
+    parts
+}
+
 impl StringArray {
     // ── Constructors ────────────────────────────────────────────────
 
@@ -19524,11 +19618,7 @@ impl StringArray {
             .iter()
             .map(|s| match (sep, maxsplit) {
                 (None, None) => s.split_whitespace().map(String::from).collect(),
-                (None, Some(n)) => s
-                    .splitn(n + 1, char::is_whitespace)
-                    .filter(|p| !p.is_empty())
-                    .map(String::from)
-                    .collect(),
+                (None, Some(n)) => split_whitespace_python(s, n),
                 (Some(sep), None) => s.split(sep).map(String::from).collect(),
                 (Some(sep), Some(n)) => s.splitn(n + 1, sep).map(String::from).collect(),
             })
@@ -19542,15 +19632,7 @@ impl StringArray {
             .iter()
             .map(|s| match (sep, maxsplit) {
                 (None, None) => s.split_whitespace().map(String::from).collect(),
-                (None, Some(n)) => {
-                    let mut parts: Vec<String> = s
-                        .rsplitn(n + 1, char::is_whitespace)
-                        .filter(|p| !p.is_empty())
-                        .map(String::from)
-                        .collect();
-                    parts.reverse();
-                    parts
-                }
+                (None, Some(n)) => rsplit_whitespace_python(s, n),
                 (Some(sep), None) => s.split(sep).map(String::from).collect(),
                 (Some(sep), Some(n)) => {
                     let mut parts: Vec<String> = s.rsplitn(n + 1, sep).map(String::from).collect();
@@ -30008,6 +30090,40 @@ mod tests {
         let sa = StringArray::from_strs(vec![1], &["a,b,c,d"]).unwrap();
         let result = sa.split(Some(","), Some(2));
         assert_eq!(result[0], vec!["a", "b", "c,d"]);
+    }
+
+    #[test]
+    fn string_split_whitespace_maxsplit_collapses_runs() {
+        let sa = StringArray::from_strs(vec![2], &["a  b c", "  a\tb c  "]).unwrap();
+        let result = sa.split(None, Some(1));
+        assert_eq!(result[0], vec!["a", "b c"]);
+        assert_eq!(result[1], vec!["a", "b c  "]);
+    }
+
+    #[test]
+    fn string_split_whitespace_maxsplit_zero_matches_python() {
+        let sa = StringArray::from_strs(vec![3], &["  a  b c  ", "   ", ""]).unwrap();
+        let result = sa.split(None, Some(0));
+        assert_eq!(result[0], vec!["a  b c  "]);
+        assert!(result[1].is_empty());
+        assert!(result[2].is_empty());
+    }
+
+    #[test]
+    fn string_rsplit_whitespace_maxsplit_collapses_runs() {
+        let sa = StringArray::from_strs(vec![2], &["a  b c", "  a\tb c  "]).unwrap();
+        let result = sa.rsplit(None, Some(1));
+        assert_eq!(result[0], vec!["a  b", "c"]);
+        assert_eq!(result[1], vec!["  a\tb", "c"]);
+    }
+
+    #[test]
+    fn string_rsplit_whitespace_maxsplit_zero_matches_python() {
+        let sa = StringArray::from_strs(vec![3], &["  a  b c  ", "   ", ""]).unwrap();
+        let result = sa.rsplit(None, Some(0));
+        assert_eq!(result[0], vec!["  a  b c"]);
+        assert!(result[1].is_empty());
+        assert!(result[2].is_empty());
     }
 
     #[test]
