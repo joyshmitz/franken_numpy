@@ -153,8 +153,8 @@ pub fn select_transfer_class(input: TransferSelectorInput) -> Result<TransferCla
         ));
     }
 
-    let src_unit = input.src_stride.unsigned_abs() == input.item_size;
-    let dst_unit = input.dst_stride.unsigned_abs() == input.item_size;
+    let src_unit = input.src_stride == input.item_size as isize;
+    let dst_unit = input.dst_stride == input.item_size as isize;
     if input.aligned && src_unit && dst_unit {
         if input.cast_is_lossless {
             Ok(TransferClass::Contiguous)
@@ -473,12 +473,23 @@ pub fn select_transfer_loop(ctx: TransferContext) -> Result<TransferLoopDecision
         let byte_len = ctx.element_count.checked_mul(ctx.item_size).ok_or(
             TransferError::OverlapPolicyTriggered("byte length overflow in overlap check"),
         )?;
-        if ctx.dst_stride >= 0 && ctx.src_stride >= 0 && ctx.dst_stride > ctx.src_stride {
-            OverlapAction::BackwardCopy
-        } else if byte_len > 0 {
-            OverlapAction::ForwardCopy
-        } else {
+        if byte_len == 0 {
             OverlapAction::NoCopy
+        } else {
+            let same_sign = (ctx.dst_stride >= 0 && ctx.src_stride >= 0)
+                || (ctx.dst_stride <= 0 && ctx.src_stride <= 0);
+            if same_sign {
+                if ctx.dst_stride.unsigned_abs() > ctx.src_stride.unsigned_abs() {
+                    OverlapAction::BackwardCopy
+                } else {
+                    OverlapAction::ForwardCopy
+                }
+            } else {
+                // Mixed signs - crossing overlap is unsafe for simple loops.
+                return Err(TransferError::OverlapPolicyTriggered(
+                    "crossing overlap (mixed-sign strides) is unsupported for simple loops",
+                ));
+            }
         }
     } else {
         OverlapAction::NoCopy
@@ -1751,9 +1762,8 @@ mod tests {
     }
 
     #[test]
-    fn select_transfer_class_negative_strides_contiguous() {
-        // Negative strides with aligned and lossless: unsigned_abs(-8) == 8 == item_size,
-        // so the unit-stride check passes and the result is Contiguous.
+    fn select_transfer_class_negative_strides_not_contiguous() {
+        // Negative strides are not C-contiguous.
         let input = TransferSelectorInput {
             src_stride: -8,
             dst_stride: -8,
@@ -1763,14 +1773,13 @@ mod tests {
             cast_is_lossless: true,
             same_value_cast: false,
         };
-        // unsigned_abs(-8) == 8 == item_size, so it IS unit stride.
         let class = select_transfer_class(input).unwrap();
-        assert_eq!(class, TransferClass::Contiguous);
+        assert_eq!(class, TransferClass::Strided);
     }
 
     #[test]
     fn select_transfer_class_mixed_sign_strides() {
-        // One positive, one negative stride.
+        // One positive, one negative stride. Definitely not contiguous.
         let input = TransferSelectorInput {
             src_stride: 8,
             dst_stride: -8,
@@ -1781,7 +1790,47 @@ mod tests {
             same_value_cast: false,
         };
         let class = select_transfer_class(input).unwrap();
-        assert_eq!(class, TransferClass::Contiguous);
+        assert_eq!(class, TransferClass::Strided);
+    }
+
+    #[test]
+    fn transfer_loop_overlap_negative_strides_clobber_check() {
+        // Case: dst_stride = -16, src_stride = -8, both negative.
+        // |dst_stride| > |src_stride|, so forward copy should clobber.
+        // It now correctly returns BackwardCopy.
+        let ctx = TransferContext {
+            src_stride: -8,
+            dst_stride: -16,
+            item_size: 8,
+            element_count: 4,
+            aligned: true,
+            dtype_relation: TransferDtypeRelation::Same,
+            same_value_cast: false,
+            has_where_mask: false,
+            has_overlap: true,
+            mode: RuntimeMode::Strict,
+        };
+        let decision = select_transfer_loop(ctx).expect("should resolve");
+        assert_eq!(decision.overlap_action, OverlapAction::BackwardCopy);
+    }
+
+    #[test]
+    fn transfer_loop_overlap_mixed_sign_rejected() {
+        // Mixed signs - crossing overlap is unsafe.
+        let ctx = TransferContext {
+            src_stride: 8,
+            dst_stride: -8,
+            item_size: 8,
+            element_count: 4,
+            aligned: true,
+            dtype_relation: TransferDtypeRelation::Same,
+            same_value_cast: false,
+            has_where_mask: false,
+            has_overlap: true,
+            mode: RuntimeMode::Strict,
+        };
+        let err = select_transfer_loop(ctx).expect_err("crossing overlap should be rejected");
+        assert_eq!(err.reason_code(), "transfer_overlap_policy_triggered");
     }
 
     #[test]

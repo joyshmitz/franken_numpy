@@ -1662,6 +1662,11 @@ impl UFuncArrayView {
     }
 
     pub fn to_array(&self) -> Result<UFuncArray, UFuncError> {
+        let (values, _) = self.materialize_with_indices()?;
+        UFuncArray::new(self.shape.clone(), values, self.dtype)
+    }
+
+    pub fn materialize_with_indices(&self) -> Result<(Vec<f64>, Vec<usize>), UFuncError> {
         let total = element_count(&self.shape).map_err(UFuncError::Shape)?;
         let data = self
             .buffer
@@ -1669,6 +1674,7 @@ impl UFuncArrayView {
             .map_err(|_| UFuncError::Msg("shared view: read lock poisoned".to_string()))?;
 
         let mut values = Vec::with_capacity(total);
+        let mut indices = Vec::with_capacity(total);
         let ndim = self.shape.len();
         let mut coords = vec![0usize; ndim];
         let mut current_offset = self.offset;
@@ -1680,6 +1686,7 @@ impl UFuncArrayView {
                 ));
             }
             values.push(data[current_offset as usize]);
+            indices.push(current_offset as usize);
 
             // Advance odometer
             for i in (0..ndim).rev() {
@@ -1703,8 +1710,7 @@ impl UFuncArrayView {
                 }
             }
         }
-
-        UFuncArray::new(self.shape.clone(), values, self.dtype)
+        Ok((values, indices))
     }
 
     pub fn slice_axes(&self, slices: &[AxisSlice]) -> Result<Self, UFuncError> {
@@ -2125,6 +2131,37 @@ impl UFuncArray {
             .map_err(|err| UFuncError::Msg(format!("storage cast failed: {err}")))
     }
 
+    fn cloned_integer_sidecar(&self) -> Option<IntegerSidecar> {
+        self.integer_sidecar.clone()
+    }
+
+    fn reindexed_integer_sidecar(&self, source_indices: &[usize]) -> Option<IntegerSidecar> {
+        match &self.integer_sidecar {
+            Some(IntegerSidecar::I64(values)) => Some(IntegerSidecar::I64(
+                source_indices.iter().map(|&idx| values[idx]).collect(),
+            )),
+            Some(IntegerSidecar::U64(values)) => Some(IntegerSidecar::U64(
+                source_indices.iter().map(|&idx| values[idx]).collect(),
+            )),
+            None => None,
+        }
+    }
+
+    fn synthesized_integer_sidecar(&self) -> Option<IntegerSidecar> {
+        if let Some(s) = &self.integer_sidecar {
+            return Some(s.clone());
+        }
+        match self.dtype {
+            DType::I64 => Some(IntegerSidecar::I64(
+                self.values.iter().map(|&v| v as i64).collect(),
+            )),
+            DType::U64 => Some(IntegerSidecar::U64(
+                self.values.iter().map(|&v| v as u64).collect(),
+            )),
+            _ => None,
+        }
+    }
+
     /// Build an array from f64 values by routing through typed storage casting.
     fn from_values_with_dtype(
         shape: Vec<usize>,
@@ -2389,17 +2426,10 @@ impl UFuncArray {
     ///
     /// Mimics `np.diagflat(v, k)`. Unlike `diag`, this always flattens the input first.
     pub fn diagflat(&self, k: i64) -> Self {
-        let flat = &self.values;
-        let n = flat.len();
-        let abs_k = k.unsigned_abs() as usize;
-        let size = n + abs_k;
-        let mut values = vec![0.0; size * size];
-        for (i, &val) in flat.iter().enumerate() {
-            let row = if k >= 0 { i } else { i + abs_k };
-            let col = if k >= 0 { i + abs_k } else { i };
-            values[row * size + col] = val;
+        match self.flatten().diag(k) {
+            Ok(arr) => arr,
+            Err(_) => Self::from_values_with_dtype_lossy(vec![0], vec![], self.dtype),
         }
-        Self::from_values_with_dtype_lossy(vec![size, size], values, self.dtype)
     }
 
     /// Create a 2-D identity matrix (or offset-diagonal matrix).
@@ -2424,12 +2454,35 @@ impl UFuncArray {
             let abs_k = k.unsigned_abs() as usize;
             let size = n + abs_k;
             let mut values = vec![0.0; size * size];
+            let mut sidecar_vals = match &self.integer_sidecar {
+                Some(IntegerSidecar::I64(_)) => Some(IntegerSidecar::I64(vec![0; size * size])),
+                Some(IntegerSidecar::U64(_)) => Some(IntegerSidecar::U64(vec![0; size * size])),
+                None => None,
+            };
+
             for i in 0..n {
                 let row = if k >= 0 { i } else { i + abs_k };
                 let col = if k >= 0 { i + abs_k } else { i };
-                values[row * size + col] = self.values[i];
+                let flat_idx = row * size + col;
+                values[flat_idx] = self.values[i];
+                if let Some(ref mut sidecar) = sidecar_vals {
+                    match (sidecar, &self.integer_sidecar) {
+                        (IntegerSidecar::I64(v_out), Some(IntegerSidecar::I64(v_in))) => {
+                            v_out[flat_idx] = v_in[i];
+                        }
+                        (IntegerSidecar::U64(v_out), Some(IntegerSidecar::U64(v_in))) => {
+                            v_out[flat_idx] = v_in[i];
+                        }
+                        _ => {}
+                    }
+                }
             }
-            Self::from_values_with_dtype(vec![size, size], values, self.dtype)
+            Ok(Self {
+                shape: vec![size, size],
+                values,
+                dtype: self.dtype,
+                integer_sidecar: sidecar_vals,
+            })
         } else if self.shape.len() == 2 {
             // 2-D input: extract diagonal
             let (rows, cols) = (self.shape[0], self.shape[1]);
@@ -2438,10 +2491,20 @@ impl UFuncArray {
             let diag_len = rows
                 .saturating_sub(start_row)
                 .min(cols.saturating_sub(start_col));
-            let values: Vec<f64> = (0..diag_len)
-                .map(|i| self.values[(start_row + i) * cols + start_col + i])
-                .collect();
-            Self::from_values_with_dtype(vec![diag_len], values, self.dtype)
+
+            let mut values = Vec::with_capacity(diag_len);
+            let mut source_indices = Vec::with_capacity(diag_len);
+            for i in 0..diag_len {
+                let flat = (start_row + i) * cols + start_col + i;
+                values.push(self.values[flat]);
+                source_indices.push(flat);
+            }
+            Ok(Self {
+                shape: vec![diag_len],
+                values,
+                dtype: self.dtype,
+                integer_sidecar: self.reindexed_integer_sidecar(&source_indices),
+            })
         } else {
             Err(UFuncError::Msg(
                 "diag requires 1-D or 2-D input".to_string(),
@@ -2456,14 +2519,34 @@ impl UFuncArray {
         }
         let (rows, cols) = (self.shape[0], self.shape[1]);
         let mut values = vec![0.0; rows * cols];
+        let mut sidecar_vals = match &self.integer_sidecar {
+            Some(IntegerSidecar::I64(v)) => Some(IntegerSidecar::I64(v.clone())),
+            Some(IntegerSidecar::U64(v)) => Some(IntegerSidecar::U64(v.clone())),
+            None => None,
+        };
+
         for r in 0..rows {
             for c in 0..cols {
+                let idx = r * cols + c;
                 if c as i64 >= (r as i64).saturating_add(k) {
-                    values[r * cols + c] = self.values[r * cols + c];
+                    values[idx] = self.values[idx];
+                } else {
+                    values[idx] = 0.0;
+                    if let Some(ref mut sidecar) = sidecar_vals {
+                        match sidecar {
+                            IntegerSidecar::I64(v) => v[idx] = 0,
+                            IntegerSidecar::U64(v) => v[idx] = 0,
+                        }
+                    }
                 }
             }
         }
-        Self::from_values_with_dtype(self.shape.clone(), values, self.dtype)
+        Ok(Self {
+            shape: self.shape.clone(),
+            values,
+            dtype: self.dtype,
+            integer_sidecar: sidecar_vals,
+        })
     }
 
     /// Extract lower triangle of a matrix.
@@ -2473,14 +2556,34 @@ impl UFuncArray {
         }
         let (rows, cols) = (self.shape[0], self.shape[1]);
         let mut values = vec![0.0; rows * cols];
+        let mut sidecar_vals = match &self.integer_sidecar {
+            Some(IntegerSidecar::I64(v)) => Some(IntegerSidecar::I64(v.clone())),
+            Some(IntegerSidecar::U64(v)) => Some(IntegerSidecar::U64(v.clone())),
+            None => None,
+        };
+
         for r in 0..rows {
             for c in 0..cols {
+                let idx = r * cols + c;
                 if c as i64 <= (r as i64).saturating_add(k) {
-                    values[r * cols + c] = self.values[r * cols + c];
+                    values[idx] = self.values[idx];
+                } else {
+                    values[idx] = 0.0;
+                    if let Some(ref mut sidecar) = sidecar_vals {
+                        match sidecar {
+                            IntegerSidecar::I64(v) => v[idx] = 0,
+                            IntegerSidecar::U64(v) => v[idx] = 0,
+                        }
+                    }
                 }
             }
         }
-        Self::from_values_with_dtype(self.shape.clone(), values, self.dtype)
+        Ok(Self {
+            shape: self.shape.clone(),
+            values,
+            dtype: self.dtype,
+            integer_sidecar: sidecar_vals,
+        })
     }
 
     #[must_use]
@@ -3639,7 +3742,7 @@ impl UFuncArray {
             shape: resolved,
             values: self.values.clone(),
             dtype: self.dtype,
-            integer_sidecar: None,
+            integer_sidecar: self.cloned_integer_sidecar(),
         })
     }
 
@@ -3677,6 +3780,7 @@ impl UFuncArray {
         let new_shape: Vec<usize> = perm.iter().map(|&a| self.shape[a]).collect();
         let total = self.values.len();
         let mut new_values = vec![0.0f64; total];
+        let mut source_indices = Vec::with_capacity(total);
 
         // Compute C-order strides (in elements) for old and new shapes
         let old_strides = c_strides_elems(&self.shape);
@@ -3693,13 +3797,14 @@ impl UFuncArray {
                 flat_old += idx * old_strides[perm[new_axis]];
             }
             *out_value = self.values[flat_old];
+            source_indices.push(flat_old);
         }
 
         Ok(Self {
             shape: new_shape,
             values: new_values,
             dtype: self.dtype,
-            integer_sidecar: None,
+            integer_sidecar: self.reindexed_integer_sidecar(&source_indices),
         })
     }
 
@@ -3710,7 +3815,7 @@ impl UFuncArray {
             shape: vec![self.values.len()],
             values: self.values.clone(),
             dtype: self.dtype,
-            integer_sidecar: None,
+            integer_sidecar: self.cloned_integer_sidecar(),
         }
     }
 
@@ -3731,7 +3836,7 @@ impl UFuncArray {
                     shape: new_shape,
                     values: self.values.clone(),
                     dtype: self.dtype,
-                    integer_sidecar: None,
+                    integer_sidecar: self.cloned_integer_sidecar(),
                 })
             }
             Some(axis) => {
@@ -3748,7 +3853,7 @@ impl UFuncArray {
                     shape: new_shape,
                     values: self.values.clone(),
                     dtype: self.dtype,
-                    integer_sidecar: None,
+                    integer_sidecar: self.cloned_integer_sidecar(),
                 })
             }
         }
@@ -3776,7 +3881,7 @@ impl UFuncArray {
             shape: new_shape,
             values: self.values.clone(),
             dtype: self.dtype,
-            integer_sidecar: None,
+            integer_sidecar: self.cloned_integer_sidecar(),
         })
     }
 
@@ -3845,7 +3950,7 @@ impl UFuncArray {
                 shape: vec![1],
                 values: self.values.clone(),
                 dtype: self.dtype,
-                integer_sidecar: None,
+                integer_sidecar: self.cloned_integer_sidecar(),
             }
         } else {
             self.clone()
@@ -3861,13 +3966,13 @@ impl UFuncArray {
                 shape: vec![1, 1],
                 values: self.values.clone(),
                 dtype: self.dtype,
-                integer_sidecar: None,
+                integer_sidecar: self.cloned_integer_sidecar(),
             },
             1 => Self {
                 shape: vec![1, self.shape[0]],
                 values: self.values.clone(),
                 dtype: self.dtype,
-                integer_sidecar: None,
+                integer_sidecar: self.cloned_integer_sidecar(),
             },
             _ => self.clone(),
         }
@@ -3882,13 +3987,13 @@ impl UFuncArray {
                 shape: vec![1, 1, 1],
                 values: self.values.clone(),
                 dtype: self.dtype,
-                integer_sidecar: None,
+                integer_sidecar: self.cloned_integer_sidecar(),
             },
             1 => Self {
                 shape: vec![1, self.shape[0], 1],
                 values: self.values.clone(),
                 dtype: self.dtype,
-                integer_sidecar: None,
+                integer_sidecar: self.cloned_integer_sidecar(),
             },
             2 => {
                 let mut shape = self.shape.clone();
@@ -3897,7 +4002,7 @@ impl UFuncArray {
                     shape,
                     values: self.values.clone(),
                     dtype: self.dtype,
-                    integer_sidecar: None,
+                    integer_sidecar: self.cloned_integer_sidecar(),
                 }
             }
             _ => self.clone(),
@@ -3935,19 +4040,19 @@ impl UFuncArray {
                     }
                 }
                 let mask: std::collections::HashSet<usize> = indices.iter().copied().collect();
-                let values: Vec<f64> = self
-                    .values
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, _)| !mask.contains(i))
-                    .map(|(_, &v)| v)
-                    .collect();
-                let n = values.len();
+                let mut values = Vec::with_capacity(n.saturating_sub(mask.len()));
+                let mut source_indices = Vec::with_capacity(values.capacity());
+                for (i, &v) in self.values.iter().enumerate() {
+                    if !mask.contains(&i) {
+                        values.push(v);
+                        source_indices.push(i);
+                    }
+                }
                 Ok(Self {
-                    shape: vec![n],
+                    shape: vec![values.len()],
                     values,
                     dtype: self.dtype,
-                    integer_sidecar: None,
+                    integer_sidecar: self.reindexed_integer_sidecar(&source_indices),
                 })
             }
             Some(ax) => {
@@ -3969,18 +4074,20 @@ impl UFuncArray {
                 new_shape[ax] = new_axis_len;
                 let new_total = element_count(&new_shape).map_err(UFuncError::Shape)?;
                 let mut values = Vec::with_capacity(new_total);
+                let mut source_indices = Vec::with_capacity(new_total);
 
                 for flat in 0..total {
                     let coord_ax = (flat / strides[ax]) % axis_len;
                     if !mask.contains(&coord_ax) {
                         values.push(self.values[flat]);
+                        source_indices.push(flat);
                     }
                 }
                 Ok(Self {
                     shape: new_shape,
                     values,
                     dtype: self.dtype,
-                    integer_sidecar: None,
+                    integer_sidecar: self.reindexed_integer_sidecar(&source_indices),
                 })
             }
         }
@@ -4010,16 +4117,38 @@ impl UFuncArray {
                         values.len()
                     )));
                 }
+                let mut sidecar_vals = self.synthesized_integer_sidecar();
+                let insert_sidecar = insert_values.synthesized_integer_sidecar();
+
                 let idx = index;
                 for (i, &v) in insert_values.values.iter().enumerate() {
                     values.insert(idx + i, v);
+                    if let Some(ref mut s) = sidecar_vals {
+                        if let Some(ref ins_s) = insert_sidecar {
+                            match (s, ins_s) {
+                                (IntegerSidecar::I64(v_out), IntegerSidecar::I64(v_in)) => {
+                                    v_out.insert(idx + i, v_in[i]);
+                                }
+                                (IntegerSidecar::U64(v_out), IntegerSidecar::U64(v_in)) => {
+                                    v_out.insert(idx + i, v_in[i]);
+                                }
+                                _ => {}
+                            }
+                        } else {
+                            // Synthesize inserted value in sidecar
+                            match s {
+                                IntegerSidecar::I64(v_out) => v_out.insert(idx + i, v as i64),
+                                IntegerSidecar::U64(v_out) => v_out.insert(idx + i, v as u64),
+                            }
+                        }
+                    }
                 }
                 let n = values.len();
                 Ok(Self {
                     shape: vec![n],
                     values,
                     dtype: self.dtype,
-                    integer_sidecar: None,
+                    integer_sidecar: sidecar_vals,
                 })
             }
             Some(ax) => {
@@ -4037,6 +4166,12 @@ impl UFuncArray {
                 let mut new_shape = self.shape.clone();
                 new_shape[ax] = axis_len + 1;
                 let mut values = Vec::with_capacity(outer * (axis_len + 1) * inner);
+                let mut sidecar_vals = match &self.integer_sidecar {
+                    Some(IntegerSidecar::I64(_)) => Some(IntegerSidecar::I64(Vec::with_capacity(values.capacity()))),
+                    Some(IntegerSidecar::U64(_)) => Some(IntegerSidecar::U64(Vec::with_capacity(values.capacity()))),
+                    None => None,
+                };
+                let insert_sidecar = insert_values.synthesized_integer_sidecar();
 
                 for o in 0..outer {
                     for k in 0..=axis_len {
@@ -4045,12 +4180,44 @@ impl UFuncArray {
                             for i in 0..inner {
                                 let insert_idx = (o * inner + i)
                                     .min(insert_values.values.len().saturating_sub(1));
-                                values.push(insert_values.values[insert_idx]);
+                                let v = insert_values.values[insert_idx];
+                                values.push(v);
+                                if let Some(ref mut s) = sidecar_vals {
+                                    if let Some(ref ins_s) = insert_sidecar {
+                                        match (s, ins_s) {
+                                            (IntegerSidecar::I64(v_out), IntegerSidecar::I64(v_in)) => {
+                                                v_out.push(v_in[insert_idx]);
+                                            }
+                                            (IntegerSidecar::U64(v_out), IntegerSidecar::U64(v_in)) => {
+                                                v_out.push(v_in[insert_idx]);
+                                            }
+                                            _ => {}
+                                        }
+                                    } else {
+                                        match s {
+                                            IntegerSidecar::I64(v_out) => v_out.push(v as i64),
+                                            IntegerSidecar::U64(v_out) => v_out.push(v as u64),
+                                        }
+                                    }
+                                }
                             }
                         }
                         if k < axis_len {
                             let src_base = o * axis_len * inner + k * inner;
                             values.extend_from_slice(&self.values[src_base..src_base + inner]);
+                            if let Some(ref mut s) = sidecar_vals {
+                                if let Some(ref self_s) = self.integer_sidecar {
+                                    match (s, self_s) {
+                                        (IntegerSidecar::I64(v_out), IntegerSidecar::I64(v_in)) => {
+                                            v_out.extend_from_slice(&v_in[src_base..src_base + inner]);
+                                        }
+                                        (IntegerSidecar::U64(v_out), IntegerSidecar::U64(v_in)) => {
+                                            v_out.extend_from_slice(&v_in[src_base..src_base + inner]);
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -4058,7 +4225,7 @@ impl UFuncArray {
                     shape: new_shape,
                     values,
                     dtype: self.dtype,
-                    integer_sidecar: None,
+                    integer_sidecar: sidecar_vals,
                 })
             }
         }
@@ -4073,11 +4240,30 @@ impl UFuncArray {
                 let mut values = self.values.clone();
                 values.extend_from_slice(&other.values);
                 let n = values.len();
+
+                let mut out_sidecar = None;
+                let any_has_sidecar = self.has_integer_sidecar() || other.has_integer_sidecar();
+                if any_has_sidecar && (self.dtype == DType::I64 || self.dtype == DType::U64) {
+                    let s1 = self.synthesized_integer_sidecar();
+                    let s2 = other.synthesized_integer_sidecar();
+                    match (s1, s2) {
+                        (Some(IntegerSidecar::I64(mut v1)), Some(IntegerSidecar::I64(v2))) => {
+                            v1.extend_from_slice(&v2);
+                            out_sidecar = Some(IntegerSidecar::I64(v1));
+                        }
+                        (Some(IntegerSidecar::U64(mut v1)), Some(IntegerSidecar::U64(v2))) => {
+                            v1.extend_from_slice(&v2);
+                            out_sidecar = Some(IntegerSidecar::U64(v1));
+                        }
+                        _ => {}
+                    }
+                }
+
                 Ok(Self {
                     shape: vec![n],
                     values,
                     dtype: self.dtype,
-                    integer_sidecar: None,
+                    integer_sidecar: out_sidecar,
                 })
             }
             Some(ax) => Self::concatenate(&[self, other], ax),
@@ -4719,11 +4905,78 @@ impl UFuncArray {
             .skip(1)
             .fold(first.dtype, |acc, arr| promote(acc, arr.dtype));
 
+        let any_has_sidecar = arrays.iter().any(|a| a.has_integer_sidecar());
+        let mut out_sidecar = None;
+
+        if any_has_sidecar && (out_dtype == DType::I64 || out_dtype == DType::U64) {
+            match out_dtype {
+                DType::I64 => {
+                    let mut s_vals = vec![0i64; out_count];
+                    for outer_idx in 0..outer {
+                        let mut write_offset = outer_idx * concat_dim * out_inner;
+                        for &arr in arrays {
+                            let arr_axis_len = arr.shape[axis];
+                            let read_base = outer_idx * arr_axis_len * inner;
+                            let sidecar = arr.synthesized_integer_sidecar();
+                            if let Some(IntegerSidecar::I64(v)) = sidecar {
+                                for k in 0..arr_axis_len {
+                                    for i in 0..inner {
+                                        s_vals[write_offset + k * out_inner + i] =
+                                            v[read_base + k * inner + i];
+                                    }
+                                }
+                            } else {
+                                // Fallback: should not happen if out_dtype is I64 and any has sidecar
+                                // but we might have mixed U64/I64 or just small integers.
+                                for k in 0..arr_axis_len {
+                                    for i in 0..inner {
+                                        s_vals[write_offset + k * out_inner + i] =
+                                            arr.values[read_base + k * inner + i] as i64;
+                                    }
+                                }
+                            }
+                            write_offset += arr_axis_len * out_inner;
+                        }
+                    }
+                    out_sidecar = Some(IntegerSidecar::I64(s_vals));
+                }
+                DType::U64 => {
+                    let mut s_vals = vec![0u64; out_count];
+                    for outer_idx in 0..outer {
+                        let mut write_offset = outer_idx * concat_dim * out_inner;
+                        for &arr in arrays {
+                            let arr_axis_len = arr.shape[axis];
+                            let read_base = outer_idx * arr_axis_len * inner;
+                            let sidecar = arr.synthesized_integer_sidecar();
+                            if let Some(IntegerSidecar::U64(v)) = sidecar {
+                                for k in 0..arr_axis_len {
+                                    for i in 0..inner {
+                                        s_vals[write_offset + k * out_inner + i] =
+                                            v[read_base + k * inner + i];
+                                    }
+                                }
+                            } else {
+                                for k in 0..arr_axis_len {
+                                    for i in 0..inner {
+                                        s_vals[write_offset + k * out_inner + i] =
+                                            arr.values[read_base + k * inner + i] as u64;
+                                    }
+                                }
+                            }
+                            write_offset += arr_axis_len * out_inner;
+                        }
+                    }
+                    out_sidecar = Some(IntegerSidecar::U64(s_vals));
+                }
+                _ => {}
+            }
+        }
+
         Ok(Self {
             shape: out_shape,
             values: out_values,
             dtype: out_dtype,
-            integer_sidecar: None,
+            integer_sidecar: out_sidecar,
         })
     }
 
@@ -4791,12 +5044,14 @@ impl UFuncArray {
             sub_shape[axis] = chunk;
             let count = element_count(&sub_shape).map_err(UFuncError::Shape)?;
             let mut values = vec![0.0f64; count];
+            let mut source_indices = Vec::with_capacity(count);
             for o in 0..outer {
                 for k in 0..chunk {
                     let src_k = s * chunk + k;
                     for i in 0..inner {
-                        values[o * chunk * inner + k * inner + i] =
-                            self.values[o * axis_len * inner + src_k * inner + i];
+                        let src_idx = o * axis_len * inner + src_k * inner + i;
+                        values[o * chunk * inner + k * inner + i] = self.values[src_idx];
+                        source_indices.push(src_idx);
                     }
                 }
             }
@@ -4804,7 +5059,7 @@ impl UFuncArray {
                 shape: sub_shape,
                 values,
                 dtype: self.dtype,
-                integer_sidecar: None,
+                integer_sidecar: self.reindexed_integer_sidecar(&source_indices),
             });
         }
         Ok(result)
@@ -4846,6 +5101,7 @@ impl UFuncArray {
         let src_strides = c_strides_elems(&padded_shape);
         let out_strides = c_strides_elems(&out_shape);
         let mut out_values = vec![0.0f64; out_count];
+        let mut source_indices = Vec::with_capacity(out_count);
 
         for (flat, out_val) in out_values.iter_mut().enumerate() {
             let mut src_flat = 0;
@@ -4857,12 +5113,13 @@ impl UFuncArray {
                 src_flat += src_idx * src_strides[d];
             }
             *out_val = src_values[src_flat];
+            source_indices.push(src_flat);
         }
         Ok(Self {
             shape: out_shape,
             values: out_values,
             dtype: self.dtype,
-            integer_sidecar: None,
+            integer_sidecar: self.reindexed_integer_sidecar(&source_indices),
         })
     }
 
@@ -4897,11 +5154,17 @@ impl UFuncArray {
                     .flat_map(|&v| std::iter::repeat_n(v, repeats))
                     .collect();
                 let n = values.len();
+                let mut source_indices = Vec::with_capacity(n);
+                for i in 0..self.values.len() {
+                    for _ in 0..repeats {
+                        source_indices.push(i);
+                    }
+                }
                 Ok(Self {
                     shape: vec![n],
                     values,
                     dtype: self.dtype,
-                    integer_sidecar: None,
+                    integer_sidecar: self.reindexed_integer_sidecar(&source_indices),
                 })
             }
             Some(ax) => {
@@ -4915,13 +5178,16 @@ impl UFuncArray {
                 out_shape[ax] = new_axis_len;
                 let out_count = element_count(&out_shape).map_err(UFuncError::Shape)?;
                 let mut values = vec![0.0f64; out_count];
+                let mut source_indices = vec![0usize; out_count];
 
                 for o in 0..outer {
                     for k in 0..axis_len {
                         for r in 0..repeats {
                             for i in 0..inner {
-                                values[o * new_axis_len * inner + (k * repeats + r) * inner + i] =
-                                    self.values[o * axis_len * inner + k * inner + i];
+                                let src_idx = o * axis_len * inner + k * inner + i;
+                                let dst_idx = o * new_axis_len * inner + (k * repeats + r) * inner + i;
+                                values[dst_idx] = self.values[src_idx];
+                                source_indices[dst_idx] = src_idx;
                             }
                         }
                     }
@@ -4930,7 +5196,7 @@ impl UFuncArray {
                     shape: out_shape,
                     values,
                     dtype: self.dtype,
-                    integer_sidecar: None,
+                    integer_sidecar: self.reindexed_integer_sidecar(&source_indices),
                 })
             }
         }
@@ -4946,14 +5212,17 @@ impl UFuncArray {
                 }
                 let s = ((shift % n as isize) + n as isize) as usize % n;
                 let mut values = vec![0.0f64; n];
+                let mut source_indices = vec![0usize; n];
                 for (i, &v) in self.values.iter().enumerate() {
-                    values[(i + s) % n] = v;
+                    let dst = (i + s) % n;
+                    values[dst] = v;
+                    source_indices[dst] = i;
                 }
                 Ok(Self {
                     shape: self.shape.clone(),
                     values,
                     dtype: self.dtype,
-                    integer_sidecar: None,
+                    integer_sidecar: self.reindexed_integer_sidecar(&source_indices),
                 })
             }
             Some(ax) => {
@@ -4965,13 +5234,16 @@ impl UFuncArray {
                     return Ok(self.clone());
                 }
                 let s = ((shift % axis_len as isize) + axis_len as isize) as usize % axis_len;
-                let mut values = self.values.clone();
+                let mut values = vec![0.0f64; self.values.len()];
+                let mut source_indices = vec![0usize; self.values.len()];
                 for o in 0..outer {
                     for k in 0..axis_len {
                         let dst_k = (k + s) % axis_len;
                         for i in 0..inner {
-                            values[o * axis_len * inner + dst_k * inner + i] =
-                                self.values[o * axis_len * inner + k * inner + i];
+                            let src_idx = o * axis_len * inner + k * inner + i;
+                            let dst_idx = o * axis_len * inner + dst_k * inner + i;
+                            values[dst_idx] = self.values[src_idx];
+                            source_indices[dst_idx] = src_idx;
                         }
                     }
                 }
@@ -4979,7 +5251,7 @@ impl UFuncArray {
                     shape: self.shape.clone(),
                     values,
                     dtype: self.dtype,
-                    integer_sidecar: None,
+                    integer_sidecar: self.reindexed_integer_sidecar(&source_indices),
                 })
             }
         }
@@ -4991,11 +5263,18 @@ impl UFuncArray {
             None => {
                 let mut values = self.values.clone();
                 values.reverse();
+                let mut sidecar_vals = self.cloned_integer_sidecar();
+                if let Some(ref mut sidecar) = sidecar_vals {
+                    match sidecar {
+                        IntegerSidecar::I64(v) => v.reverse(),
+                        IntegerSidecar::U64(v) => v.reverse(),
+                    }
+                }
                 Ok(Self {
                     shape: self.shape.clone(),
                     values,
                     dtype: self.dtype,
-                    integer_sidecar: None,
+                    integer_sidecar: sidecar_vals,
                 })
             }
             Some(ax) => {
@@ -5004,6 +5283,7 @@ impl UFuncArray {
                 let outer: usize = self.shape[..ax].iter().copied().product();
                 let axis_len = self.shape[ax];
                 let mut values = self.values.clone();
+                let mut sidecar_vals = self.cloned_integer_sidecar();
                 for o in 0..outer {
                     for k in 0..axis_len / 2 {
                         let rev_k = axis_len - 1 - k;
@@ -5011,6 +5291,12 @@ impl UFuncArray {
                             let a = o * axis_len * inner + k * inner + i;
                             let b = o * axis_len * inner + rev_k * inner + i;
                             values.swap(a, b);
+                            if let Some(ref mut sidecar) = sidecar_vals {
+                                match sidecar {
+                                    IntegerSidecar::I64(v) => v.swap(a, b),
+                                    IntegerSidecar::U64(v) => v.swap(a, b),
+                                }
+                            }
                         }
                     }
                 }
@@ -5018,7 +5304,7 @@ impl UFuncArray {
                     shape: self.shape.clone(),
                     values,
                     dtype: self.dtype,
-                    integer_sidecar: None,
+                    integer_sidecar: sidecar_vals,
                 })
             }
         }
@@ -5085,110 +5371,217 @@ impl UFuncArray {
     pub fn dot(&self, rhs: &Self) -> Result<Self, UFuncError> {
         let ld = self.shape.len();
         let rd = rhs.shape.len();
-        match (ld, rd) {
-            (1, 1) => {
-                // Inner product
-                if self.shape[0] != rhs.shape[0] {
-                    return Err(UFuncError::Msg(format!(
-                        "dot: shapes ({},) and ({},) not aligned",
-                        self.shape[0], rhs.shape[0]
-                    )));
-                }
-                let sum: f64 = self
-                    .values
-                    .iter()
-                    .zip(&rhs.values)
-                    .map(|(a, b)| a * b)
-                    .sum();
-                let dtype = promote(self.dtype, rhs.dtype);
-                Ok(Self::scalar(sum, dtype))
-            }
-            (2, 2) => self.matmul(rhs),
-            (1, 2) => {
-                // Treat 1-D as (1, K), result is (N,)
-                let k = self.shape[0];
-                if k != rhs.shape[0] {
-                    return Err(UFuncError::Msg(format!(
-                        "dot: shapes ({k},) and {:?} not aligned: {k} != {}",
-                        rhs.shape, rhs.shape[0]
-                    )));
-                }
-                let n = rhs.shape[1];
-                let mut values = vec![0.0f64; n];
-                for (j, val) in values.iter_mut().enumerate() {
-                    let mut acc = 0.0;
-                    for i in 0..k {
-                        acc += self.values[i] * rhs.values[i * n + j];
-                    }
-                    *val = acc;
-                }
-                let dtype = promote(self.dtype, rhs.dtype);
-                Ok(Self {
-                    shape: vec![n],
-                    values,
-                    dtype,
-                    integer_sidecar: None,
-                })
-            }
-            (2, 1) => {
-                // Treat 1-D as (K, 1), result is (M,)
-                let (m, k) = (self.shape[0], self.shape[1]);
-                if k != rhs.shape[0] {
-                    return Err(UFuncError::Msg(format!(
-                        "dot: shapes {:?} and ({},) not aligned: {k} != {}",
-                        self.shape, rhs.shape[0], rhs.shape[0]
-                    )));
-                }
-                let mut values = vec![0.0f64; m];
-                for (i, val) in values.iter_mut().enumerate() {
-                    let mut acc = 0.0;
-                    for j in 0..k {
-                        acc += self.values[i * k + j] * rhs.values[j];
-                    }
-                    *val = acc;
-                }
-                let dtype = promote(self.dtype, rhs.dtype);
-                Ok(Self {
-                    shape: vec![m],
-                    values,
-                    dtype,
-                    integer_sidecar: None,
-                })
-            }
-            _ => Err(UFuncError::Msg(format!(
-                "dot: unsupported shapes {:?} and {:?}",
-                self.shape, rhs.shape
-            ))),
+
+        if ld == 0 || rd == 0 {
+            // Scalar multiplication
+            return self.elementwise_binary(rhs, BinaryOp::Mul);
         }
+
+        if ld == 1 && rd == 1 {
+            // Inner product
+            if self.shape[0] != rhs.shape[0] {
+                return Err(UFuncError::Msg(format!(
+                    "dot: shapes ({},) and ({},) not aligned",
+                    self.shape[0], rhs.shape[0]
+                )));
+            }
+            let sum: f64 = self
+                .values
+                .iter()
+                .zip(&rhs.values)
+                .map(|(a, b)| a * b)
+                .sum();
+            let dtype = promote(self.dtype, rhs.dtype);
+            return Ok(Self::scalar(sum, dtype));
+        }
+
+        if rd == 1 {
+            // ND @ 1D: sum product over last axis of ND and 1D
+            let k = self.shape[ld - 1];
+            if k != rhs.shape[0] {
+                return Err(UFuncError::Msg(format!(
+                    "dot: shapes {:?} and ({},) not aligned: {k} != {}",
+                    self.shape, rhs.shape[0], rhs.shape[0]
+                )));
+            }
+            let out_shape = self.shape[..ld - 1].to_vec();
+            let out_count = element_count(&out_shape).map_err(UFuncError::Shape)?;
+            let mut out_values = vec![0.0f64; out_count];
+
+            for i in 0..out_count {
+                let mut acc = 0.0;
+                for p in 0..k {
+                    acc += self.values[i * k + p] * rhs.values[p];
+                }
+                out_values[i] = acc;
+            }
+            let dtype = promote(self.dtype, rhs.dtype);
+            return Ok(Self {
+                shape: out_shape,
+                values: out_values,
+                dtype,
+                integer_sidecar: None,
+            });
+        }
+
+        // General ND @ MD (M >= 2)
+        // sum(a[i,j,:] * b[k,:,m])
+        let k = self.shape[ld - 1];
+        if k != rhs.shape[rd - 2] {
+            return Err(UFuncError::Msg(format!(
+                "dot: shapes {:?} and {:?} not aligned: {k} != {}",
+                self.shape,
+                rhs.shape,
+                rhs.shape[rd - 2]
+            )));
+        }
+
+        let a_batch_shape = &self.shape[..ld - 1];
+        let b_prefix_shape = &rhs.shape[..rd - 2];
+        let b_last_dim = rhs.shape[rd - 1];
+
+        let mut out_shape = Vec::with_capacity(ld + rd - 2);
+        out_shape.extend_from_slice(a_batch_shape);
+        out_shape.extend_from_slice(b_prefix_shape);
+        out_shape.push(b_last_dim);
+
+        let out_count = element_count(&out_shape).map_err(UFuncError::Shape)?;
+        let mut out_values = vec![0.0f64; out_count];
+
+        let a_batch_count: usize = a_batch_shape.iter().product();
+        let b_prefix_count: usize = b_prefix_shape.iter().product();
+        let b_matrix_size = k * b_last_dim;
+
+        for i in 0..a_batch_count {
+            for j in 0..b_prefix_count {
+                for l in 0..b_last_dim {
+                    let mut acc = 0.0;
+                    for p in 0..k {
+                        // a[i, p] * b[j, p, l]
+                        acc += self.values[i * k + p] * rhs.values[j * b_matrix_size + p * b_last_dim + l];
+                    }
+                    out_values[(i * b_prefix_count + j) * b_last_dim + l] = acc;
+                }
+            }
+        }
+
+        let dtype = promote(self.dtype, rhs.dtype);
+        Ok(Self {
+            shape: out_shape,
+            values: out_values,
+            dtype,
+            integer_sidecar: None,
+        })
     }
 
     /// Matrix multiplication (2-D x 2-D).
     pub fn matmul(&self, rhs: &Self) -> Result<Self, UFuncError> {
-        if self.shape.len() != 2 || rhs.shape.len() != 2 {
-            return Err(UFuncError::Msg("matmul requires 2-D arrays".to_string()));
+        let mut a_shape = self.shape.clone();
+        let mut b_shape = rhs.shape.clone();
+        let a_is_1d = a_shape.len() == 1;
+        let b_is_1d = b_shape.len() == 1;
+
+        if a_is_1d {
+            a_shape.insert(0, 1);
         }
-        let (m, k1) = (self.shape[0], self.shape[1]);
-        let (k2, n) = (rhs.shape[0], rhs.shape[1]);
+        if b_is_1d {
+            b_shape.push(1);
+        }
+
+        if a_shape.len() < 2 || b_shape.len() < 2 {
+            return Err(UFuncError::Msg(
+                "matmul: internal error in promotion".to_string(),
+            ));
+        }
+
+        let adim = a_shape.len();
+        let bdim = b_shape.len();
+        let (m, k1) = (a_shape[adim - 2], a_shape[adim - 1]);
+        let (k2, n) = (b_shape[bdim - 2], b_shape[bdim - 1]);
+
         if k1 != k2 {
             return Err(UFuncError::Msg(format!(
-                "matmul: shapes ({m},{k1}) and ({k2},{n}) not aligned: {k1} != {k2}"
+                "matmul: shapes {:?} and {:?} not aligned: {k1} != {k2}",
+                self.shape, rhs.shape
             )));
         }
         let k = k1;
-        let mut values = vec![0.0f64; m * n];
-        for i in 0..m {
-            for j in 0..n {
-                let mut acc = 0.0;
-                for p in 0..k {
-                    acc += self.values[i * k + p] * rhs.values[p * n + j];
+
+        // Batch dimensions
+        let a_batch = &a_shape[..adim - 2];
+        let b_batch = &b_shape[..bdim - 2];
+        let out_batch = broadcast_shape(a_batch, b_batch).map_err(UFuncError::Shape)?;
+        let mut out_shape = out_batch.clone();
+        out_shape.push(m);
+        out_shape.push(n);
+
+        let out_count = element_count(&out_shape).map_err(UFuncError::Shape)?;
+        let mut out_values = vec![0.0f64; out_count];
+
+        let a_batch_strides = contiguous_strides_elems(a_batch);
+        let b_batch_strides = contiguous_strides_elems(b_batch);
+        let a_steps = aligned_broadcast_axis_steps(out_batch.len(), a_batch, &a_batch_strides);
+        let b_steps = aligned_broadcast_axis_steps(out_batch.len(), b_batch, &b_batch_strides);
+
+        let a_matrix_size = m * k;
+        let b_matrix_size = k * n;
+        let out_matrix_size = m * n;
+
+        let mut out_batch_multi = vec![0usize; out_batch.len()];
+        let mut a_batch_flat = 0usize;
+        let mut b_batch_flat = 0usize;
+
+        let batch_count: usize = out_batch.iter().product();
+
+        for b_idx in 0..batch_count {
+            let a_ptr = a_batch_flat * a_matrix_size;
+            let b_ptr = b_batch_flat * b_matrix_size;
+            let out_ptr = b_idx * out_matrix_size;
+
+            for i in 0..m {
+                for j in 0..n {
+                    let mut acc = 0.0;
+                    for p in 0..k {
+                        acc += self.values[a_ptr + i * k + p] * rhs.values[b_ptr + p * n + j];
+                    }
+                    out_values[out_ptr + i * n + j] = acc;
                 }
-                values[i * n + j] = acc;
+            }
+
+            // Increment batch odometer
+            if b_idx + 1 < batch_count {
+                for axis in (0..out_batch.len()).rev() {
+                    out_batch_multi[axis] += 1;
+                    a_batch_flat += a_steps[axis];
+                    b_batch_flat += b_steps[axis];
+
+                    if out_batch_multi[axis] < out_batch[axis] {
+                        break;
+                    }
+
+                    out_batch_multi[axis] = 0;
+                    a_batch_flat -= a_steps[axis] * out_batch[axis];
+                    b_batch_flat -= b_steps[axis] * out_batch[axis];
+                }
             }
         }
+
+        let mut final_shape = out_shape;
+        if a_is_1d && b_is_1d {
+            // (K,) @ (K,) -> () scalar
+            final_shape = out_batch; // which is empty if both were 1D
+        } else if a_is_1d {
+            // (K,) @ (K, N) -> (N,)
+            final_shape.remove(final_shape.len() - 2);
+        } else if b_is_1d {
+            // (M, K) @ (K,) -> (M,)
+            final_shape.pop();
+        }
+
         let dtype = promote(self.dtype, rhs.dtype);
         Ok(Self {
-            shape: vec![m, n],
-            values,
+            shape: final_shape,
+            values: out_values,
             dtype,
             integer_sidecar: None,
         })
@@ -5238,31 +5631,79 @@ impl UFuncArray {
 
     /// Kronecker product of two arrays (np.kron).
     pub fn kron(&self, other: &Self) -> Result<Self, UFuncError> {
-        if self.shape.len() != 2 || other.shape.len() != 2 {
-            return Err(UFuncError::Msg(
-                "kron: only 2-D arrays supported".to_string(),
-            ));
+        let ndim = self.shape.len().max(other.shape.len());
+        let mut a_shape = vec![1usize; ndim];
+        let mut b_shape = vec![1usize; ndim];
+
+        let a_off = ndim - self.shape.len();
+        for (i, &d) in self.shape.iter().enumerate() {
+            a_shape[i + a_off] = d;
         }
-        let (m, n) = (self.shape[0], self.shape[1]);
-        let (p, q) = (other.shape[0], other.shape[1]);
-        let out_rows = m * p;
-        let out_cols = n * q;
-        let mut values = vec![0.0; out_rows * out_cols];
-        for i in 0..m {
-            for j in 0..n {
-                let a_val = self.values[i * n + j];
-                for k in 0..p {
-                    for l in 0..q {
-                        values[(i * p + k) * out_cols + (j * q + l)] =
-                            a_val * other.values[k * q + l];
+        let b_off = ndim - other.shape.len();
+        for (i, &d) in other.shape.iter().enumerate() {
+            b_shape[i + b_off] = d;
+        }
+
+        let mut out_shape = vec![0usize; ndim];
+        for i in 0..ndim {
+            out_shape[i] = a_shape[i] * b_shape[i];
+        }
+
+        let out_count = element_count(&out_shape).map_err(UFuncError::Shape)?;
+        let mut out_values = vec![0.0f64; out_count];
+
+        if out_count == 0 {
+            return Ok(Self {
+                shape: out_shape,
+                values: out_values,
+                dtype: promote(self.dtype, other.dtype),
+                integer_sidecar: None,
+            });
+        }
+
+        let out_strides = contiguous_strides_elems(&out_shape);
+
+        let a_count: usize = a_shape.iter().product();
+        let b_count: usize = b_shape.iter().product();
+
+        let mut a_multi = vec![0usize; ndim];
+        for a_idx in 0..a_count {
+            let a_val = self.values[a_idx];
+            let mut b_multi = vec![0usize; ndim];
+            for b_idx in 0..b_count {
+                let b_val = other.values[b_idx];
+                
+                // Calculate out_idx from a_multi and b_multi
+                let mut out_idx = 0usize;
+                for d in 0..ndim {
+                    out_idx += (a_multi[d] * b_shape[d] + b_multi[d]) * out_strides[d];
+                }
+                out_values[out_idx] = a_val * b_val;
+
+                // Increment b odometer
+                for d in (0..ndim).rev() {
+                    b_multi[d] += 1;
+                    if b_multi[d] < b_shape[d] {
+                        break;
                     }
+                    b_multi[d] = 0;
                 }
             }
+
+            // Increment a odometer
+            for d in (0..ndim).rev() {
+                a_multi[d] += 1;
+                if a_multi[d] < a_shape[d] {
+                    break;
+                }
+                a_multi[d] = 0;
+            }
         }
+
         let dtype = promote(self.dtype, other.dtype);
         Ok(Self {
-            shape: vec![out_rows, out_cols],
-            values,
+            shape: out_shape,
+            values: out_values,
             dtype,
             integer_sidecar: None,
         })
@@ -6315,6 +6756,7 @@ impl UFuncArray {
                 // Flat indexing
                 let n = self.values.len() as i64;
                 let mut out = Vec::with_capacity(indices.len());
+                let mut source_indices = Vec::with_capacity(indices.len());
                 for &idx in indices {
                     let i = if idx < 0 { idx + n } else { idx };
                     if i < 0 || i >= n {
@@ -6323,12 +6765,13 @@ impl UFuncArray {
                         )));
                     }
                     out.push(self.values[i as usize]);
+                    source_indices.push(i as usize);
                 }
                 Ok(Self {
                     shape: vec![out.len()],
                     values: out,
                     dtype: self.dtype,
-                    integer_sidecar: None,
+                    integer_sidecar: self.reindexed_integer_sidecar(&source_indices),
                 })
             }
             Some(ax) => {
@@ -6357,17 +6800,21 @@ impl UFuncArray {
                 let src_stride = self.shape[ax] * inner;
 
                 let mut values = Vec::with_capacity(outer * resolved.len() * inner);
+                let mut source_indices = Vec::with_capacity(outer * resolved.len() * inner);
                 for o in 0..outer {
                     for &ri in &resolved {
                         let base = o * src_stride + ri * inner;
                         values.extend_from_slice(&self.values[base..base + inner]);
+                        for i in 0..inner {
+                            source_indices.push(base + i);
+                        }
                     }
                 }
                 Ok(Self {
                     shape: out_shape,
                     values,
                     dtype: self.dtype,
-                    integer_sidecar: None,
+                    integer_sidecar: self.reindexed_integer_sidecar(&source_indices),
                 })
             }
         }
@@ -6387,18 +6834,19 @@ impl UFuncArray {
                         self.values.len()
                     )));
                 }
-                let values: Vec<f64> = self
-                    .values
-                    .iter()
-                    .zip(condition)
-                    .filter(|&(_, &c)| c)
-                    .map(|(&v, _)| v)
-                    .collect();
+                let mut values = Vec::with_capacity(condition.iter().filter(|&&c| c).count());
+                let mut source_indices = Vec::with_capacity(values.capacity());
+                for (i, (&v, &c)) in self.values.iter().zip(condition).enumerate() {
+                    if c {
+                        values.push(v);
+                        source_indices.push(i);
+                    }
+                }
                 Ok(Self {
                     shape: vec![values.len()],
                     values,
                     dtype: self.dtype,
-                    integer_sidecar: None,
+                    integer_sidecar: self.reindexed_integer_sidecar(&source_indices),
                 })
             }
             Some(ax) => {
@@ -7542,6 +7990,11 @@ impl UFuncArray {
         let src_strides = c_strides_elems(&self.shape);
         let out_strides = c_strides_elems(&out_shape);
         let mut values = vec![constant; out_count];
+        let mut sidecar_vals = match &self.integer_sidecar {
+            Some(IntegerSidecar::I64(_)) => Some(IntegerSidecar::I64(vec![constant as i64; out_count])),
+            Some(IntegerSidecar::U64(_)) => Some(IntegerSidecar::U64(vec![constant as u64; out_count])),
+            None => None,
+        };
 
         // Copy source values into the padded region
         let src_count: usize = self.shape.iter().product();
@@ -7554,12 +8007,23 @@ impl UFuncArray {
                 out_flat += (idx + pad_width[d].0) * out_strides[d];
             }
             values[out_flat] = self.values[flat];
+            if let Some(ref mut sidecar) = sidecar_vals {
+                match (sidecar, &self.integer_sidecar) {
+                    (IntegerSidecar::I64(v_out), Some(IntegerSidecar::I64(v_in))) => {
+                        v_out[out_flat] = v_in[flat];
+                    }
+                    (IntegerSidecar::U64(v_out), Some(IntegerSidecar::U64(v_in))) => {
+                        v_out[out_flat] = v_in[flat];
+                    }
+                    _ => {}
+                }
+            }
         }
         Ok(Self {
             shape: out_shape,
             values,
             dtype: self.dtype,
-            integer_sidecar: None,
+            integer_sidecar: sidecar_vals,
         })
     }
 
@@ -7582,30 +8046,31 @@ impl UFuncArray {
         let out_count: usize = out_shape.iter().product();
         let src_strides = c_strides_elems(&self.shape);
         let out_strides = c_strides_elems(&out_shape);
-        let values: Vec<f64> = (0..out_count)
-            .map(|out_flat| {
-                let mut remainder = out_flat;
-                let mut src_flat = 0;
-                for d in 0..ndim {
-                    let out_idx = remainder / out_strides[d];
-                    remainder %= out_strides[d];
-                    let src_idx = if out_idx < pad_width[d].0 {
-                        0
-                    } else if out_idx >= pad_width[d].0 + self.shape[d] {
-                        self.shape[d].saturating_sub(1)
-                    } else {
-                        out_idx - pad_width[d].0
-                    };
-                    src_flat += src_idx * src_strides[d];
-                }
-                self.values[src_flat]
-            })
-            .collect();
+        let mut values = Vec::with_capacity(out_count);
+        let mut source_indices = Vec::with_capacity(out_count);
+        for out_flat in 0..out_count {
+            let mut remainder = out_flat;
+            let mut src_flat = 0;
+            for d in 0..ndim {
+                let out_idx = remainder / out_strides[d];
+                remainder %= out_strides[d];
+                let src_idx = if out_idx < pad_width[d].0 {
+                    0
+                } else if out_idx >= pad_width[d].0 + self.shape[d] {
+                    self.shape[d].saturating_sub(1)
+                } else {
+                    out_idx - pad_width[d].0
+                };
+                src_flat += src_idx * src_strides[d];
+            }
+            values.push(self.values[src_flat]);
+            source_indices.push(src_flat);
+        }
         Ok(Self {
             shape: out_shape,
             values,
             dtype: self.dtype,
-            integer_sidecar: None,
+            integer_sidecar: self.reindexed_integer_sidecar(&source_indices),
         })
     }
 
@@ -7635,25 +8100,26 @@ impl UFuncArray {
         let out_count: usize = out_shape.iter().product();
         let src_strides = c_strides_elems(&self.shape);
         let out_strides = c_strides_elems(&out_shape);
-        let values: Vec<f64> = (0..out_count)
-            .map(|out_flat| {
-                let mut remainder = out_flat;
-                let mut src_flat = 0;
-                for d in 0..ndim {
-                    let out_idx = remainder / out_strides[d];
-                    remainder %= out_strides[d];
-                    let shifted = out_idx as isize - pad_width[d].0 as isize;
-                    let src_idx = shifted.rem_euclid(self.shape[d] as isize) as usize;
-                    src_flat += src_idx * src_strides[d];
-                }
-                self.values[src_flat]
-            })
-            .collect();
+        let mut values = Vec::with_capacity(out_count);
+        let mut source_indices = Vec::with_capacity(out_count);
+        for out_flat in 0..out_count {
+            let mut remainder = out_flat;
+            let mut src_flat = 0;
+            for d in 0..ndim {
+                let out_idx = remainder / out_strides[d];
+                remainder %= out_strides[d];
+                let shifted = out_idx as isize - pad_width[d].0 as isize;
+                let src_idx = shifted.rem_euclid(self.shape[d] as isize) as usize;
+                src_flat += src_idx * src_strides[d];
+            }
+            values.push(self.values[src_flat]);
+            source_indices.push(src_flat);
+        }
         Ok(Self {
             shape: out_shape,
             values,
             dtype: self.dtype,
-            integer_sidecar: None,
+            integer_sidecar: self.reindexed_integer_sidecar(&source_indices),
         })
     }
 
@@ -7684,25 +8150,26 @@ impl UFuncArray {
         let out_count: usize = out_shape.iter().product();
         let src_strides = c_strides_elems(&self.shape);
         let out_strides = c_strides_elems(&out_shape);
-        let values: Vec<f64> = (0..out_count)
-            .map(|out_flat| {
-                let mut remainder = out_flat;
-                let mut src_flat = 0;
-                for d in 0..ndim {
-                    let out_idx = remainder / out_strides[d];
-                    remainder %= out_strides[d];
-                    let shifted = out_idx as isize - pad_width[d].0 as isize;
-                    let src_idx = reflect_index(shifted, self.shape[d]);
-                    src_flat += src_idx * src_strides[d];
-                }
-                self.values[src_flat]
-            })
-            .collect();
+        let mut values = Vec::with_capacity(out_count);
+        let mut source_indices = Vec::with_capacity(out_count);
+        for out_flat in 0..out_count {
+            let mut remainder = out_flat;
+            let mut src_flat = 0;
+            for d in 0..ndim {
+                let out_idx = remainder / out_strides[d];
+                remainder %= out_strides[d];
+                let shifted = out_idx as isize - pad_width[d].0 as isize;
+                let src_idx = reflect_index(shifted, self.shape[d]);
+                src_flat += src_idx * src_strides[d];
+            }
+            values.push(self.values[src_flat]);
+            source_indices.push(src_flat);
+        }
         Ok(Self {
             shape: out_shape,
             values,
             dtype: self.dtype,
-            integer_sidecar: None,
+            integer_sidecar: self.reindexed_integer_sidecar(&source_indices),
         })
     }
 
@@ -7726,25 +8193,26 @@ impl UFuncArray {
         let out_count: usize = out_shape.iter().product();
         let src_strides = c_strides_elems(&self.shape);
         let out_strides = c_strides_elems(&out_shape);
-        let values: Vec<f64> = (0..out_count)
-            .map(|out_flat| {
-                let mut remainder = out_flat;
-                let mut src_flat = 0;
-                for d in 0..ndim {
-                    let out_idx = remainder / out_strides[d];
-                    remainder %= out_strides[d];
-                    let shifted = out_idx as isize - pad_width[d].0 as isize;
-                    let src_idx = symmetric_index(shifted, self.shape[d]);
-                    src_flat += src_idx * src_strides[d];
-                }
-                self.values[src_flat]
-            })
-            .collect();
+        let mut values = Vec::with_capacity(out_count);
+        let mut source_indices = Vec::with_capacity(out_count);
+        for out_flat in 0..out_count {
+            let mut remainder = out_flat;
+            let mut src_flat = 0;
+            for d in 0..ndim {
+                let out_idx = remainder / out_strides[d];
+                remainder %= out_strides[d];
+                let shifted = out_idx as isize - pad_width[d].0 as isize;
+                let src_idx = symmetric_index(shifted, self.shape[d]);
+                src_flat += src_idx * src_strides[d];
+            }
+            values.push(self.values[src_flat]);
+            source_indices.push(src_flat);
+        }
         Ok(Self {
             shape: out_shape,
             values,
             dtype: self.dtype,
-            integer_sidecar: None,
+            integer_sidecar: self.reindexed_integer_sidecar(&source_indices),
         })
     }
 
@@ -10552,22 +11020,8 @@ impl UFuncArray {
         if arrays.is_empty() {
             return Err(UFuncError::Msg("vstack: need at least 1 array".to_string()));
         }
-        // Treat 1-D arrays as (1, N)
-        let promoted: Vec<Self> = arrays
-            .iter()
-            .map(|a| {
-                if a.shape.len() == 1 {
-                    Self {
-                        shape: vec![1, a.shape[0]],
-                        values: a.values.clone(),
-                        dtype: a.dtype,
-                        integer_sidecar: None,
-                    }
-                } else {
-                    a.clone()
-                }
-            })
-            .collect();
+        // Treat 1-D arrays as (1, N) via atleast_2d
+        let promoted: Vec<Self> = arrays.iter().map(|a| a.atleast_2d()).collect();
         Self::concatenate(&promoted.iter().collect::<Vec<_>>(), 0)
     }
 
@@ -10600,7 +11054,13 @@ impl UFuncArray {
         step: isize,
     ) -> Result<Self, UFuncError> {
         let view = self.shared_view()?.slice_axis(axis, start, stop, step)?;
-        view.to_array()
+        let (values, indices) = view.materialize_with_indices()?;
+        Ok(Self {
+            shape: view.shape.clone(),
+            values,
+            dtype: self.dtype,
+            integer_sidecar: self.reindexed_integer_sidecar(&indices),
+        })
     }
 
     /// Get a single element by multi-dimensional index. Returns a scalar.
@@ -10657,7 +11117,7 @@ impl UFuncArray {
             shape: vec![n],
             values: self.values.clone(),
             dtype: self.dtype,
-            integer_sidecar: None,
+            integer_sidecar: self.cloned_integer_sidecar(),
         }
     }
 
@@ -10751,6 +11211,7 @@ impl UFuncArray {
         };
 
         let mut result = Vec::with_capacity(other_count * diag_len);
+        let mut source_indices = Vec::with_capacity(other_count * diag_len);
         for oi in 0..other_count {
             // Decode oi into indices for other_axes
             let mut rem = oi;
@@ -10765,13 +11226,14 @@ impl UFuncArray {
                 let c = start_c + k;
                 let flat = base_offset + r * strides[a1] + c * strides[a2];
                 result.push(self.values[flat]);
+                source_indices.push(flat);
             }
         }
         Ok(Self {
             shape: out_shape,
             values: result,
             dtype: self.dtype,
-            integer_sidecar: None,
+            integer_sidecar: self.reindexed_integer_sidecar(&source_indices),
         })
     }
 
@@ -10861,16 +11323,8 @@ impl UFuncArray {
 
     /// Return sorted unique elements.
     pub fn unique(&self) -> Self {
-        let mut sorted = self.values.clone();
-        sorted.sort_by(|a, b| a.total_cmp(b));
-        sorted.dedup_by(|a, b| a.total_cmp(b).is_eq());
-        let n = sorted.len();
-        Self {
-            shape: vec![n],
-            values: sorted,
-            dtype: self.dtype,
-            integer_sidecar: None,
-        }
+        let (u, _, _, _) = self.unique_with_info(false, false, false);
+        u
     }
 
     /// Return sorted unique elements along with optional index/inverse/counts arrays.
@@ -10929,11 +11383,17 @@ impl UFuncArray {
 
         let nu = unique_vals.len();
         let n = flat.len();
+
+        let mut source_indices = Vec::with_capacity(nu);
+        for &idx_f64 in &first_indices {
+            source_indices.push(idx_f64 as usize);
+        }
+
         let unique = Self {
             shape: vec![nu],
             values: unique_vals,
             dtype: self.dtype,
-            integer_sidecar: None,
+            integer_sidecar: self.reindexed_integer_sidecar(&source_indices),
         };
         let indices = if return_index {
             Some(Self {
@@ -12176,25 +12636,26 @@ impl UFuncArray {
         let src_strides = c_strides_elems(&padded);
         let out_strides = c_strides_elems(target_shape);
         let out_count: usize = target_shape.iter().product();
-        let values: Vec<f64> = (0..out_count)
-            .map(|flat| {
-                let mut remainder = flat;
-                let mut src_flat = 0;
-                for d in 0..ndim {
-                    let coord = remainder / out_strides[d];
-                    remainder %= out_strides[d];
-                    if padded[d] > 1 {
-                        src_flat += coord * src_strides[d];
-                    }
+        let mut values = Vec::with_capacity(out_count);
+        let mut source_indices = Vec::with_capacity(out_count);
+        for flat in 0..out_count {
+            let mut remainder = flat;
+            let mut src_flat = 0;
+            for d in 0..ndim {
+                let coord = remainder / out_strides[d];
+                remainder %= out_strides[d];
+                if padded[d] > 1 {
+                    src_flat += coord * src_strides[d];
                 }
-                self.values[src_flat]
-            })
-            .collect();
+            }
+            values.push(self.values[src_flat]);
+            source_indices.push(src_flat);
+        }
         Ok(Self {
             shape: target_shape.to_vec(),
             values,
             dtype: self.dtype,
-            integer_sidecar: None,
+            integer_sidecar: self.reindexed_integer_sidecar(&source_indices),
         })
     }
 
@@ -15340,18 +15801,38 @@ impl MaskedArray {
         match &self.mask {
             None => self.data.clone(),
             Some(mask) => {
-                let vals: Vec<f64> = self
-                    .data
-                    .values()
-                    .iter()
-                    .zip(mask.values().iter())
-                    .map(|(&d, &m)| if m != 0.0 { fill_value } else { d })
-                    .collect();
+                let n = self.data.values().len();
+                let mut vals = Vec::with_capacity(n);
+                let mut sidecar_vals = match &self.data.integer_sidecar {
+                    Some(IntegerSidecar::I64(_)) => Some(IntegerSidecar::I64(vec![fill_value as i64; n])),
+                    Some(IntegerSidecar::U64(_)) => Some(IntegerSidecar::U64(vec![fill_value as u64; n])),
+                    None => None,
+                };
+
+                for i in 0..n {
+                    let is_masked = mask.values()[i] != 0.0;
+                    if is_masked {
+                        vals.push(fill_value);
+                    } else {
+                        vals.push(self.data.values()[i]);
+                        if let Some(ref mut sidecar) = sidecar_vals {
+                            match (sidecar, &self.data.integer_sidecar) {
+                                (IntegerSidecar::I64(v_out), Some(IntegerSidecar::I64(v_in))) => {
+                                    v_out[i] = v_in[i];
+                                }
+                                (IntegerSidecar::U64(v_out), Some(IntegerSidecar::U64(v_in))) => {
+                                    v_out[i] = v_in[i];
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
                 UFuncArray {
                     shape: self.data.shape().to_vec(),
                     values: vals,
                     dtype: self.data.dtype(),
-                    integer_sidecar: None,
+                    integer_sidecar: sidecar_vals,
                 }
             }
         }
@@ -15367,23 +15848,23 @@ impl MaskedArray {
                     shape: vec![self.data.values().len()],
                     values: self.data.values().to_vec(),
                     dtype: self.data.dtype(),
-                    integer_sidecar: None,
+                    integer_sidecar: self.data.cloned_integer_sidecar(),
                 }
             }
             Some(mask) => {
-                let vals: Vec<f64> = self
-                    .data
-                    .values()
-                    .iter()
-                    .zip(mask.values().iter())
-                    .filter(|pair| *pair.1 == 0.0)
-                    .map(|pair| *pair.0)
-                    .collect();
+                let mut vals = Vec::new();
+                let mut source_indices = Vec::new();
+                for (i, (&d, &m)) in self.data.values().iter().zip(mask.values().iter()).enumerate() {
+                    if m == 0.0 {
+                        vals.push(d);
+                        source_indices.push(i);
+                    }
+                }
                 UFuncArray {
                     shape: vec![vals.len()],
                     values: vals,
                     dtype: self.data.dtype(),
-                    integer_sidecar: None,
+                    integer_sidecar: self.data.reindexed_integer_sidecar(&source_indices),
                 }
             }
         }
@@ -15644,20 +16125,9 @@ impl MaskedArray {
     /// Flatten the masked array to 1-D.
     #[must_use]
     pub fn ravel(&self) -> Self {
-        let n = self.data.values().len();
         Self {
-            data: UFuncArray {
-                shape: vec![n],
-                values: self.data.values().to_vec(),
-                dtype: self.data.dtype(),
-                integer_sidecar: None,
-            },
-            mask: self.mask.as_ref().map(|m| UFuncArray {
-                shape: vec![n],
-                values: m.values().to_vec(),
-                dtype: DType::Bool,
-                integer_sidecar: None,
-            }),
+            data: self.data.flatten(),
+            mask: self.mask.as_ref().map(UFuncArray::flatten),
             fill_value: self.fill_value,
             hard_mask: self.hard_mask,
         }
@@ -22473,6 +22943,140 @@ mod tests {
     }
 
     #[test]
+    fn reshape_preserves_large_i64_sidecar() {
+        let large_val = (1_i64 << 53) + 7;
+        let arr = UFuncArray::from_storage(vec![2], ArrayStorage::I64(vec![1, large_val]))
+            .expect("from_storage");
+        let out = arr.reshape(&[1, 2]).expect("reshape");
+        assert!(out.has_integer_sidecar());
+        assert_eq!(
+            out.to_storage().expect("to_storage"),
+            ArrayStorage::I64(vec![1, large_val])
+        );
+    }
+
+    #[test]
+    fn integer_sidecar_preservation_comprehensive() {
+        use fnp_dtype::ArrayStorage;
+        let large_val = (1_i64 << 53) + 7;
+        let arr = UFuncArray::from_storage(vec![2], ArrayStorage::I64(vec![1, large_val]))
+            .expect("from_storage");
+
+        // 1. atleast_1d
+        let out = arr.atleast_1d();
+        assert!(out.has_integer_sidecar(), "atleast_1d should preserve sidecar");
+
+        // 2. atleast_2d
+        let out = arr.atleast_2d();
+        assert!(out.has_integer_sidecar(), "atleast_2d should preserve sidecar");
+
+        // 3. atleast_3d
+        let out = arr.atleast_3d();
+        assert!(out.has_integer_sidecar(), "atleast_3d should preserve sidecar");
+
+        // 4. ravel
+        let out = arr.ravel();
+        assert!(out.has_integer_sidecar(), "ravel should preserve sidecar");
+
+        // 5. take (flat)
+        let out = arr.take(&[1, 0], None).expect("take");
+        assert!(out.has_integer_sidecar(), "take (flat) should preserve sidecar");
+        assert_eq!(
+            out.to_storage().expect("to_storage"),
+            ArrayStorage::I64(vec![large_val, 1])
+        );
+
+        // 6. compress (flat)
+        let out = arr.compress(&[false, true], None).expect("compress");
+        assert!(out.has_integer_sidecar(), "compress (flat) should preserve sidecar");
+        assert_eq!(
+            out.to_storage().expect("to_storage"),
+            ArrayStorage::I64(vec![large_val])
+        );
+
+        // 7. diagonal (2D case)
+        let arr2d = UFuncArray::from_storage(
+            vec![2, 2],
+            ArrayStorage::I64(vec![1, 2, 3, large_val])
+        ).expect("arr2d");
+        let out = arr2d.diagonal(0, 0, 1).expect("diagonal");
+        assert!(out.has_integer_sidecar(), "diagonal should preserve sidecar");
+        assert_eq!(
+            out.to_storage().expect("to_storage"),
+            ArrayStorage::I64(vec![1, large_val])
+        );
+
+        // 8. flip
+        let out = arr.flip(None).expect("flip");
+        assert!(out.has_integer_sidecar(), "flip should preserve sidecar");
+        assert_eq!(
+            out.to_storage().expect("to_storage"),
+            ArrayStorage::I64(vec![large_val, 1])
+        );
+
+        // 9. roll
+        let out = arr.roll(1, None).expect("roll");
+        assert!(out.has_integer_sidecar(), "roll should preserve sidecar");
+        assert_eq!(
+            out.to_storage().expect("to_storage"),
+            ArrayStorage::I64(vec![large_val, 1])
+        );
+
+        // 10. tile
+        let out = arr.tile(&[2]).expect("tile");
+        assert!(out.has_integer_sidecar(), "tile should preserve sidecar");
+        assert_eq!(
+            out.to_storage().expect("to_storage"),
+            ArrayStorage::I64(vec![1, large_val, 1, large_val])
+        );
+
+        // 11. repeat
+        let out = arr.repeat(2, None).expect("repeat");
+        assert!(out.has_integer_sidecar(), "repeat should preserve sidecar");
+        assert_eq!(
+            out.to_storage().expect("to_storage"),
+            ArrayStorage::I64(vec![1, 1, large_val, large_val])
+        );
+
+        // 12. pad (constant)
+        let out = arr.pad(&[(1, 1)], 0.0).expect("pad");
+        assert!(out.has_integer_sidecar(), "pad should preserve sidecar");
+        assert_eq!(
+            out.to_storage().expect("to_storage"),
+            ArrayStorage::I64(vec![0, 1, large_val, 0])
+        );
+
+        // 13. delete
+        let out = arr.delete(&[0], None).expect("delete");
+        assert!(out.has_integer_sidecar(), "delete should preserve sidecar");
+        assert_eq!(
+            out.to_storage().expect("to_storage"),
+            ArrayStorage::I64(vec![large_val])
+        );
+
+        // 14. split
+        let res = arr.split(2, 0).expect("split");
+        assert!(res[0].has_integer_sidecar(), "split[0] should preserve sidecar");
+        assert!(res[1].has_integer_sidecar(), "split[1] should preserve sidecar");
+
+        // 15. triu/tril
+        let out = arr2d.triu(0).expect("triu");
+        assert!(out.has_integer_sidecar(), "triu should preserve sidecar");
+        assert_eq!(
+            out.to_storage().expect("to_storage"),
+            ArrayStorage::I64(vec![1, 2, 0, large_val])
+        );
+
+        // 16. slice_axis
+        let out = arr.slice_axis(0, Some(1), None, 1).expect("slice");
+        assert!(out.has_integer_sidecar(), "slice_axis should preserve sidecar");
+        assert_eq!(
+            out.to_storage().expect("to_storage"),
+            ArrayStorage::I64(vec![large_val])
+        );
+    }
+
+    #[test]
     fn transpose_reverse_axes() {
         // np.array([[1,2,3],[4,5,6]]).T -> [[1,4],[2,5],[3,6]]
         let arr = UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64)
@@ -22509,12 +23113,45 @@ mod tests {
     }
 
     #[test]
+    fn transpose_preserves_large_i64_sidecar_reordering() {
+        let values = vec![
+            1_i64,
+            (1_i64 << 53) + 7,
+            3,
+            (1_i64 << 53) + 9,
+            5,
+            6,
+        ];
+        let arr = UFuncArray::from_storage(vec![2, 3], ArrayStorage::I64(values))
+            .expect("from_storage");
+        let out = arr.transpose(None).expect("transpose");
+        assert!(out.has_integer_sidecar());
+        assert_eq!(
+            out.to_storage().expect("to_storage"),
+            ArrayStorage::I64(vec![1, (1_i64 << 53) + 9, (1_i64 << 53) + 7, 5, 3, 6])
+        );
+    }
+
+    #[test]
     fn flatten_preserves_data() {
         let arr = UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64)
             .expect("arr");
         let out = arr.flatten();
         assert_eq!(out.shape(), &[6]);
         assert_eq!(out.values(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn flatten_preserves_large_u64_sidecar() {
+        let large_val = (1_u64 << 53) + 42;
+        let arr = UFuncArray::from_storage(vec![1, 2], ArrayStorage::U64(vec![0, large_val]))
+            .expect("from_storage");
+        let out = arr.flatten();
+        assert!(out.has_integer_sidecar());
+        assert_eq!(
+            out.to_storage().expect("to_storage"),
+            ArrayStorage::U64(vec![0, large_val])
+        );
     }
 
     #[test]
@@ -22558,6 +23195,38 @@ mod tests {
             .expect("arr");
         let out = arr.expand_dims(1).expect("expand middle");
         assert_eq!(out.shape(), &[2, 1, 3]);
+    }
+
+    #[test]
+    fn squeeze_and_expand_dims_preserve_large_i64_sidecar() {
+        let large_val = (1_i64 << 53) + 11;
+        let arr = UFuncArray::from_storage(vec![1, 2], ArrayStorage::I64(vec![1, large_val]))
+            .expect("from_storage");
+        let squeezed = arr.squeeze(Some(0)).expect("squeeze");
+        assert_eq!(
+            squeezed.to_storage().expect("to_storage"),
+            ArrayStorage::I64(vec![1, large_val])
+        );
+
+        let expanded = squeezed.expand_dims(1).expect("expand_dims");
+        assert!(expanded.has_integer_sidecar());
+        assert_eq!(
+            expanded.to_storage().expect("to_storage"),
+            ArrayStorage::I64(vec![1, large_val])
+        );
+    }
+
+    #[test]
+    fn broadcast_to_preserves_large_u64_sidecar_repetition() {
+        let large_val = (1_u64 << 53) + 42;
+        let arr = UFuncArray::from_storage(vec![2, 1], ArrayStorage::U64(vec![0, large_val]))
+            .expect("from_storage");
+        let out = arr.broadcast_to(&[2, 3]).expect("broadcast_to");
+        assert!(out.has_integer_sidecar());
+        assert_eq!(
+            out.to_storage().expect("to_storage"),
+            ArrayStorage::U64(vec![0, 0, 0, large_val, large_val, large_val])
+        );
     }
 
     #[test]
@@ -23442,6 +24111,74 @@ mod tests {
         let r = a.dot(&b).unwrap();
         assert_eq!(r.shape(), &[2]);
         assert_eq!(r.values(), &[17.0, 39.0]);
+    }
+
+    #[test]
+    fn dot_high_dim() {
+        // (2, 3) @ (3, 2) -> (2, 2)
+        let a = UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![3, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
+        let res = a.dot(&b).expect("2d . 2d");
+        assert_eq!(res.shape, vec![2, 2]);
+        assert_eq!(res.values, vec![22.0, 28.0, 49.0, 64.0]);
+
+        // (2, 3) @ (2, 3, 2) -> (2, 2, 2)
+        // a = [[1,2,3],[4,5,6]]
+        // b = [[[1,2],[3,4],[5,6]], [[7,8],[9,10],[11,12]]]
+        let b_vals = vec![
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, // first 3x2 matrix
+            7.0, 8.0, 9.0, 10.0, 11.0, 12.0, // second 3x2 matrix
+        ];
+        let b = UFuncArray::new(vec![2, 3, 2], b_vals, DType::F64).unwrap();
+        let res = a.dot(&b).expect("2d . 3d");
+        assert_eq!(res.shape, vec![2, 2, 2]);
+        // res[0, 0, :] = a[0, :] @ b[0, :, :] = [1,2,3] @ [[1,2],[3,4],[5,6]] = [22, 28]
+        // res[0, 1, :] = a[0, :] @ b[1, :, :] = [1,2,3] @ [[7,8],[9,10],[11,12]] = [58, 64]
+        // res[1, 0, :] = a[1, :] @ b[0, :, :] = [4,5,6] @ [[1,2],[3,4],[5,6]] = [49, 64]
+        // res[1, 1, :] = a[1, :] @ b[1, :, :] = [4,5,6] @ [[7,8],[9,10],[11,12]] = [139, 154]
+        assert_eq!(res.values, vec![22.0, 28.0, 58.0, 64.0, 49.0, 64.0, 139.0, 154.0]);
+    }
+
+    #[test]
+    fn matmul_1d_cases() {
+        // (3,) @ (3, 2) -> (2,)
+        let a = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![3, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
+        let res = a.matmul(&b).expect("1d @ 2d");
+        assert_eq!(res.shape, vec![2]);
+        // 1*1 + 2*3 + 3*5 = 1+6+15 = 22
+        // 1*2 + 2*4 + 3*6 = 2+8+18 = 28
+        assert_eq!(res.values, vec![22.0, 28.0]);
+
+        // (2, 3) @ (3,) -> (2,)
+        let a = UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        let res = a.matmul(&b).expect("2d @ 1d");
+        assert_eq!(res.shape, vec![2]);
+        // 1*1 + 2*2 + 3*3 = 1+4+9 = 14
+        // 4*1 + 5*2 + 6*3 = 4+10+18 = 32
+        assert_eq!(res.values, vec![14.0, 32.0]);
+
+        // (3,) @ (3,) -> scalar
+        let a = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        let res = a.matmul(&b).expect("1d @ 1d");
+        assert_eq!(res.shape, Vec::<usize>::new()); // scalar shape
+        assert_eq!(res.values, vec![14.0]);
+    }
+
+    #[test]
+    fn matmul_broadcast_3d() {
+        // [2, 2, 2] @ [2, 2, 2] -> [2, 2, 2]
+        // Both are stacks of 2x2 identity matrices.
+        let shape = vec![2, 2, 2];
+        let values = vec![1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0];
+        let a = UFuncArray::new(shape.clone(), values.clone(), DType::F64).unwrap();
+        let b = UFuncArray::new(shape.clone(), values.clone(), DType::F64).unwrap();
+        
+        let res = a.matmul(&b).expect("matmul should support broadcasting");
+        assert_eq!(res.shape, vec![2, 2, 2]);
+        assert_eq!(res.values, values);
     }
 
     #[test]
@@ -25934,6 +26671,21 @@ mod tests {
     }
 
     // ── tensor operation tests ────────
+
+    #[test]
+    fn kron_high_dim() {
+        // (2,) kron (2, 2)
+        // a = [1, 2]
+        // b = [[10, 20], [30, 40]]
+        // out_shape = [1*2, 2*2] = [2, 4]
+        // result = [[1*10, 1*20, 2*10, 2*20], [1*30, 1*40, 2*30, 2*40]]
+        //        = [[10, 20, 20, 40], [30, 40, 60, 80]]
+        let a = UFuncArray::new(vec![2], vec![1.0, 2.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![2, 2], vec![10.0, 20.0, 30.0, 40.0], DType::F64).unwrap();
+        let res = a.kron(&b).expect("1d kron 2d");
+        assert_eq!(res.shape, vec![2, 4]);
+        assert_eq!(res.values, vec![10.0, 20.0, 20.0, 40.0, 30.0, 40.0, 60.0, 80.0]);
+    }
 
     #[test]
     fn kron_basic() {
