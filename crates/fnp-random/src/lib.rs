@@ -1083,13 +1083,12 @@ impl Mt19937Rng {
         for (k, v) in entries {
             if k == "mt19937_pos" {
                 pos = *v as usize;
-            } else if k.starts_with("mt19937_s") {
-                if let Ok(idx) = k["mt19937_s".len()..].parse::<usize>() {
-                    if idx < MT_N {
-                        mt[idx] = *v as u32;
-                        found_count += 1;
-                    }
-                }
+            } else if let Some(suffix) = k.strip_prefix("mt19937_s")
+                && let Ok(idx) = suffix.parse::<usize>()
+                && idx < MT_N
+            {
+                mt[idx] = *v as u32;
+                found_count += 1;
             }
         }
         if found_count == MT_N {
@@ -1437,14 +1436,13 @@ impl BitGeneratorState {
         let is_real_prng = matches!(self.kind, BitGeneratorKind::Mt19937 | BitGeneratorKind::Philox | BitGeneratorKind::Sfc64 | BitGeneratorKind::Pcg64);
         let has_custom_entries = self.schema_entries.iter().any(|(k, _)| !matches!(k.as_str(), "stream_seed" | "counter" | "algorithm_tag" | "schema_version"));
 
-        if !is_real_prng || !has_custom_entries {
-            if let Some(expected_algorithm_state) = Self::algorithm_state_schema_value(self.kind, self.seed, self.counter) {
-                if algorithm_state != Some(expected_algorithm_state) {
-                    return Err(BitGeneratorError::StateSchemaInvalid(
-                        "bit-generator algorithm-specific state metadata mismatch",
-                    ));
-                }
-            }
+        if (!is_real_prng || !has_custom_entries)
+            && let Some(expected_algorithm_state) = Self::algorithm_state_schema_value(self.kind, self.seed, self.counter)
+            && algorithm_state != Some(expected_algorithm_state)
+        {
+            return Err(BitGeneratorError::StateSchemaInvalid(
+                "bit-generator algorithm-specific state metadata mismatch",
+            ));
         }
 
         Ok(())
