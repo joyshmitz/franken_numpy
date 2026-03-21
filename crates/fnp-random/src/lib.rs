@@ -704,7 +704,6 @@ const MT_INIT_MULT: u32 = 1_812_433_253;
 ///
 /// Produces the same u32 stream as NumPy for both modes.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhiloxRng {
     ctr: [u64; 4],
     key: [u64; 2],
@@ -816,7 +815,7 @@ impl Sfc64Rng {
         let s = [seed[0], seed[1], seed[2], 1];
         let mut rng = Self { s };
         for _ in 0..12 {
-            rng.next_u64();
+            let _ = rng.next_u64();
         }
         rng
     }
