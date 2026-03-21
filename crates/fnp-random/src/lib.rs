@@ -2255,7 +2255,7 @@ impl Generator {
             cache.has_binomial = true;
             cache.r = p.min(1.0 - p);
             cache.q = 1.0 - cache.r;
-            cache.fm = (n as f64) * cache.r + cache.r;
+            cache.fm = (n as f64 + 1.0) * cache.r;
             cache.m = cache.fm.floor() as i64;
             cache.p1 =
                 (2.195 * ((n as f64) * cache.r * cache.q).sqrt() - 4.6 * cache.q).floor() + 0.5;
@@ -2291,100 +2291,75 @@ impl Generator {
         let a = s * ((n + 1) as f64);
 
         loop {
-            // Step 10
             let u = self.next_f64() * p4;
             let mut v = self.next_f64();
 
-            let y;
-
-            if u <= p1 {
-                // Triangle region
-                y = (xm - p1 * v + u).floor() as i64;
+            let y = if u <= p1 {
+                (xm - p1 * v + u).floor() as i64
             } else if u <= p2 {
-                // Parallelogram region
                 let x = xl + (u - p1) / c;
                 v = v * c + 1.0 - (m as f64 - x + 0.5).abs() / p1;
                 if v > 1.0 {
                     continue;
                 }
-                y = x.floor() as i64;
+                x.floor() as i64
             } else if u <= p3 {
-                // Left exponential tail
-                y = (xl + v.ln() / laml).floor() as i64;
-                if y < 0 || v == 0.0 {
+                let y_val = (xl + v.ln() / laml).floor() as i64;
+                if y_val < 0 || v == 0.0 {
                     continue;
                 }
                 v *= (u - p2) * laml;
+                y_val
             } else {
-                // Right exponential tail
-                y = (xr - v.ln() / lamr).floor() as i64;
-                if y > n || v == 0.0 {
+                let y_val = (xr - v.ln() / lamr).floor() as i64;
+                if y_val > n || v == 0.0 {
                     continue;
                 }
                 v *= (u - p3) * lamr;
+                y_val
             };
 
-            // Step 50: acceptance test
             let k = (y - m).unsigned_abs();
-            if k > 20 && (k as f64) < nrq / 2.0 - 1.0 {
-                // Step 52: squeeze using upper and lower bounds on log(f)
-                let rho = ((k as f64) / nrq)
-                    * (((k as f64) * ((k as f64) / 3.0 + 0.625) + 0.16666666666666666) / nrq + 0.5);
-                let t = -(k as f64) * (k as f64) / (2.0 * nrq);
+            if k <= 20 && (k as f64) <= nrq / 2.0 - 1.0 {
+                // Direct ratio test for small k
+                let mut f_val = 1.0;
+                if m < y {
+                    for i in (m + 1)..=y {
+                        f_val *= a / (i as f64) - s;
+                    }
+                } else if m > y {
+                    for i in (y + 1)..=m {
+                        f_val /= a / (i as f64) - s;
+                    }
+                }
+                if v <= f_val {
+                    return if p <= 0.5 { y } else { n - y };
+                }
+            } else {
+                // Stirling approximation for large k
                 let log_v = v.ln();
+                let rho = (k as f64 / nrq) * ((k as f64 * (k as f64 / 3.0 + 0.625) + 0.16666666666666666) / nrq + 0.5);
+                let t = - (k as f64 * k as f64) / (2.0 * nrq);
                 if log_v < t - rho {
-                    return y; // Step 60 accept
+                    return if p <= 0.5 { y } else { n - y };
                 }
                 if log_v > t + rho {
-                    continue; // reject → Step 10
+                    continue;
                 }
 
-                // Full Stirling acceptance check
-                let x1 = (y + 1) as f64;
-                let f1 = (m + 1) as f64;
-                let z = (n + 1 - m) as f64;
-                let w = (n - y + 1) as f64;
-                let x2 = x1 * x1;
-                let f2 = f1 * f1;
-                let z2 = z * z;
-                let w2 = w * w;
-                if log_v
-                    > (xm * (f1 / x1).ln()
-                        + ((n - m) as f64 + 0.5) * (z / w).ln()
-                        + ((y - m) as f64) * (w * r / (x1 * q)).ln()
-                        + (13680.0 - (462.0 - (132.0 - (99.0 - 140.0 / f2) / f2) / f2) / f2)
-                            / f1
-                            / 166320.0
-                        + (13680.0 - (462.0 - (132.0 - (99.0 - 140.0 / z2) / z2) / z2) / z2)
-                            / z
-                            / 166320.0
-                        + (13680.0 - (462.0 - (132.0 - (99.0 - 140.0 / x2) / x2) / x2) / x2)
-                            / x1
-                            / 166320.0
-                        + (13680.0 - (462.0 - (132.0 - (99.0 - 140.0 / w2) / w2) / w2) / w2)
-                            / w
-                            / 166320.0)
+                // Final Stirling check
+                let x1 = y as f64 + 1.0;
+                let f1 = m as f64 + 1.0;
+                let z = (n - m) as f64 + 1.0;
+                let w = (n - y) as f64 + 1.0;
+                if log_v <= (m as f64 + 0.5) * (f1 / x1).ln()
+                    + (n as f64 - m as f64 + 0.5) * (z / w).ln()
+                    + (y as f64 - m as f64) * (w * r / (x1 * q)).ln()
+                    + (1.0 / 12.0) * (1.0 / f1 + 1.0 / z - 1.0 / x1 - 1.0 / w)
                 {
-                    continue; // reject → Step 10
-                }
-                return y; // accept
-            }
-
-            // k <= 20 or close to mode: direct probability ratio test
-            let mut f_val = 1.0;
-            if m < y {
-                for i in (m + 1)..=y {
-                    f_val *= a / (i as f64) - s;
-                }
-            } else if m > y {
-                for i in (y + 1)..=m {
-                    f_val /= a / (i as f64) - s;
+                    return if p <= 0.5 { y } else { n - y };
                 }
             }
-            if v <= f_val {
-                return y; // Step 60 accept
-            }
-            // reject → Step 10 (loop continues)
         }
     }
 
@@ -2641,33 +2616,26 @@ impl Generator {
         use crate::ziggurat::*;
         loop {
             let r = self.next_u64();
-            let idx = (r & 0xff) as usize;
-            let r = r >> 8;
-            let sign = r & 0x1;
-            let rabs = (r >> 1) & 0x000f_ffff_ffff_ffff;
+            let idx = (r & 0xFF) as usize;
+            let rabs = r >> 8;
             let x = rabs as f64 * ZIGGURAT_NOR_W[idx];
-            let x = if sign & 0x1 != 0 { -x } else { x };
             if rabs < ZIGGURAT_NOR_K[idx] {
-                return x;
+                return if (self.next_u64() & 0x1) == 0 { -x } else { x };
             }
             if idx == 0 {
                 // Tail: Marsaglia's method
                 loop {
-                    let xx = -ZIGGURAT_NOR_INV_R * (-self.next_f64()).ln_1p();
-                    let yy = -(-self.next_f64()).ln_1p();
+                    let xx = -ZIGGURAT_NOR_INV_R * self.next_f64().ln();
+                    let yy = -self.next_f64().ln();
                     if yy + yy > xx * xx {
-                        return if (rabs >> 8) & 0x1 != 0 {
-                            -(ZIGGURAT_NOR_R + xx)
-                        } else {
-                            ZIGGURAT_NOR_R + xx
-                        };
+                        let res = ZIGGURAT_NOR_R + xx;
+                        return if (self.next_u64() & 0x1) == 0 { -res } else { res };
                     }
                 }
             } else {
                 // Wedge test
-                let f_diff = ZIGGURAT_NOR_F[idx - 1] - ZIGGURAT_NOR_F[idx];
-                if f_diff * self.next_f64() + ZIGGURAT_NOR_F[idx] < (-0.5 * x * x).exp() {
-                    return x;
+                if self.next_f64() < ((-0.5 * x * x).exp() - ZIGGURAT_NOR_F[idx]) / (ZIGGURAT_NOR_F[idx - 1] - ZIGGURAT_NOR_F[idx]) {
+                    return if (self.next_u64() & 0x1) == 0 { -x } else { x };
                 }
             }
         }
@@ -2678,23 +2646,21 @@ impl Generator {
     fn sample_ziggurat_exponential(&mut self) -> f64 {
         use crate::ziggurat::*;
         loop {
-            let ri = self.next_u64();
-            let ri = ri >> 3;
-            let idx = (ri & 0xFF) as usize;
-            let ri = ri >> 8;
-            let x = ri as f64 * ZIGGURAT_EXP_W[idx];
-            if ri < ZIGGURAT_EXP_K[idx] {
+            let r = self.next_u64();
+            let idx = (r & 0xFF) as usize;
+            let rabs = r >> 8;
+            let x = rabs as f64 * ZIGGURAT_EXP_W[idx];
+            if rabs < ZIGGURAT_EXP_K[idx] {
                 return x;
             }
-            // Unlikely path
+            // Tail
             if idx == 0 {
-                return ZIGGURAT_EXP_R - (-self.next_f64()).ln_1p();
+                return ZIGGURAT_EXP_R - self.next_f64().ln();
             }
-            let f_diff = ZIGGURAT_EXP_F[idx - 1] - ZIGGURAT_EXP_F[idx];
-            if f_diff * self.next_f64() + ZIGGURAT_EXP_F[idx] < (-x).exp() {
+            // Wedge test
+            if self.next_f64() < ((-x).exp() - ZIGGURAT_EXP_F[idx]) / (ZIGGURAT_EXP_F[idx - 1] - ZIGGURAT_EXP_F[idx]) {
                 return x;
             }
-            // Reject and retry
         }
     }
 
