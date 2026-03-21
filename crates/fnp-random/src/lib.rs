@@ -1465,9 +1465,7 @@ fn default_state_schema_entries(
     seed: u64,
     counter: u64,
 ) -> Vec<(String, u64)> {
-    let algorithm_key = algorithm_state_schema_key(kind);
-    let algorithm_value = algorithm_state_schema_value(kind, seed, counter);
-    vec![
+    let mut entries = vec![
         ("stream_seed".to_string(), seed),
         ("counter".to_string(), counter),
         ("algorithm_tag".to_string(), kind.stream_tag()),
@@ -1475,8 +1473,12 @@ fn default_state_schema_entries(
             "schema_version".to_string(),
             u64::from(BIT_GENERATOR_STATE_SCHEMA_VERSION),
         ),
-        (algorithm_key.to_string(), algorithm_value),
-    ]
+    ];
+    let algorithm_key = algorithm_state_schema_key(kind);
+    if let Some(algorithm_value) = BitGeneratorState::algorithm_state_schema_value(kind, seed, counter) {
+        entries.push((algorithm_key.to_string(), algorithm_value));
+    }
+    entries
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3028,12 +3030,14 @@ impl Generator {
             if ri < ZIGGURAT_EXP_K[idx] {
                 return x;
             }
-            // Tail
+            // Tail: use log1p(-U) to avoid log(0), matching NumPy GH-13361
             if idx == 0 {
-                return ZIGGURAT_EXP_R - self.next_f64().ln();
+                return ZIGGURAT_EXP_R - (-self.next_f64()).ln_1p();
             }
-            // Wedge test
-            if self.next_f64() * (ZIGGURAT_EXP_F[idx - 1] - ZIGGURAT_EXP_F[idx]) < (-x).exp() - ZIGGURAT_EXP_F[idx] {
+            // Wedge test: (F[idx-1] - F[idx]) * U + F[idx] < exp(-x)
+            let f_idx = ZIGGURAT_EXP_F[idx];
+            let f_prev = ZIGGURAT_EXP_F[idx - 1];
+            if (f_prev - f_idx) * self.next_f64() + f_idx < (-x).exp() {
                 return x;
             }
         }

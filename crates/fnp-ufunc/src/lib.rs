@@ -4166,29 +4166,26 @@ impl UFuncArray {
                         values.len()
                     )));
                 }
-                let mut sidecar_vals = self.synthesized_integer_sidecar();
+                let mut sidecar_vals = self.exact_integer_sidecar("insert");
                 let insert_sidecar = insert_values.exact_integer_sidecar("insert");
+                if sidecar_vals.is_some() && insert_sidecar.is_none() {
+                    sidecar_vals = None;
+                }
 
                 let idx = index;
                 for (i, &v) in insert_values.values.iter().enumerate() {
                     values.insert(idx + i, v);
-                    if let Some(ref mut s) = sidecar_vals {
-                        if let Some(ref ins_s) = insert_sidecar {
-                            match (s, ins_s) {
-                                (IntegerSidecar::I64(v_out), IntegerSidecar::I64(v_in)) => {
-                                    v_out.insert(idx + i, v_in[i]);
-                                }
-                                (IntegerSidecar::U64(v_out), IntegerSidecar::U64(v_in)) => {
-                                    v_out.insert(idx + i, v_in[i]);
-                                }
-                                _ => {}
+                    if let Some(ref mut s) = sidecar_vals
+                        && let Some(ref ins_s) = insert_sidecar
+                    {
+                        match (s, ins_s) {
+                            (IntegerSidecar::I64(v_out), IntegerSidecar::I64(v_in)) => {
+                                v_out.insert(idx + i, v_in[i]);
                             }
-                        } else {
-                            // Synthesize inserted value in sidecar
-                            match s {
-                                IntegerSidecar::I64(v_out) => v_out.insert(idx + i, v as i64),
-                                IntegerSidecar::U64(v_out) => v_out.insert(idx + i, v as u64),
+                            (IntegerSidecar::U64(v_out), IntegerSidecar::U64(v_in)) => {
+                                v_out.insert(idx + i, v_in[i]);
                             }
+                            _ => {}
                         }
                     }
                 }
@@ -4218,9 +4215,15 @@ impl UFuncArray {
                 let mut sidecar_vals = match &self.integer_sidecar {
                     Some(IntegerSidecar::I64(_)) => Some(IntegerSidecar::I64(Vec::with_capacity(values.capacity()))),
                     Some(IntegerSidecar::U64(_)) => Some(IntegerSidecar::U64(Vec::with_capacity(values.capacity()))),
-                    None => None,
+                    None => self.exact_integer_sidecar("insert").map(|sidecar| match sidecar {
+                        IntegerSidecar::I64(_) => IntegerSidecar::I64(Vec::with_capacity(values.capacity())),
+                        IntegerSidecar::U64(_) => IntegerSidecar::U64(Vec::with_capacity(values.capacity())),
+                    }),
                 };
                 let insert_sidecar = insert_values.exact_integer_sidecar("insert");
+                if sidecar_vals.is_some() && insert_sidecar.is_none() {
+                    sidecar_vals = None;
+                }
 
                 for o in 0..outer {
                     for k in 0..=axis_len {
@@ -4231,22 +4234,17 @@ impl UFuncArray {
                                     .min(insert_values.values.len().saturating_sub(1));
                                 let v = insert_values.values[insert_idx];
                                 values.push(v);
-                                if let Some(ref mut s) = sidecar_vals {
-                                    if let Some(ref ins_s) = insert_sidecar {
-                                        match (s, ins_s) {
-                                            (IntegerSidecar::I64(v_out), IntegerSidecar::I64(v_in)) => {
-                                                v_out.push(v_in[insert_idx]);
-                                            }
-                                            (IntegerSidecar::U64(v_out), IntegerSidecar::U64(v_in)) => {
-                                                v_out.push(v_in[insert_idx]);
-                                            }
-                                            _ => {}
+                                if let Some(ref mut s) = sidecar_vals
+                                    && let Some(ref ins_s) = insert_sidecar
+                                {
+                                    match (s, ins_s) {
+                                        (IntegerSidecar::I64(v_out), IntegerSidecar::I64(v_in)) => {
+                                            v_out.push(v_in[insert_idx]);
                                         }
-                                    } else {
-                                        match s {
-                                            IntegerSidecar::I64(v_out) => v_out.push(v as i64),
-                                            IntegerSidecar::U64(v_out) => v_out.push(v as u64),
+                                        (IntegerSidecar::U64(v_out), IntegerSidecar::U64(v_in)) => {
+                                            v_out.push(v_in[insert_idx]);
                                         }
+                                        _ => {}
                                     }
                                 }
                             }
@@ -23159,6 +23157,21 @@ mod tests {
         let out = arr.insert(1, &insert_values, None).expect("insert");
         assert!(!out.has_integer_sidecar());
         assert!(out.to_storage().is_err());
+    }
+
+    #[test]
+    fn insert_preserves_sidecar_when_large_exact_values_are_inserted() {
+        let large_val = (1_i64 << 53) + 9;
+        let arr = UFuncArray::from_storage(vec![1], ArrayStorage::I64(vec![1]))
+            .expect("from_storage");
+        let insert_values = UFuncArray::from_storage(vec![1], ArrayStorage::I64(vec![large_val]))
+            .expect("insert_values");
+        let out = arr.insert(1, &insert_values, None).expect("insert");
+        assert!(out.has_integer_sidecar());
+        assert_eq!(
+            out.to_storage().expect("to_storage"),
+            ArrayStorage::I64(vec![1, large_val])
+        );
     }
 
     #[test]
