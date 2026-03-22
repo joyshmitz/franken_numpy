@@ -554,13 +554,13 @@ fn parse_shape_tuple(tuple_literal: &str) -> Result<Vec<usize>, IOError> {
 
     let mut shape = Vec::new();
     let mut saw_non_empty = false;
-    for token in inner.split(',') {
-        let token = token.trim();
-        if token.is_empty() {
+    for part in inner.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
             continue;
         }
         saw_non_empty = true;
-        let dim = token
+        let dim = part
             .parse::<usize>()
             .map_err(|_| IOError::HeaderSchemaInvalid("shape tuple entries must be usize"))?;
         shape.push(dim);
@@ -578,14 +578,6 @@ fn parse_shape_tuple(tuple_literal: &str) -> Result<Vec<usize>, IOError> {
     }
 
     Ok(shape)
-}
-
-#[allow(dead_code)]
-fn parse_header_keys(dictionary: &str) -> Result<Vec<String>, IOError> {
-    let map = parse_header_dictionary_map(dictionary)?;
-    let mut keys: Vec<String> = map.keys().cloned().collect();
-    keys.sort(); // For determinism in tests if needed
-    Ok(keys)
 }
 
 fn parse_header_dictionary_map(

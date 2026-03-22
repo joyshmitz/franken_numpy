@@ -14077,7 +14077,7 @@ impl UFuncArray {
     /// Integer type information (`np.iinfo`).
     ///
     /// Returns `(bits, min, max)` for the given integer dtype.
-    /// Panics for non-integer dtypes.
+    /// Returns `(0, 0, 0)` for non-integer dtypes.
     #[must_use]
     pub fn iinfo(dtype: DType) -> (u32, i128, u128) {
         match dtype {
@@ -14133,12 +14133,14 @@ impl UFuncArray {
                 Some(w) if w > s.len() => format!("{:0>width$}", s, width = w),
                 _ => s,
             }
-        } else {
-            // Two's complement
-            let w = width.unwrap_or(64);
+        } else if let Some(w) = width {
+            // Two's complement with explicit width
             let mask = if w >= 64 { u64::MAX } else { (1u64 << w) - 1 };
             let bits = (num as u64) & mask;
             format!("{bits:0>width$b}", width = w)
+        } else {
+            // Sign-magnitude (no width specified)
+            format!("-{:b}", num.unsigned_abs())
         }
     }
 
@@ -36095,9 +36097,16 @@ mod tests {
     }
 
     #[test]
-    fn binary_repr_negative() {
+    fn binary_repr_negative_twos_complement() {
         // -1 in 8-bit two's complement = 11111111
         assert_eq!(UFuncArray::binary_repr(-1, Some(8)), "11111111");
+    }
+
+    #[test]
+    fn binary_repr_negative_sign_magnitude() {
+        // Without width, negative uses sign-magnitude: -101 for -5
+        assert_eq!(UFuncArray::binary_repr(-5, None), "-101");
+        assert_eq!(UFuncArray::binary_repr(-1, None), "-1");
     }
 
     #[test]
