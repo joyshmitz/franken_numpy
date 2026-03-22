@@ -439,7 +439,10 @@ impl NdLayout {
             if stride != expected_stride {
                 return false;
             }
-            expected_stride = stride * dim as isize;
+            let Some(next) = expected_stride.checked_mul(dim as isize) else {
+                return false;
+            };
+            expected_stride = next;
         }
         true
     }
@@ -468,7 +471,10 @@ impl NdLayout {
             if stride != expected_stride {
                 return false;
             }
-            expected_stride = stride * dim as isize;
+            let Some(next) = expected_stride.checked_mul(dim as isize) else {
+                return false;
+            };
+            expected_stride = next;
         }
         true
     }
@@ -1184,5 +1190,23 @@ mod tests {
             pos, neg,
             "positive and negative strides of same magnitude should have same span"
         );
+    }
+
+    #[test]
+    fn is_contiguous_overflow_check() {
+        // Test for potential isize overflow in is_contiguous calculation.
+        // shape = [isize::MAX, 2], item_size = 1
+        // strides = [2, 1]
+        let max_isize = isize::MAX as usize;
+        let layout = NdLayout {
+            shape: vec![max_isize, 2],
+            strides: vec![2, 1],
+            item_size: 1,
+            writeable: true,
+            has_internal_overlap: false,
+        };
+        // This should NOT panic/overflow. With current implementation it might.
+        // Actually, 2 * isize::MAX overflows isize.
+        let _ = layout.is_contiguous();
     }
 }

@@ -35841,4 +35841,30 @@ mod tests {
     fn base_repr_negative() {
         assert_eq!(UFuncArray::base_repr(-10, 10, 0), "-10");
     }
+
+    #[test]
+    fn test_elementwise_binary_preserves_sidecar_when_one_missing() {
+        let large_val = 9_007_199_254_740_993i64; // 2^53 + 1
+        let a = UFuncArray::from_storage(
+            vec![1],
+            ArrayStorage::I64(vec![large_val])
+        ).expect("a");
+        let b = UFuncArray::from_storage(
+            vec![1],
+            ArrayStorage::I64(vec![10])
+        ).expect("b");
+        // b has no sidecar because 10 is small.
+        assert!(!b.has_integer_sidecar());
+        assert!(a.has_integer_sidecar());
+
+        let res = a.elementwise_binary(&b, BinaryOp::Add).expect("res");
+        // res SHOULD have a sidecar with large_val + 10
+        assert!(res.has_integer_sidecar(), "Result should have integer sidecar");
+        let storage = res.to_storage().expect("storage");
+        if let ArrayStorage::I64(v) = storage {
+            assert_eq!(v[0], large_val + 10);
+        } else {
+            panic!("Expected I64 storage");
+        }
+    }
 }

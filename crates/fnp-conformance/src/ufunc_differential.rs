@@ -1615,9 +1615,9 @@ fn resolve_oracle_python() -> Result<String, String> {
     let require_real = require_real_numpy_oracle();
     let repo_python = repo_numpy_venv_python();
 
-    if let Some(configured) = configured {
-        if !(require_real && is_default_python_selector(&configured)) {
-            return Ok(configured);
+    if let Some(configured_value) = configured.as_deref() {
+        if !(require_real && is_default_python_selector(configured_value)) {
+            return Ok(configured_value.to_string());
         }
     }
 
