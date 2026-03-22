@@ -860,22 +860,28 @@ scripts/e2e/run_ci_gate_topology.sh
 The oracle capture pipeline runs real NumPy, captures its output, and compares against our implementation:
 
 ```bash
-# Set up NumPy oracle environment
-uv venv --python 3.14 .venv-numpy314
-uv pip install --python .venv-numpy314/bin/python numpy
-
-# Capture oracle output
-FNP_ORACLE_PYTHON="$(pwd)/.venv-numpy314/bin/python3" \
+# Recommended: require a real NumPy oracle and let the runner bootstrap
+# a repo-local .venv-numpy314 with uv if needed.
+FNP_REQUIRE_REAL_NUMPY_ORACLE=1 \
   cargo run -p fnp-conformance --bin capture_numpy_oracle
 
 # Run differential comparison
 cargo run -p fnp-conformance --bin run_ufunc_differential
 ```
 
+If you want to manage the interpreter explicitly, this still works:
+
+```bash
+uv venv --python 3.14 .venv-numpy314
+uv pip install --python .venv-numpy314/bin/python numpy
+FNP_ORACLE_PYTHON="$(pwd)/.venv-numpy314/bin/python3" \
+  cargo run -p fnp-conformance --bin capture_numpy_oracle
+```
+
 | Environment Variable | Effect |
 |---|---|
-| `FNP_ORACLE_PYTHON` | Path to Python interpreter with NumPy (default: `python3`) |
-| `FNP_REQUIRE_REAL_NUMPY_ORACLE=1` | Fail fast if NumPy is unavailable (recommended) |
+| `FNP_ORACLE_PYTHON` | Path to Python interpreter with NumPy. Explicit non-default paths win over repo-local bootstrap. |
+| `FNP_REQUIRE_REAL_NUMPY_ORACLE=1` | Require a real NumPy oracle. If `FNP_ORACLE_PYTHON` is unset (or left at `python3`) and `uv` is available, `capture_numpy_oracle` bootstraps and reuses `.venv-numpy314` automatically. |
 
 ---
 

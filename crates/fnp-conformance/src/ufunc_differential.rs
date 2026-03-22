@@ -5,7 +5,7 @@ use fnp_ufunc::{BinaryOp, UFuncArray, UnaryOp};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1523,12 +1523,113 @@ fn now_unix_ms() -> u128 {
         .map_or(0, |d| d.as_millis())
 }
 
-fn resolve_oracle_python() -> String {
+fn require_real_numpy_oracle() -> bool {
+    match std::env::var("FNP_REQUIRE_REAL_NUMPY_ORACLE") {
+        Ok(value) => {
+            let normalized = value.trim().to_ascii_lowercase();
+            matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
+        }
+        Err(_) => false,
+    }
+}
+
+fn repo_numpy_venv_python() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(".venv-numpy314/bin/python3")
+}
+
+fn configured_oracle_python() -> Option<String> {
     std::env::var("FNP_ORACLE_PYTHON")
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "python3".to_string())
+}
+
+fn is_default_python_selector(value: &str) -> bool {
+    matches!(value.trim(), "python3" | "python")
+}
+
+fn bootstrap_repo_numpy_venv(python_path: &Path) -> Result<String, String> {
+    let venv_dir = python_path
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| format!("invalid oracle venv path {}", python_path.display()))?;
+
+    let uv_check = Command::new("uv")
+        .arg("--version")
+        .output()
+        .map_err(|err| {
+            format!(
+                "FNP_REQUIRE_REAL_NUMPY_ORACLE=1 requires a NumPy-backed interpreter, but `uv` is unavailable for bootstrap: {err}"
+            )
+        })?;
+    if !uv_check.status.success() {
+        let stderr = String::from_utf8_lossy(&uv_check.stderr);
+        return Err(format!(
+            "FNP_REQUIRE_REAL_NUMPY_ORACLE=1 requires a NumPy-backed interpreter, but `uv --version` failed: {}",
+            stderr.trim()
+        ));
+    }
+
+    let create = Command::new("uv")
+        .arg("venv")
+        .arg("--python")
+        .arg("3.14")
+        .arg(venv_dir)
+        .output()
+        .map_err(|err| format!("failed to bootstrap oracle venv via uv venv: {err}"))?;
+    if !create.status.success() {
+        let stderr = String::from_utf8_lossy(&create.stderr);
+        let stdout = String::from_utf8_lossy(&create.stdout);
+        return Err(format!(
+            "failed to bootstrap oracle venv via uv venv (stdout={} stderr={})",
+            stdout.trim(),
+            stderr.trim()
+        ));
+    }
+
+    let install = Command::new("uv")
+        .arg("pip")
+        .arg("install")
+        .arg("--python")
+        .arg(python_path)
+        .arg("numpy")
+        .output()
+        .map_err(|err| format!("failed to install numpy into oracle venv: {err}"))?;
+    if !install.status.success() {
+        let stderr = String::from_utf8_lossy(&install.stderr);
+        let stdout = String::from_utf8_lossy(&install.stdout);
+        return Err(format!(
+            "failed to install numpy into oracle venv (stdout={} stderr={})",
+            stdout.trim(),
+            stderr.trim()
+        ));
+    }
+
+    Ok(python_path.display().to_string())
+}
+
+fn resolve_oracle_python() -> Result<String, String> {
+    let configured = configured_oracle_python();
+    let require_real = require_real_numpy_oracle();
+    let repo_python = repo_numpy_venv_python();
+
+    if let Some(configured) = configured {
+        if !(require_real && is_default_python_selector(&configured)) {
+            return Ok(configured);
+        }
+    }
+
+    if repo_python.is_file() {
+        return Ok(repo_python.display().to_string());
+    }
+
+    if require_real {
+        return bootstrap_repo_numpy_venv(&repo_python);
+    }
+
+    Ok(configured.unwrap_or_else(|| "python3".to_string()))
 }
 
 pub fn load_input_cases(path: &Path) -> Result<Vec<UFuncInputCase>, String> {
@@ -1580,7 +1681,7 @@ pub fn capture_numpy_oracle(
             .map_err(|err| format!("failed creating {}: {err}", parent.display()))?;
     }
 
-    let python = resolve_oracle_python();
+    let python = resolve_oracle_python()?;
     let output = Command::new(&python)
         .arg("-c")
         .arg(PY_CAPTURE_SCRIPT)
@@ -2433,13 +2534,20 @@ mod tests {
     }
 
     #[test]
-    fn oracle_python_resolver_defaults_to_python3() {
-        // When FNP_ORACLE_PYTHON is not set, should default to python3
-        let resolved = super::resolve_oracle_python();
-        // It should be either python3 or whatever the env var is set to
+    fn default_python_selector_matches_expected_names() {
+        assert!(super::is_default_python_selector("python3"));
+        assert!(super::is_default_python_selector("python"));
+        assert!(!super::is_default_python_selector("/usr/bin/python3"));
+        assert!(!super::is_default_python_selector("pypy3"));
+    }
+
+    #[test]
+    fn repo_numpy_venv_python_uses_repo_local_path() {
+        let path = super::repo_numpy_venv_python();
         assert!(
-            !resolved.is_empty(),
-            "resolver should not return empty string"
+            path.ends_with(".venv-numpy314/bin/python3"),
+            "expected repo-local oracle venv path, got {}",
+            path.display()
         );
     }
 

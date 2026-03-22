@@ -13943,6 +13943,111 @@ impl UFuncArray {
         self.shape.is_empty() || (self.shape.len() == 1 && self.shape[0] == 1)
     }
 
+    // ── Type information (np.iinfo / np.finfo) ─────────────────────
+
+    /// Integer type information (`np.iinfo`).
+    ///
+    /// Returns `(bits, min, max)` for the given integer dtype.
+    /// Panics for non-integer dtypes.
+    #[must_use]
+    pub fn iinfo(dtype: DType) -> (u32, i128, u128) {
+        match dtype {
+            DType::Bool => (1, 0, 1),
+            DType::I8 => (8, i128::from(i8::MIN), i8::MAX as u128),
+            DType::I16 => (16, i128::from(i16::MIN), i16::MAX as u128),
+            DType::I32 => (32, i128::from(i32::MIN), i32::MAX as u128),
+            DType::I64 => (64, i128::from(i64::MIN), i64::MAX as u128),
+            DType::U8 => (8, 0, u128::from(u8::MAX)),
+            DType::U16 => (16, 0, u128::from(u16::MAX)),
+            DType::U32 => (32, 0, u128::from(u32::MAX)),
+            DType::U64 => (64, 0, u128::from(u64::MAX)),
+            _ => (0, 0, 0), // non-integer dtypes return zeros
+        }
+    }
+
+    /// Floating-point type information (`np.finfo`).
+    ///
+    /// Returns `(bits, eps, min_positive, max)` for the given float dtype.
+    #[must_use]
+    pub fn finfo(dtype: DType) -> (u32, f64, f64, f64) {
+        match dtype {
+            DType::F16 => (16, 9.77e-4, 6.10e-5, 65504.0),
+            DType::F32 => (
+                32,
+                f64::from(f32::EPSILON),
+                f64::from(f32::MIN_POSITIVE),
+                f64::from(f32::MAX),
+            ),
+            DType::F64 => (64, f64::EPSILON, f64::MIN_POSITIVE, f64::MAX),
+            DType::Complex64 => (
+                64,
+                f64::from(f32::EPSILON),
+                f64::from(f32::MIN_POSITIVE),
+                f64::from(f32::MAX),
+            ),
+            DType::Complex128 => (128, f64::EPSILON, f64::MIN_POSITIVE, f64::MAX),
+            _ => (0, 0.0, 0.0, 0.0), // non-float dtypes return zeros
+        }
+    }
+
+    // ── Base conversion utilities (np.binary_repr / np.base_repr) ──
+
+    /// Binary string representation of an integer (`np.binary_repr`).
+    ///
+    /// For negative numbers, uses two's complement with `width` bits.
+    /// If `width` is `None`, uses the minimum number of bits.
+    #[must_use]
+    pub fn binary_repr(num: i64, width: Option<usize>) -> String {
+        if num >= 0 {
+            let s = format!("{num:b}");
+            match width {
+                Some(w) if w > s.len() => format!("{:0>width$}", s, width = w),
+                _ => s,
+            }
+        } else {
+            // Two's complement
+            let w = width.unwrap_or(64);
+            let mask = if w >= 64 { u64::MAX } else { (1u64 << w) - 1 };
+            let bits = (num as u64) & mask;
+            format!("{bits:0>width$b}", width = w)
+        }
+    }
+
+    /// Base-N string representation (`np.base_repr`).
+    ///
+    /// Converts `number` to a string in the given `base` (2-36).
+    /// `padding` adds leading zeros.
+    #[must_use]
+    pub fn base_repr(number: i64, base: u32, padding: usize) -> String {
+        const DIGITS: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        if base < 2 || base > 36 {
+            return String::new();
+        }
+        let negative = number < 0;
+        let mut n = number.unsigned_abs();
+        if n == 0 {
+            let zeros = padding + 1;
+            return "0".repeat(zeros);
+        }
+        let mut chars = Vec::new();
+        while n > 0 {
+            chars.push(DIGITS[(n % u64::from(base)) as usize]);
+            n /= u64::from(base);
+        }
+        chars.reverse();
+        let mut result = String::with_capacity(padding + chars.len() + 1);
+        if negative {
+            result.push('-');
+        }
+        for _ in 0..padding.saturating_sub(chars.len()) {
+            result.push('0');
+        }
+        for &c in &chars {
+            result.push(char::from(c));
+        }
+        result
+    }
+
     /// Element-wise test for real values (np.isreal).
     /// For non-complex dtypes, all values are real. For complex dtypes,
     /// an element is real if its imaginary part is zero.
@@ -35659,5 +35764,81 @@ mod tests {
         let cov = ma.cov().unwrap();
         assert_eq!(cov.data().shape(), &[2, 2]);
         // Should compute using only unmasked-in-both-rows observations
+    }
+
+    // ── iinfo/finfo/binary_repr/base_repr tests (br-rd0) ────────
+
+    #[test]
+    fn iinfo_i32() {
+        let (bits, min, max) = UFuncArray::iinfo(DType::I32);
+        assert_eq!(bits, 32);
+        assert_eq!(min, i128::from(i32::MIN));
+        assert_eq!(max, i32::MAX as u128);
+    }
+
+    #[test]
+    fn iinfo_u8() {
+        let (bits, min, max) = UFuncArray::iinfo(DType::U8);
+        assert_eq!(bits, 8);
+        assert_eq!(min, 0);
+        assert_eq!(max, 255);
+    }
+
+    #[test]
+    fn finfo_f64() {
+        let (bits, eps, min_pos, max) = UFuncArray::finfo(DType::F64);
+        assert_eq!(bits, 64);
+        assert_eq!(eps, f64::EPSILON);
+        assert_eq!(min_pos, f64::MIN_POSITIVE);
+        assert_eq!(max, f64::MAX);
+    }
+
+    #[test]
+    fn finfo_f32() {
+        let (bits, eps, _, _) = UFuncArray::finfo(DType::F32);
+        assert_eq!(bits, 32);
+        assert!((eps - f64::from(f32::EPSILON)).abs() < 1e-15);
+    }
+
+    #[test]
+    fn binary_repr_positive() {
+        assert_eq!(UFuncArray::binary_repr(5, None), "101");
+        assert_eq!(UFuncArray::binary_repr(5, Some(8)), "00000101");
+    }
+
+    #[test]
+    fn binary_repr_negative() {
+        // -1 in 8-bit two's complement = 11111111
+        assert_eq!(UFuncArray::binary_repr(-1, Some(8)), "11111111");
+    }
+
+    #[test]
+    fn binary_repr_zero() {
+        assert_eq!(UFuncArray::binary_repr(0, None), "0");
+    }
+
+    #[test]
+    fn base_repr_decimal() {
+        assert_eq!(UFuncArray::base_repr(255, 10, 0), "255");
+    }
+
+    #[test]
+    fn base_repr_hex() {
+        assert_eq!(UFuncArray::base_repr(255, 16, 0), "FF");
+    }
+
+    #[test]
+    fn base_repr_binary() {
+        assert_eq!(UFuncArray::base_repr(10, 2, 0), "1010");
+    }
+
+    #[test]
+    fn base_repr_with_padding() {
+        assert_eq!(UFuncArray::base_repr(5, 10, 4), "0005");
+    }
+
+    #[test]
+    fn base_repr_negative() {
+        assert_eq!(UFuncArray::base_repr(-10, 10, 0), "-10");
     }
 }

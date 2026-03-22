@@ -60,9 +60,10 @@ echo "[ci-topology] G2 unit+property"
 rch exec -- cargo test --workspace --lib
 
 echo "[ci-topology] G3 differential"
+REQUIRE_REAL_ORACLE="$(resolve_require_real_oracle)"
+export FNP_REQUIRE_REAL_NUMPY_ORACLE="$REQUIRE_REAL_ORACLE"
 rch exec -- cargo run -p fnp-conformance --bin capture_numpy_oracle
 rch exec -- cargo run -p fnp-conformance --bin run_ufunc_differential
-REQUIRE_REAL_ORACLE="$(resolve_require_real_oracle)"
 ORACLE_SOURCE="$(read_oracle_source)"
 echo "[ci-topology] G3 oracle_source=$ORACLE_SOURCE require_real_oracle=$REQUIRE_REAL_ORACLE"
 if [[ "$REQUIRE_REAL_ORACLE" == "1" && "$ORACLE_SOURCE" == "pure_python_fallback" ]]; then
