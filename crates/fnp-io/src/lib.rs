@@ -1445,7 +1445,8 @@ pub fn read_npz_bytes(data: &[u8]) -> Result<Vec<NpzEntry>, IOError> {
             }
             8 => {
                 // Limit the amount of data we read to uncompressed_size to prevent zip bombs
-                let mut decoder = DeflateDecoder::new(stored_entry_bytes).take(uncompressed_size as u64);
+                let mut decoder =
+                    DeflateDecoder::new(stored_entry_bytes).take(uncompressed_size as u64);
                 let mut decoded = Vec::with_capacity(uncompressed_size);
                 decoder.read_to_end(&mut decoded).map_err(|_| {
                     IOError::NpzArchiveContractViolation(
@@ -2889,7 +2890,9 @@ pub fn load_structured(data: &[u8]) -> Result<StructuredNpyData, IOError> {
     )?;
 
     // Parse structured descriptor
-    let descr_tail = map.get("descr").ok_or(IOError::HeaderSchemaInvalid("descr missing"))?;
+    let descr_tail = map
+        .get("descr")
+        .ok_or(IOError::HeaderSchemaInvalid("descr missing"))?;
     if !descr_tail.starts_with('[') {
         return Err(IOError::DTypeDescriptorInvalid);
     }

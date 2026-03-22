@@ -10,10 +10,10 @@ fn bench_cholesky_solve_multi_naive() {
         l[i * n + i] = 1.0; // Identity matrix as Cholesky factor
     }
     let b = vec![1.0; n * m];
-    
+
     let start = Instant::now();
     let _res = cholesky_solve_multi(&l, &b, n, m).unwrap();
     let duration = start.elapsed();
-    
+
     println!("cholesky_solve_multi (n={n}, m={m}) took: {:?}", duration);
 }

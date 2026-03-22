@@ -10194,7 +10194,9 @@ fn maybe_append_runtime_policy_log(entry: &RuntimePolicyLogEntry) -> Result<(), 
             .map_err(|err| format!("failed creating {}: {err}", parent.display()))?;
     }
 
-    let _guard = FILE_LOG_MUTEX.lock().map_err(|_| "failed acquiring log lock")?;
+    let _guard = FILE_LOG_MUTEX
+        .lock()
+        .map_err(|_| "failed acquiring log lock")?;
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
@@ -10227,7 +10229,9 @@ fn maybe_append_shape_stride_log(entry: &ShapeStrideLogEntry) -> Result<(), Stri
             .map_err(|err| format!("failed creating {}: {err}", parent.display()))?;
     }
 
-    let _guard = FILE_LOG_MUTEX.lock().map_err(|_| "failed acquiring log lock")?;
+    let _guard = FILE_LOG_MUTEX
+        .lock()
+        .map_err(|_| "failed acquiring log lock")?;
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
@@ -10260,7 +10264,9 @@ fn maybe_append_dtype_promotion_log(entry: &DTypePromotionLogEntry) -> Result<()
             .map_err(|err| format!("failed creating {}: {err}", parent.display()))?;
     }
 
-    let _guard = FILE_LOG_MUTEX.lock().map_err(|_| "failed acquiring log lock")?;
+    let _guard = FILE_LOG_MUTEX
+        .lock()
+        .map_err(|_| "failed acquiring log lock")?;
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)

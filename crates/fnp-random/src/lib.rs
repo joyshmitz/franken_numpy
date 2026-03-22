@@ -765,12 +765,7 @@ impl PhiloxRng {
         for _ in 0..10 {
             let (hi0, lo0) = mulhilo64(0xD2E7_470E_E14C_6C93, ctr[0]);
             let (hi1, lo1) = mulhilo64(0xCA5A_8263_9512_1157, ctr[2]);
-            let next_ctr = [
-                hi1 ^ ctr[1] ^ key[0],
-                lo1,
-                hi0 ^ ctr[3] ^ key[1],
-                lo0,
-            ];
+            let next_ctr = [hi1 ^ ctr[1] ^ key[0], lo1, hi0 ^ ctr[3] ^ key[1], lo0];
             ctr = next_ctr;
             key[0] = key[0].wrapping_add(0x9E37_79B9_7F4A_7C15);
             key[1] = key[1].wrapping_add(0xBB67_AE85_84CA_A73B);
@@ -858,7 +853,12 @@ impl PhiloxRng {
                 _ => {}
             }
         }
-        Some(Self { ctr, key, buffer, buffer_pos })
+        Some(Self {
+            ctr,
+            key,
+            buffer,
+            buffer_pos,
+        })
     }
 }
 
@@ -1358,7 +1358,11 @@ pub struct BitGeneratorState {
 }
 
 impl BitGeneratorState {
-    fn algorithm_state_schema_value(kind: BitGeneratorKind, seed: u64, counter: u64) -> Option<u64> {
+    fn algorithm_state_schema_value(
+        kind: BitGeneratorKind,
+        seed: u64,
+        counter: u64,
+    ) -> Option<u64> {
         match kind {
             BitGeneratorKind::Mt19937 => Some(counter % 624),
             BitGeneratorKind::Pcg64 => Some(splitmix64(seed ^ 0x5043_4736_3400_0001_u64)),
@@ -1433,19 +1437,28 @@ impl BitGeneratorState {
         }
 
         // For real algorithms, we relax the check if they use custom state entries
-        let is_real_prng = matches!(self.kind, BitGeneratorKind::Mt19937 | BitGeneratorKind::Philox | BitGeneratorKind::Sfc64 | BitGeneratorKind::Pcg64);
+        let is_real_prng = matches!(
+            self.kind,
+            BitGeneratorKind::Mt19937
+                | BitGeneratorKind::Philox
+                | BitGeneratorKind::Sfc64
+                | BitGeneratorKind::Pcg64
+        );
         let expected_algorithm_key = algorithm_state_schema_key(self.kind);
         let has_unknown_entries = self.schema_entries.iter().any(|(k, _)| {
-            !matches!(k.as_str(), "stream_seed" | "counter" | "algorithm_tag" | "schema_version")
-            && k.as_str() != expected_algorithm_key
-            && !k.starts_with("mt19937_")
-            && !k.starts_with("pcg64_")
-            && !k.starts_with("philox_")
-            && !k.starts_with("sfc64_")
+            !matches!(
+                k.as_str(),
+                "stream_seed" | "counter" | "algorithm_tag" | "schema_version"
+            ) && k.as_str() != expected_algorithm_key
+                && !k.starts_with("mt19937_")
+                && !k.starts_with("pcg64_")
+                && !k.starts_with("philox_")
+                && !k.starts_with("sfc64_")
         });
 
         if (!is_real_prng || !has_unknown_entries)
-            && let Some(expected_algorithm_state) = Self::algorithm_state_schema_value(self.kind, self.seed as u64, self.counter as u64)
+            && let Some(expected_algorithm_state) =
+                Self::algorithm_state_schema_value(self.kind, self.seed as u64, self.counter as u64)
             && algorithm_state != Some(expected_algorithm_state)
         {
             return Err(BitGeneratorError::StateSchemaInvalid(
@@ -1481,7 +1494,9 @@ fn default_state_schema_entries(
         ),
     ];
     let algorithm_key = algorithm_state_schema_key(kind);
-    if let Some(algorithm_value) = BitGeneratorState::algorithm_state_schema_value(kind, seed as u64, counter as u64) {
+    if let Some(algorithm_value) =
+        BitGeneratorState::algorithm_state_schema_value(kind, seed as u64, counter as u64)
+    {
         entries.push((algorithm_key.to_string(), algorithm_value));
     }
     entries
@@ -1604,25 +1619,29 @@ impl BitGenerator {
         let rng = match seed {
             SeedMaterial::None => match kind {
                 BitGeneratorKind::Pcg64 => {
-                    RngBackend::Pcg64Dxsm(Pcg64DxsmRng::from_u64_seed(DEFAULT_RNG_SEED).map_err(|_| {
-                        BitGeneratorError::InitFailed("PCG64 initialization failed")
-                    })?)
+                    RngBackend::Pcg64Dxsm(Pcg64DxsmRng::from_u64_seed(DEFAULT_RNG_SEED).map_err(
+                        |_| BitGeneratorError::InitFailed("PCG64 initialization failed"),
+                    )?)
                 }
                 BitGeneratorKind::Mt19937 => {
                     RngBackend::Mt19937(Mt19937Rng::from_u32_seed(DEFAULT_RNG_SEED as u32))
                 }
                 BitGeneratorKind::Philox => {
-                    let ss = SeedSequence::new(&[DEFAULT_RNG_SEED as u32, (DEFAULT_RNG_SEED >> 32) as u32]).map_err(|_| {
-                        BitGeneratorError::InitFailed("Philox initialization failed")
-                    })?;
+                    let ss = SeedSequence::new(&[
+                        DEFAULT_RNG_SEED as u32,
+                        (DEFAULT_RNG_SEED >> 32) as u32,
+                    ])
+                    .map_err(|_| BitGeneratorError::InitFailed("Philox initialization failed"))?;
                     RngBackend::Philox(PhiloxRng::from_seed_sequence(&ss).map_err(|_| {
                         BitGeneratorError::InitFailed("Philox initialization failed")
                     })?)
                 }
                 BitGeneratorKind::Sfc64 => {
-                    let ss = SeedSequence::new(&[DEFAULT_RNG_SEED as u32, (DEFAULT_RNG_SEED >> 32) as u32]).map_err(|_| {
-                        BitGeneratorError::InitFailed("SFC64 initialization failed")
-                    })?;
+                    let ss = SeedSequence::new(&[
+                        DEFAULT_RNG_SEED as u32,
+                        (DEFAULT_RNG_SEED >> 32) as u32,
+                    ])
+                    .map_err(|_| BitGeneratorError::InitFailed("SFC64 initialization failed"))?;
                     RngBackend::Sfc64(Sfc64Rng::from_seed_sequence(&ss).map_err(|_| {
                         BitGeneratorError::InitFailed("SFC64 initialization failed")
                     })?)
@@ -1656,10 +1675,10 @@ impl BitGenerator {
             },
             SeedMaterial::State { seed, counter } => match kind {
                 BitGeneratorKind::Pcg64 => {
-                    RngBackend::Pcg64Dxsm(Pcg64DxsmRng::from_raw_state(u128::from(seed), u128::from(counter)))
+                    RngBackend::Pcg64Dxsm(Pcg64DxsmRng::from_raw_state(seed, counter))
                 }
                 _ => RngBackend::Deterministic(DeterministicRng::from_state(seed, counter)),
-            }
+            },
             material => {
                 let rng = deterministic_rng_from_seed_material(material).map_err(|_| {
                     BitGeneratorError::InitFailed(
@@ -1677,26 +1696,24 @@ impl BitGenerator {
         seed_sequence: &SeedSequence,
     ) -> Result<Self, BitGeneratorError> {
         let backend = match kind {
-            BitGeneratorKind::Pcg64 => {
-                RngBackend::Pcg64Dxsm(Pcg64DxsmRng::from_seed_sequence(seed_sequence).map_err(
-                    |_| BitGeneratorError::InitFailed("PCG64 SeedSequence init failed"),
-                )?)
-            }
+            BitGeneratorKind::Pcg64 => RngBackend::Pcg64Dxsm(
+                Pcg64DxsmRng::from_seed_sequence(seed_sequence)
+                    .map_err(|_| BitGeneratorError::InitFailed("PCG64 SeedSequence init failed"))?,
+            ),
             BitGeneratorKind::Mt19937 => {
-                RngBackend::Mt19937(Mt19937Rng::from_seed_sequence(seed_sequence).map_err(|_| {
-                    BitGeneratorError::InitFailed("MT19937 SeedSequence init failed")
-                })?)
+                RngBackend::Mt19937(Mt19937Rng::from_seed_sequence(seed_sequence).map_err(
+                    |_| BitGeneratorError::InitFailed("MT19937 SeedSequence init failed"),
+                )?)
             }
             BitGeneratorKind::Philox => {
                 RngBackend::Philox(PhiloxRng::from_seed_sequence(seed_sequence).map_err(|_| {
                     BitGeneratorError::InitFailed("Philox SeedSequence init failed")
                 })?)
             }
-            BitGeneratorKind::Sfc64 => {
-                RngBackend::Sfc64(Sfc64Rng::from_seed_sequence(seed_sequence).map_err(|_| {
-                    BitGeneratorError::InitFailed("SFC64 SeedSequence init failed")
-                })?)
-            }
+            BitGeneratorKind::Sfc64 => RngBackend::Sfc64(
+                Sfc64Rng::from_seed_sequence(seed_sequence)
+                    .map_err(|_| BitGeneratorError::InitFailed("SFC64 SeedSequence init failed"))?,
+            ),
         };
         Ok(Self { kind, rng: backend })
     }
@@ -1783,7 +1800,9 @@ impl BitGenerator {
             })?;
             let child_ordinal = child_index_u64 + 1;
             let child_seed = splitmix64(
-                (parent_seed as u64) ^ self.kind.stream_tag() ^ child_ordinal.wrapping_mul(GOLDEN_GAMMA),
+                (parent_seed as u64)
+                    ^ self.kind.stream_tag()
+                    ^ child_ordinal.wrapping_mul(GOLDEN_GAMMA),
             );
             let child_counter = (parent_counter as u64).wrapping_add(
                 child_ordinal.checked_mul(self.kind.jump_stride()).ok_or(
@@ -1809,7 +1828,7 @@ impl BitGenerator {
     pub fn state(&self) -> BitGeneratorState {
         let (seed, counter) = self.raw_state();
         let mut schema_entries = default_state_schema_entries(self.kind, seed, counter);
-        
+
         // Merge algorithm-specific state entries
         for entry in self.rng.to_state_entries() {
             // Only add if not already present (default_state_schema_entries might have added some)
@@ -2749,8 +2768,9 @@ impl Generator {
             } else {
                 // Stirling approximation for large k
                 let log_v = v.ln();
-                let rho = (k as f64 / nrq) * ((k as f64 * (k as f64 / 3.0 + 0.625) + 0.16666666666666666) / nrq + 0.5);
-                let t = - (k as f64 * k as f64) / (2.0 * nrq);
+                let rho = (k as f64 / nrq)
+                    * ((k as f64 * (k as f64 / 3.0 + 0.625) + 0.16666666666666666) / nrq + 0.5);
+                let t = -(k as f64 * k as f64) / (2.0 * nrq);
                 if log_v < t - rho {
                     return if p <= 0.5 { y } else { n - y };
                 }
@@ -2763,10 +2783,11 @@ impl Generator {
                 let f1 = m as f64 + 1.0;
                 let z = (n - m) as f64 + 1.0;
                 let w = (n - y) as f64 + 1.0;
-                if log_v <= (m as f64 + 0.5) * (f1 / x1).ln()
-                    + (n as f64 - m as f64 + 0.5) * (z / w).ln()
-                    + (y as f64 - m as f64) * (w * r / (x1 * q)).ln()
-                    + (1.0 / 12.0) * (1.0 / f1 + 1.0 / z - 1.0 / x1 - 1.0 / w)
+                if log_v
+                    <= (m as f64 + 0.5) * (f1 / x1).ln()
+                        + (n as f64 - m as f64 + 0.5) * (z / w).ln()
+                        + (y as f64 - m as f64) * (w * r / (x1 * q)).ln()
+                        + (1.0 / 12.0) * (1.0 / f1 + 1.0 / z - 1.0 / x1 - 1.0 / w)
                 {
                     return if p <= 0.5 { y } else { n - y };
                 }

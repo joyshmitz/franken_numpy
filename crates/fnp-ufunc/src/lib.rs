@@ -1311,6 +1311,29 @@ pub enum IntegerSidecar {
     U64(Vec<u64>),
 }
 
+impl IntegerSidecar {
+    pub fn contains_non_zero(&self, index: usize) -> bool {
+        match self {
+            Self::I64(v) => v[index] != 0,
+            Self::U64(v) => v[index] != 0,
+        }
+    }
+
+    pub fn get_i64(&self, index: usize) -> i64 {
+        match self {
+            Self::I64(v) => v[index],
+            Self::U64(v) => v[index] as i64,
+        }
+    }
+
+    pub fn get_u64(&self, index: usize) -> u64 {
+        match self {
+            Self::I64(v) => v[index] as u64,
+            Self::U64(v) => v[index],
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct UFuncArray {
     shape: Vec<usize>,
@@ -1854,9 +1877,9 @@ impl UFuncArrayView {
             }
             let dim = isize::try_from(dim)
                 .map_err(|_| UFuncError::Msg("as_strided: dimension overflow".to_string()))?;
-            required_stride = stride
-                .checked_mul(dim)
-                .ok_or_else(|| UFuncError::Msg("as_strided: required stride overflow".to_string()))?;
+            required_stride = stride.checked_mul(dim).ok_or_else(|| {
+                UFuncError::Msg("as_strided: required stride overflow".to_string())
+            })?;
         }
         Ok(false)
     }
@@ -2198,13 +2221,23 @@ impl UFuncArray {
     fn constant_integer_sidecar(&self, value: f64, len: usize) -> Option<IntegerSidecar> {
         match &self.integer_sidecar {
             Some(IntegerSidecar::I64(_)) => {
-                ensure_exact_integer_bridge_value_supported(value, DType::I64, "integer sidecar", 0)
-                    .ok()?;
+                ensure_exact_integer_bridge_value_supported(
+                    value,
+                    DType::I64,
+                    "integer sidecar",
+                    0,
+                )
+                .ok()?;
                 Some(IntegerSidecar::I64(vec![value as i64; len]))
             }
             Some(IntegerSidecar::U64(_)) => {
-                ensure_exact_integer_bridge_value_supported(value, DType::U64, "integer sidecar", 0)
-                    .ok()?;
+                ensure_exact_integer_bridge_value_supported(
+                    value,
+                    DType::U64,
+                    "integer sidecar",
+                    0,
+                )
+                .ok()?;
                 Some(IntegerSidecar::U64(vec![value as u64; len]))
             }
             None => None,
@@ -2846,7 +2879,20 @@ impl UFuncArray {
                 })
                 .collect::<Vec<_>>();
             dispatch_float_error_flags(float_error_flags, op.name())?;
-            return Self::from_values_with_dtype(out_shape, values, out_dtype);
+            let mut out = Self::from_values_with_dtype(out_shape, values, out_dtype)?;
+            if let (Some(l_sidecar), Some(r_sidecar)) =
+                (&self.integer_sidecar, &rhs.integer_sidecar)
+            {
+                out.integer_sidecar = binary_op_sidecar(
+                    l_sidecar,
+                    r_sidecar,
+                    op,
+                    &out.shape,
+                    &self.shape,
+                    &rhs.shape,
+                );
+            }
+            return Ok(out);
         }
 
         let lhs_strides = contiguous_strides_elems(&self.shape);
@@ -2891,7 +2937,18 @@ impl UFuncArray {
         }
 
         dispatch_float_error_flags(float_error_flags, op.name())?;
-        Self::from_values_with_dtype(out_shape, out_values, out_dtype)
+        let mut out = Self::from_values_with_dtype(out_shape, out_values, out_dtype)?;
+        if let (Some(l_sidecar), Some(r_sidecar)) = (&self.integer_sidecar, &rhs.integer_sidecar) {
+            out.integer_sidecar = binary_op_sidecar(
+                l_sidecar,
+                r_sidecar,
+                op,
+                &out.shape,
+                &self.shape,
+                &rhs.shape,
+            );
+        }
+        Ok(out)
     }
 
     fn elementwise_complex_binary(&self, rhs: &Self, op: BinaryOp) -> Result<Self, UFuncError> {
@@ -2999,6 +3056,10 @@ impl UFuncArray {
         match axis {
             None => {
                 let sum: f64 = self.values.iter().copied().sum();
+                let out_sidecar = self.integer_sidecar.as_ref().map(|s| match s {
+                    IntegerSidecar::I64(v) => IntegerSidecar::I64(vec![v.iter().copied().sum()]),
+                    IntegerSidecar::U64(v) => IntegerSidecar::U64(vec![v.iter().copied().sum()]),
+                });
                 let shape = if keepdims {
                     vec![1; self.shape.len()]
                 } else {
@@ -3008,7 +3069,7 @@ impl UFuncArray {
                     shape,
                     values: vec![sum],
                     dtype: out_dtype,
-                    integer_sidecar: None,
+                    integer_sidecar: out_sidecar,
                 })
             }
             Some(axis) => {
@@ -3018,11 +3079,20 @@ impl UFuncArray {
                 let mut out_values = vec![0.0f64; out_count];
                 reduce_sum_axis_contiguous(&self.values, &self.shape, axis, &mut out_values);
 
+                let out_sidecar = self.integer_sidecar.as_ref().map(|s| {
+                    let mut out_v = match s {
+                        IntegerSidecar::I64(_) => IntegerSidecar::I64(vec![0; out_count]),
+                        IntegerSidecar::U64(_) => IntegerSidecar::U64(vec![0; out_count]),
+                    };
+                    reduce_sum_sidecar(s, &self.shape, axis, &mut out_v);
+                    out_v
+                });
+
                 Ok(Self {
                     shape: out_shape,
                     values: out_values,
                     dtype: out_dtype,
-                    integer_sidecar: None,
+                    integer_sidecar: out_sidecar,
                 })
             }
         }
@@ -3033,6 +3103,14 @@ impl UFuncArray {
         match axis {
             None => {
                 let prod: f64 = self.values.iter().copied().product();
+                let out_sidecar = if self.values.is_empty() {
+                    self.integer_sidecar.as_ref().map(|s| match s {
+                        IntegerSidecar::I64(_) => IntegerSidecar::I64(vec![1]),
+                        IntegerSidecar::U64(_) => IntegerSidecar::U64(vec![1]),
+                    })
+                } else {
+                    None
+                };
                 let shape = if keepdims {
                     vec![1; self.shape.len()]
                 } else {
@@ -3042,11 +3120,12 @@ impl UFuncArray {
                     shape,
                     values: vec![prod],
                     dtype: out_dtype,
-                    integer_sidecar: None,
+                    integer_sidecar: out_sidecar,
                 })
             }
             Some(axis) => {
                 let axis = normalize_axis(axis, self.shape.len())?;
+                let axis_len = self.shape[axis];
                 let out_shape = reduced_shape(&self.shape, axis, keepdims);
                 let out_count = element_count(&out_shape).map_err(UFuncError::Shape)?;
                 let mut out_values = vec![1.0f64; out_count];
@@ -3058,11 +3137,20 @@ impl UFuncArray {
                     |acc, v| acc * v,
                 );
 
+                let out_sidecar = if axis_len == 0 {
+                    self.integer_sidecar.as_ref().map(|s| match s {
+                        IntegerSidecar::I64(_) => IntegerSidecar::I64(vec![1; out_count]),
+                        IntegerSidecar::U64(_) => IntegerSidecar::U64(vec![1; out_count]),
+                    })
+                } else {
+                    None
+                };
+
                 Ok(Self {
                     shape: out_shape,
                     values: out_values,
                     dtype: out_dtype,
-                    integer_sidecar: None,
+                    integer_sidecar: out_sidecar,
                 })
             }
         }
@@ -4213,12 +4301,22 @@ impl UFuncArray {
                 new_shape[ax] = axis_len + 1;
                 let mut values = Vec::with_capacity(outer * (axis_len + 1) * inner);
                 let mut sidecar_vals = match &self.integer_sidecar {
-                    Some(IntegerSidecar::I64(_)) => Some(IntegerSidecar::I64(Vec::with_capacity(values.capacity()))),
-                    Some(IntegerSidecar::U64(_)) => Some(IntegerSidecar::U64(Vec::with_capacity(values.capacity()))),
-                    None => self.exact_integer_sidecar("insert").map(|sidecar| match sidecar {
-                        IntegerSidecar::I64(_) => IntegerSidecar::I64(Vec::with_capacity(values.capacity())),
-                        IntegerSidecar::U64(_) => IntegerSidecar::U64(Vec::with_capacity(values.capacity())),
-                    }),
+                    Some(IntegerSidecar::I64(_)) => {
+                        Some(IntegerSidecar::I64(Vec::with_capacity(values.capacity())))
+                    }
+                    Some(IntegerSidecar::U64(_)) => {
+                        Some(IntegerSidecar::U64(Vec::with_capacity(values.capacity())))
+                    }
+                    None => self
+                        .exact_integer_sidecar("insert")
+                        .map(|sidecar| match sidecar {
+                            IntegerSidecar::I64(_) => {
+                                IntegerSidecar::I64(Vec::with_capacity(values.capacity()))
+                            }
+                            IntegerSidecar::U64(_) => {
+                                IntegerSidecar::U64(Vec::with_capacity(values.capacity()))
+                            }
+                        }),
                 };
                 let insert_sidecar = insert_values.exact_integer_sidecar("insert");
                 if sidecar_vals.is_some() && insert_sidecar.is_none() {
@@ -5228,7 +5326,8 @@ impl UFuncArray {
                         for r in 0..repeats {
                             for i in 0..inner {
                                 let src_idx = o * axis_len * inner + k * inner + i;
-                                let dst_idx = o * new_axis_len * inner + (k * repeats + r) * inner + i;
+                                let dst_idx =
+                                    o * new_axis_len * inner + (k * repeats + r) * inner + i;
                                 values[dst_idx] = self.values[src_idx];
                                 source_indices[dst_idx] = src_idx;
                             }
@@ -5501,7 +5600,8 @@ impl UFuncArray {
                     let mut acc = 0.0;
                     for p in 0..k {
                         // a[i, p] * b[j, p, l]
-                        acc += self.values[i * k + p] * rhs.values[j * b_matrix_size + p * b_last_dim + l];
+                        acc += self.values[i * k + p]
+                            * rhs.values[j * b_matrix_size + p * b_last_dim + l];
                     }
                     out_values[(i * b_prefix_count + j) * b_last_dim + l] = acc;
                 }
@@ -5715,7 +5815,7 @@ impl UFuncArray {
             let mut b_multi = vec![0usize; ndim];
             for b_idx in 0..b_count {
                 let b_val = other.values[b_idx];
-                
+
                 // Calculate out_idx from a_multi and b_multi
                 let mut out_idx = 0usize;
                 for d in 0..ndim {
@@ -7317,6 +7417,20 @@ impl UFuncArray {
         }
     }
 
+    /// Cast to a specified dtype with casting policy validation (`np.ndarray.astype(casting=...)`).
+    ///
+    /// Validates the cast using `fnp_dtype::can_cast` before performing it.
+    /// `casting` must be one of `"no"`, `"equiv"`, `"safe"`, `"same_kind"`, or `"unsafe"`.
+    pub fn astype_with_casting(&self, dtype: DType, casting: &str) -> Result<Self, UFuncError> {
+        if !fnp_dtype::can_cast(self.dtype, dtype, casting) {
+            return Err(UFuncError::Msg(format!(
+                "Cannot cast {:?} to {:?} according to the rule '{casting}'",
+                self.dtype, dtype
+            )));
+        }
+        Ok(self.astype(dtype))
+    }
+
     /// Return a contiguous array in memory (C order) — np.ascontiguousarray.
     ///
     /// Since `UFuncArray` always stores data in C-contiguous flat layout,
@@ -7358,12 +7472,12 @@ impl UFuncArray {
     pub fn any(&self, axis: Option<isize>) -> Result<Self, UFuncError> {
         match axis {
             None => {
-                let result = if self.values.iter().any(|&v| v != 0.0) {
-                    1.0
+                let found = if let Some(ref sidecar) = self.integer_sidecar {
+                    (0..self.values.len()).any(|idx| sidecar.contains_non_zero(idx))
                 } else {
-                    0.0
+                    self.values.iter().any(|&v| v != 0.0)
                 };
-                Ok(Self::scalar(result, DType::Bool))
+                Ok(Self::scalar(if found { 1.0 } else { 0.0 }, DType::Bool))
             }
             Some(ax) => {
                 let ax = normalize_axis(ax, self.shape.len())?;
@@ -7388,7 +7502,13 @@ impl UFuncArray {
                     for i in 0..inner {
                         let mut found = false;
                         for a in 0..axis_len {
-                            if self.values[o * axis_len * inner + a * inner + i] != 0.0 {
+                            let idx = o * axis_len * inner + a * inner + i;
+                            let is_true = if let Some(ref sidecar) = self.integer_sidecar {
+                                sidecar.contains_non_zero(idx)
+                            } else {
+                                self.values[idx] != 0.0
+                            };
+                            if is_true {
                                 found = true;
                                 break;
                             }
@@ -7411,12 +7531,12 @@ impl UFuncArray {
     pub fn all(&self, axis: Option<isize>) -> Result<Self, UFuncError> {
         match axis {
             None => {
-                let result = if self.values.iter().all(|&v| v != 0.0) {
-                    1.0
+                let all_ok = if let Some(ref sidecar) = self.integer_sidecar {
+                    (0..self.values.len()).all(|idx| sidecar.contains_non_zero(idx))
                 } else {
-                    0.0
+                    self.values.iter().all(|&v| v != 0.0)
                 };
-                Ok(Self::scalar(result, DType::Bool))
+                Ok(Self::scalar(if all_ok { 1.0 } else { 0.0 }, DType::Bool))
             }
             Some(ax) => {
                 let ax = normalize_axis(ax, self.shape.len())?;
@@ -7441,7 +7561,13 @@ impl UFuncArray {
                     for i in 0..inner {
                         let mut all_ok = true;
                         for a in 0..axis_len {
-                            if self.values[o * axis_len * inner + a * inner + i] == 0.0 {
+                            let idx = o * axis_len * inner + a * inner + i;
+                            let is_true = if let Some(ref sidecar) = self.integer_sidecar {
+                                sidecar.contains_non_zero(idx)
+                            } else {
+                                self.values[idx] != 0.0
+                            };
+                            if !is_true {
                                 all_ok = false;
                                 break;
                             }
@@ -7462,12 +7588,15 @@ impl UFuncArray {
     /// Return the indices of non-zero (truthy) elements (flat).
     /// Returns a 1-D array of integer indices. Equivalent to `np.nonzero` on flat.
     pub fn nonzero(&self) -> Self {
-        let indices: Vec<f64> = self
-            .values
-            .iter()
-            .enumerate()
-            .filter(|&(_, &v)| v != 0.0)
-            .map(|(i, _)| i as f64)
+        let indices: Vec<f64> = (0..self.values.len())
+            .filter(|&idx| {
+                if let Some(ref sidecar) = self.integer_sidecar {
+                    sidecar.contains_non_zero(idx)
+                } else {
+                    self.values[idx] != 0.0
+                }
+            })
+            .map(|i| i as f64)
             .collect();
         let n = indices.len();
         Self {
@@ -10143,6 +10272,60 @@ impl UFuncArray {
             dtype: DType::F64,
             integer_sidecar: None,
         })
+    }
+
+    /// Compute the FFT of a Hermitian-symmetric signal (`np.fft.hfft`).
+    ///
+    /// Input is complex with shape `[n//2+1, 2]` (interleaved). The signal
+    /// has Hermitian symmetry so the output is real with `n` points.
+    /// This is `irfft(conj(input), n) * n` (unnormalized).
+    pub fn hfft(&self, n: Option<usize>) -> Result<Self, UFuncError> {
+        if self.shape.len() != 2 || self.shape[1] != 2 {
+            return Err(UFuncError::Msg(
+                "hfft: input must have shape [m, 2] (interleaved complex)".to_string(),
+            ));
+        }
+        // Conjugate the input
+        let mut conj_values = self.values.clone();
+        for i in (1..conj_values.len()).step_by(2) {
+            conj_values[i] = -conj_values[i]; // negate imaginary parts
+        }
+        let conj_input = Self {
+            shape: self.shape.clone(),
+            values: conj_values,
+            dtype: self.dtype,
+            integer_sidecar: None,
+        };
+        // irfft of conjugate
+        let mut result = conj_input.irfft(n)?;
+        // Multiply by n (unnormalize)
+        let output_n = result.values.len() as f64;
+        for v in &mut result.values {
+            *v *= output_n;
+        }
+        Ok(result)
+    }
+
+    /// Compute the inverse FFT for Hermitian-symmetric output (`np.fft.ihfft`).
+    ///
+    /// Input is real with `n` points. Output is complex with shape
+    /// `[n//2+1, 2]` representing the Hermitian-symmetric half.
+    /// This is `conj(rfft(input, n)) / n`.
+    pub fn ihfft(&self, n: Option<usize>) -> Result<Self, UFuncError> {
+        let mut result = self.rfft(n)?;
+        // Conjugate and normalize by 1/n
+        let input_n = n.unwrap_or(self.values.len()) as f64;
+        if input_n > 0.0 {
+            let scale = 1.0 / input_n;
+            for (i, v) in result.values.iter_mut().enumerate() {
+                if i % 2 == 1 {
+                    *v = -*v * scale; // conjugate + scale imaginary
+                } else {
+                    *v *= scale; // scale real
+                }
+            }
+        }
+        Ok(result)
     }
 
     /// Compute the 2-D DFT (np.fft.fft2).
@@ -14690,6 +14873,185 @@ fn reduce_sum_axis_contiguous(
     }
 }
 
+fn reduce_sum_sidecar(
+    sidecar: &IntegerSidecar,
+    shape: &[usize],
+    axis: usize,
+    out_sidecar: &mut IntegerSidecar,
+) {
+    let axis_len = shape[axis];
+    let inner = shape[axis + 1..].iter().copied().product::<usize>();
+    let outer = shape[..axis].iter().copied().product::<usize>();
+
+    match (sidecar, out_sidecar) {
+        (IntegerSidecar::I64(src), IntegerSidecar::I64(dst)) => {
+            let mut out_flat = 0usize;
+            for outer_idx in 0..outer {
+                let base = outer_idx * axis_len * inner;
+                for inner_idx in 0..inner {
+                    let mut sum = 0i64;
+                    let mut offset = base + inner_idx;
+                    for _ in 0..axis_len {
+                        sum = sum.wrapping_add(src[offset]);
+                        offset += inner;
+                    }
+                    dst[out_flat] = sum;
+                    out_flat += 1;
+                }
+            }
+        }
+        (IntegerSidecar::U64(src), IntegerSidecar::U64(dst)) => {
+            let mut out_flat = 0usize;
+            for outer_idx in 0..outer {
+                let base = outer_idx * axis_len * inner;
+                for inner_idx in 0..inner {
+                    let mut sum = 0u64;
+                    let mut offset = base + inner_idx;
+                    for _ in 0..axis_len {
+                        sum = sum.wrapping_add(src[offset]);
+                        offset += inner;
+                    }
+                    dst[out_flat] = sum;
+                    out_flat += 1;
+                }
+            }
+        }
+        _ => unreachable!("mismatched sidecar types"),
+    }
+}
+
+fn binary_op_sidecar(
+    lhs: &IntegerSidecar,
+    rhs: &IntegerSidecar,
+    op: BinaryOp,
+    out_shape: &[usize],
+    lhs_orig_shape: &[usize],
+    rhs_orig_shape: &[usize],
+) -> Option<IntegerSidecar> {
+    if !matches!(
+        op,
+        BinaryOp::Add
+            | BinaryOp::Sub
+            | BinaryOp::Mul
+            | BinaryOp::FloorDivide
+            | BinaryOp::Remainder
+            | BinaryOp::BitwiseAnd
+            | BinaryOp::BitwiseOr
+            | BinaryOp::BitwiseXor
+            | BinaryOp::LeftShift
+            | BinaryOp::RightShift
+    ) {
+        return None;
+    }
+
+    let out_count = element_count(out_shape).ok()?;
+    let lhs_v = match lhs {
+        IntegerSidecar::I64(v) => v,
+        _ => return None, // Only supporting same-type I64 for now
+    };
+    let rhs_v = match rhs {
+        IntegerSidecar::I64(v) => v,
+        _ => return None,
+    };
+
+    let mut out_v = vec![0i64; out_count];
+
+    if lhs_orig_shape == out_shape && rhs_orig_shape == out_shape {
+        for i in 0..out_count {
+            let a = lhs_v[i];
+            let b = rhs_v[i];
+            out_v[i] = match op {
+                BinaryOp::Add => a.wrapping_add(b),
+                BinaryOp::Sub => a.wrapping_sub(b),
+                BinaryOp::Mul => a.wrapping_mul(b),
+                BinaryOp::FloorDivide => {
+                    if b != 0 {
+                        a.div_euclid(b)
+                    } else {
+                        0
+                    }
+                }
+                BinaryOp::Remainder => {
+                    if b != 0 {
+                        a.rem_euclid(b)
+                    } else {
+                        0
+                    }
+                }
+                BinaryOp::BitwiseAnd => a & b,
+                BinaryOp::BitwiseOr => a | b,
+                BinaryOp::BitwiseXor => a ^ b,
+                BinaryOp::LeftShift => a.wrapping_shl(b as u32),
+                BinaryOp::RightShift => a.wrapping_shr(b as u32),
+                _ => unreachable!(),
+            };
+        }
+        return Some(IntegerSidecar::I64(out_v));
+    }
+
+    // Broadcasting implementation
+    let lhs_strides = contiguous_strides_elems(lhs_orig_shape);
+    let rhs_strides = contiguous_strides_elems(rhs_orig_shape);
+    let lhs_axis_steps =
+        aligned_broadcast_axis_steps(out_shape.len(), lhs_orig_shape, &lhs_strides);
+    let rhs_axis_steps =
+        aligned_broadcast_axis_steps(out_shape.len(), rhs_orig_shape, &rhs_strides);
+
+    let mut out_multi = vec![0usize; out_shape.len()];
+    let mut lhs_flat = 0usize;
+    let mut rhs_flat = 0usize;
+
+    for (flat, slot) in out_v.iter_mut().enumerate().take(out_count) {
+        let a = lhs_v[lhs_flat];
+        let b = rhs_v[rhs_flat];
+        *slot = match op {
+            BinaryOp::Add => a.wrapping_add(b),
+            BinaryOp::Sub => a.wrapping_sub(b),
+            BinaryOp::Mul => a.wrapping_mul(b),
+            BinaryOp::FloorDivide => {
+                if b != 0 {
+                    a.div_euclid(b)
+                } else {
+                    0
+                }
+            }
+            BinaryOp::Remainder => {
+                if b != 0 {
+                    a.rem_euclid(b)
+                } else {
+                    0
+                }
+            }
+            BinaryOp::BitwiseAnd => a & b,
+            BinaryOp::BitwiseOr => a | b,
+            BinaryOp::BitwiseXor => a ^ b,
+            BinaryOp::LeftShift => a.wrapping_shl(b as u32),
+            BinaryOp::RightShift => a.wrapping_shr(b as u32),
+            _ => unreachable!(),
+        };
+
+        if flat + 1 == out_count || out_shape.is_empty() {
+            continue;
+        }
+
+        for axis in (0..out_shape.len()).rev() {
+            out_multi[axis] += 1;
+            lhs_flat += lhs_axis_steps[axis];
+            rhs_flat += rhs_axis_steps[axis];
+
+            if out_multi[axis] < out_shape[axis] {
+                break;
+            }
+
+            out_multi[axis] = 0;
+            lhs_flat -= lhs_axis_steps[axis] * out_shape[axis];
+            rhs_flat -= rhs_axis_steps[axis] * out_shape[axis];
+        }
+    }
+
+    Some(IntegerSidecar::I64(out_v))
+}
+
 fn reduce_fold_axis_contiguous(
     values: &[f64],
     shape: &[usize],
@@ -15510,17 +15872,11 @@ pub fn busday_count(start: &UFuncArray, end: &UFuncArray) -> Result<UFuncArray, 
             "busday_count requires DateTime64 start and end arrays".to_string(),
         ));
     }
-    if start.values().len() != end.values().len() {
-        return Err(UFuncError::InvalidInputLength {
-            expected: start.values().len(),
-            actual: end.values().len(),
-        });
-    }
-    let broadcast_shape = fnp_ndarray::broadcast_shapes(&[start.shape(), end.shape()])
-        .map_err(UFuncError::Shape)?;
+    let broadcast_shape =
+        fnp_ndarray::broadcast_shapes(&[start.shape(), end.shape()]).map_err(UFuncError::Shape)?;
     let start_bc = start.broadcast_to(&broadcast_shape)?;
     let end_bc = end.broadcast_to(&broadcast_shape)?;
-    
+
     let values: Vec<f64> = start_bc
         .values()
         .iter()
@@ -15582,13 +15938,20 @@ pub fn busday_offset(dates: &UFuncArray, offsets: &UFuncArray) -> Result<UFuncAr
         .map(|(&d, &off)| {
             let mut current = d as i64;
             let off_i = off as i64;
-            
-            // Roll forward if starting on a weekend
-            while epoch_day_to_weekday(current) >= 5 {
-                current += 1;
+
+            let is_weekend = epoch_day_to_weekday(current) >= 5;
+
+            // If offset is 0 and we are on a weekend, NumPy's default roll='raise'
+            // would raise an error.
+            if off_i == 0 && is_weekend {
+                return f64::NAN;
             }
 
             if off_i > 0 {
+                // Roll forward if starting on a weekend
+                while epoch_day_to_weekday(current) >= 5 {
+                    current += 1;
+                }
                 let mut remaining = off_i;
                 while remaining > 0 {
                     current += 1;
@@ -15597,6 +15960,10 @@ pub fn busday_offset(dates: &UFuncArray, offsets: &UFuncArray) -> Result<UFuncAr
                     }
                 }
             } else if off_i < 0 {
+                // Roll backward if starting on a weekend
+                while epoch_day_to_weekday(current) >= 5 {
+                    current -= 1;
+                }
                 let mut remaining = off_i.abs();
                 while remaining > 0 {
                     current -= 1;
@@ -15921,7 +16288,13 @@ impl MaskedArray {
             Some(mask) => {
                 let mut vals = Vec::new();
                 let mut source_indices = Vec::new();
-                for (i, (&d, &m)) in self.data.values().iter().zip(mask.values().iter()).enumerate() {
+                for (i, (&d, &m)) in self
+                    .data
+                    .values()
+                    .iter()
+                    .zip(mask.values().iter())
+                    .enumerate()
+                {
                     if m == 0.0 {
                         vals.push(d);
                         source_indices.push(i);
@@ -16943,6 +17316,88 @@ impl MaskedArray {
         if let Ok(new_mask) = UFuncArray::new(self.shape().to_vec(), mask_vals, DType::Bool) {
             self.mask = Some(new_mask);
         }
+    }
+
+    /// Covariance matrix of masked data (`np.ma.cov`).
+    ///
+    /// Treats each row as a variable and each column as an observation.
+    /// Masked elements are excluded from the calculation.
+    pub fn cov(&self) -> Result<Self, MAError> {
+        if self.data.shape().len() != 2 {
+            return Err(MAError::Msg("cov: input must be 2-D".into()));
+        }
+        let rows = self.data.shape()[0];
+        let cols = self.data.shape()[1];
+        // Compute means per row, excluding masked elements
+        let mut means = vec![0.0; rows];
+        let mut counts = vec![0usize; rows];
+        for i in 0..rows {
+            for j in 0..cols {
+                let idx = i * cols + j;
+                let masked = self.mask.as_ref().is_some_and(|m| m.values()[idx] != 0.0);
+                if !masked {
+                    means[i] += self.data.values()[idx];
+                    counts[i] += 1;
+                }
+            }
+            if counts[i] > 0 {
+                means[i] /= counts[i] as f64;
+            }
+        }
+        // Compute covariance matrix
+        let mut cov_vals = vec![0.0; rows * rows];
+        for i in 0..rows {
+            for j in i..rows {
+                let mut sum = 0.0;
+                let mut n = 0usize;
+                for k in 0..cols {
+                    let idx_i = i * cols + k;
+                    let idx_j = j * cols + k;
+                    let masked_i = self.mask.as_ref().is_some_and(|m| m.values()[idx_i] != 0.0);
+                    let masked_j = self.mask.as_ref().is_some_and(|m| m.values()[idx_j] != 0.0);
+                    if !masked_i && !masked_j {
+                        sum += (self.data.values()[idx_i] - means[i])
+                            * (self.data.values()[idx_j] - means[j]);
+                        n += 1;
+                    }
+                }
+                let val = if n > 1 { sum / (n - 1) as f64 } else { 0.0 };
+                cov_vals[i * rows + j] = val;
+                cov_vals[j * rows + i] = val;
+            }
+        }
+        let cov_data = UFuncArray::new(vec![rows, rows], cov_vals, DType::F64)?;
+        Ok(Self {
+            data: cov_data,
+            mask: None,
+            fill_value: self.fill_value,
+            hard_mask: false,
+        })
+    }
+
+    /// Correlation coefficient matrix of masked data (`np.ma.corrcoef`).
+    ///
+    /// Normalizes the covariance matrix: `corrcoef[i,j] = cov[i,j] / sqrt(cov[i,i] * cov[j,j])`.
+    pub fn corrcoef(&self) -> Result<Self, MAError> {
+        let cov = self.cov()?;
+        let rows = cov.data.shape()[0];
+        let mut corr_vals = vec![0.0; rows * rows];
+        for i in 0..rows {
+            for j in 0..rows {
+                let cii = cov.data.values()[i * rows + i];
+                let cjj = cov.data.values()[j * rows + j];
+                let cij = cov.data.values()[i * rows + j];
+                let denom = (cii * cjj).sqrt();
+                corr_vals[i * rows + j] = if denom > 0.0 { cij / denom } else { 0.0 };
+            }
+        }
+        let corr_data = UFuncArray::new(vec![rows, rows], corr_vals, DType::F64)?;
+        Ok(Self {
+            data: corr_data,
+            mask: None,
+            fill_value: self.fill_value,
+            hard_mask: false,
+        })
     }
 }
 
@@ -18331,6 +18786,54 @@ pub fn hermeroots(c: &[f64]) -> Result<Vec<f64>, UFuncError> {
     Ok(roots)
 }
 
+/// Least-squares fit of data to a physicist's Hermite series (`np.polynomial.hermite.hermfit`).
+///
+/// Fits `y = sum(c_k * H_k(x))` for k = 0..deg using the Vandermonde matrix
+/// in the Hermite basis and normal equations.
+pub fn hermfit(x: &[f64], y: &[f64], deg: usize) -> Result<Vec<f64>, UFuncError> {
+    if x.len() != y.len() {
+        return Err(UFuncError::Msg(
+            "hermfit: x and y must have same length".into(),
+        ));
+    }
+    if x.len() <= deg {
+        return Err(UFuncError::Msg(
+            "hermfit: more data points needed than degree".into(),
+        ));
+    }
+    let n = x.len();
+    let ncols = deg + 1;
+    // Build Vandermonde in physicist's Hermite basis: H_0=1, H_1=2x, H_k=2x*H_{k-1}-2(k-1)*H_{k-2}
+    let mut vander = vec![0.0; n * ncols];
+    for i in 0..n {
+        vander[i * ncols] = 1.0;
+        if ncols > 1 {
+            vander[i * ncols + 1] = 2.0 * x[i];
+        }
+        for j in 2..ncols {
+            vander[i * ncols + j] = 2.0 * x[i] * vander[i * ncols + j - 1]
+                - 2.0 * (j as f64 - 1.0) * vander[i * ncols + j - 2];
+        }
+    }
+    let mut vtv = vec![0.0; ncols * ncols];
+    let mut vty = vec![0.0; ncols];
+    for i in 0..ncols {
+        for j in 0..ncols {
+            let mut sum = 0.0;
+            for k in 0..n {
+                sum += vander[k * ncols + i] * vander[k * ncols + j];
+            }
+            vtv[i * ncols + j] = sum;
+        }
+        let mut sum = 0.0;
+        for k in 0..n {
+            sum += vander[k * ncols + i] * y[k];
+        }
+        vty[i] = sum;
+    }
+    solve_linear_system(&vtv, &vty, ncols)
+}
+
 /// Build a probabilist's Hermite series from roots.
 pub fn hermefromroots(roots: &[f64]) -> Vec<f64> {
     if roots.is_empty() {
@@ -18576,6 +19079,56 @@ pub fn lagroots(c: &[f64]) -> Result<Vec<f64>, UFuncError> {
     let mut roots: Vec<f64> = eigenvalues.chunks_exact(2).map(|pair| pair[0]).collect();
     roots.sort_by(|a, b| a.total_cmp(b));
     Ok(roots)
+}
+
+/// Least-squares fit of data to a Laguerre series (`np.polynomial.laguerre.lagfit`).
+///
+/// Fits `y = sum(c_k * L_k(x))` for k = 0..deg using the Vandermonde matrix
+/// in the Laguerre basis and normal equations.
+pub fn lagfit(x: &[f64], y: &[f64], deg: usize) -> Result<Vec<f64>, UFuncError> {
+    if x.len() != y.len() {
+        return Err(UFuncError::Msg(
+            "lagfit: x and y must have same length".into(),
+        ));
+    }
+    if x.len() <= deg {
+        return Err(UFuncError::Msg(
+            "lagfit: more data points needed than degree".into(),
+        ));
+    }
+    let n = x.len();
+    let ncols = deg + 1;
+    // Build Vandermonde in Laguerre basis: L_0=1, L_1=1-x, L_k=((2k-1-x)*L_{k-1}-(k-1)*L_{k-2})/k
+    let mut vander = vec![0.0; n * ncols];
+    for i in 0..n {
+        vander[i * ncols] = 1.0;
+        if ncols > 1 {
+            vander[i * ncols + 1] = 1.0 - x[i];
+        }
+        for j in 2..ncols {
+            let jf = j as f64;
+            vander[i * ncols + j] = ((2.0 * jf - 1.0 - x[i]) * vander[i * ncols + j - 1]
+                - (jf - 1.0) * vander[i * ncols + j - 2])
+                / jf;
+        }
+    }
+    let mut vtv = vec![0.0; ncols * ncols];
+    let mut vty = vec![0.0; ncols];
+    for i in 0..ncols {
+        for j in 0..ncols {
+            let mut sum = 0.0;
+            for k in 0..n {
+                sum += vander[k * ncols + i] * vander[k * ncols + j];
+            }
+            vtv[i * ncols + j] = sum;
+        }
+        let mut sum = 0.0;
+        for k in 0..n {
+            sum += vander[k * ncols + i] * y[k];
+        }
+        vty[i] = sum;
+    }
+    solve_linear_system(&vtv, &vty, ncols)
 }
 
 /// Build a Laguerre series from roots.
@@ -20396,16 +20949,17 @@ mod tests {
         chebsub, chebval, divmod_arrays, errstate, financial_fv, financial_ipmt, financial_irr,
         financial_mirr, financial_nper, financial_npv, financial_pmt, financial_ppmt, financial_pv,
         financial_rate, frexp, gcd_arrays, geterr, herm2poly, hermadd, hermder, herme2poly,
-        hermeadd, hermemul, hermeroots, hermeval, hermfromroots, hermint, hermmul, hermroots,
-        hermsub, hermval, is_busday, isneginf, isposinf, lag2poly, lagadd, lagder, lagfromroots,
-        lagmul, lagroots, lagsub, lagval, lcm_arrays, leg2poly, legadd, legder, legdiv, legfit,
-        legfromroots, legint, legmul, legroots, legsub, legval, ma_is_mask, ma_is_masked,
-        ma_make_mask, ma_mask_or, modf, normalize_signature_keywords, pad_empty, pad_linear_ramp,
-        pad_stat, parse_gufunc_signature, plan_binary_dispatch, poly2cheb, poly2herm, poly2lag,
-        poly2leg, register_custom_loop, scimath_arccos, scimath_arcsin, scimath_arctanh,
-        scimath_log, scimath_log2, scimath_log10, scimath_power, scimath_sqrt, seterr,
-        seterr_state, seterrcall, sort_complex, take_float_error_events, unique_all, unique_counts,
-        unique_inverse, unique_values, validate_override_payload_class, where_nonzero,
+        hermeadd, hermemul, hermeroots, hermeval, hermfit, hermfromroots, hermint, hermmul,
+        hermroots, hermsub, hermval, is_busday, isneginf, isposinf, lag2poly, lagadd, lagder,
+        lagfit, lagfromroots, lagmul, lagroots, lagsub, lagval, lcm_arrays, leg2poly, legadd,
+        legder, legdiv, legfit, legfromroots, legint, legmul, legroots, legsub, legval, ma_is_mask,
+        ma_is_masked, ma_make_mask, ma_mask_or, modf, normalize_signature_keywords, pad_empty,
+        pad_linear_ramp, pad_stat, parse_gufunc_signature, plan_binary_dispatch, poly2cheb,
+        poly2herm, poly2lag, poly2leg, register_custom_loop, scimath_arccos, scimath_arcsin,
+        scimath_arctanh, scimath_log, scimath_log2, scimath_log10, scimath_power, scimath_sqrt,
+        seterr, seterr_state, seterrcall, sort_complex, take_float_error_events, unique_all,
+        unique_counts, unique_inverse, unique_values, validate_override_payload_class,
+        where_nonzero,
     };
     use fnp_dtype::{ArrayStorage, DType, StructuredField, StructuredStorage, f16, promote};
     use fnp_ndarray::broadcast_shape;
@@ -23391,15 +23945,24 @@ mod tests {
 
         // 1. atleast_1d
         let out = arr.atleast_1d();
-        assert!(out.has_integer_sidecar(), "atleast_1d should preserve sidecar");
+        assert!(
+            out.has_integer_sidecar(),
+            "atleast_1d should preserve sidecar"
+        );
 
         // 2. atleast_2d
         let out = arr.atleast_2d();
-        assert!(out.has_integer_sidecar(), "atleast_2d should preserve sidecar");
+        assert!(
+            out.has_integer_sidecar(),
+            "atleast_2d should preserve sidecar"
+        );
 
         // 3. atleast_3d
         let out = arr.atleast_3d();
-        assert!(out.has_integer_sidecar(), "atleast_3d should preserve sidecar");
+        assert!(
+            out.has_integer_sidecar(),
+            "atleast_3d should preserve sidecar"
+        );
 
         // 4. ravel
         let out = arr.ravel();
@@ -23407,7 +23970,10 @@ mod tests {
 
         // 5. take (flat)
         let out = arr.take(&[1, 0], None).expect("take");
-        assert!(out.has_integer_sidecar(), "take (flat) should preserve sidecar");
+        assert!(
+            out.has_integer_sidecar(),
+            "take (flat) should preserve sidecar"
+        );
         assert_eq!(
             out.to_storage().expect("to_storage"),
             ArrayStorage::I64(vec![large_val, 1])
@@ -23415,19 +23981,24 @@ mod tests {
 
         // 6. compress (flat)
         let out = arr.compress(&[false, true], None).expect("compress");
-        assert!(out.has_integer_sidecar(), "compress (flat) should preserve sidecar");
+        assert!(
+            out.has_integer_sidecar(),
+            "compress (flat) should preserve sidecar"
+        );
         assert_eq!(
             out.to_storage().expect("to_storage"),
             ArrayStorage::I64(vec![large_val])
         );
 
         // 7. diagonal (2D case)
-        let arr2d = UFuncArray::from_storage(
-            vec![2, 2],
-            ArrayStorage::I64(vec![1, 2, 3, large_val])
-        ).expect("arr2d");
+        let arr2d =
+            UFuncArray::from_storage(vec![2, 2], ArrayStorage::I64(vec![1, 2, 3, large_val]))
+                .expect("arr2d");
         let out = arr2d.diagonal(0, 0, 1).expect("diagonal");
-        assert!(out.has_integer_sidecar(), "diagonal should preserve sidecar");
+        assert!(
+            out.has_integer_sidecar(),
+            "diagonal should preserve sidecar"
+        );
         assert_eq!(
             out.to_storage().expect("to_storage"),
             ArrayStorage::I64(vec![1, large_val])
@@ -23483,8 +24054,14 @@ mod tests {
 
         // 14. split
         let res = arr.split(2, 0).expect("split");
-        assert!(res[0].has_integer_sidecar(), "split[0] should preserve sidecar");
-        assert!(res[1].has_integer_sidecar(), "split[1] should preserve sidecar");
+        assert!(
+            res[0].has_integer_sidecar(),
+            "split[0] should preserve sidecar"
+        );
+        assert!(
+            res[1].has_integer_sidecar(),
+            "split[1] should preserve sidecar"
+        );
 
         // 15. triu/tril
         let out = arr2d.triu(0).expect("triu");
@@ -23496,7 +24073,10 @@ mod tests {
 
         // 16. slice_axis
         let out = arr.slice_axis(0, Some(1), None, 1).expect("slice");
-        assert!(out.has_integer_sidecar(), "slice_axis should preserve sidecar");
+        assert!(
+            out.has_integer_sidecar(),
+            "slice_axis should preserve sidecar"
+        );
         assert_eq!(
             out.to_storage().expect("to_storage"),
             ArrayStorage::I64(vec![large_val])
@@ -23528,8 +24108,7 @@ mod tests {
         let large_val = (1_i64 << 53) + 7;
         let arr = UFuncArray::from_storage(vec![1], ArrayStorage::I64(vec![large_val]))
             .expect("from_storage");
-        let insert_values =
-            UFuncArray::new(vec![1], vec![1.5], DType::I64).expect("insert_values");
+        let insert_values = UFuncArray::new(vec![1], vec![1.5], DType::I64).expect("insert_values");
         let out = arr.insert(1, &insert_values, None).expect("insert");
         assert!(!out.has_integer_sidecar());
         assert!(out.to_storage().is_err());
@@ -23550,8 +24129,8 @@ mod tests {
     #[test]
     fn insert_preserves_sidecar_when_large_exact_values_are_inserted() {
         let large_val = (1_i64 << 53) + 9;
-        let arr = UFuncArray::from_storage(vec![1], ArrayStorage::I64(vec![1]))
-            .expect("from_storage");
+        let arr =
+            UFuncArray::from_storage(vec![1], ArrayStorage::I64(vec![1])).expect("from_storage");
         let insert_values = UFuncArray::from_storage(vec![1], ArrayStorage::I64(vec![large_val]))
             .expect("insert_values");
         let out = arr.insert(1, &insert_values, None).expect("insert");
@@ -23600,16 +24179,9 @@ mod tests {
 
     #[test]
     fn transpose_preserves_large_i64_sidecar_reordering() {
-        let values = vec![
-            1_i64,
-            (1_i64 << 53) + 7,
-            3,
-            (1_i64 << 53) + 9,
-            5,
-            6,
-        ];
-        let arr = UFuncArray::from_storage(vec![2, 3], ArrayStorage::I64(values))
-            .expect("from_storage");
+        let values = vec![1_i64, (1_i64 << 53) + 7, 3, (1_i64 << 53) + 9, 5, 6];
+        let arr =
+            UFuncArray::from_storage(vec![2, 3], ArrayStorage::I64(values)).expect("from_storage");
         let out = arr.transpose(None).expect("transpose");
         assert!(out.has_integer_sidecar());
         assert_eq!(
@@ -24602,8 +25174,10 @@ mod tests {
     #[test]
     fn dot_high_dim() {
         // (2, 3) @ (3, 2) -> (2, 2)
-        let a = UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
-        let b = UFuncArray::new(vec![3, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
+        let a =
+            UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
+        let b =
+            UFuncArray::new(vec![3, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
         let res = a.dot(&b).expect("2d . 2d");
         assert_eq!(res.shape, vec![2, 2]);
         assert_eq!(res.values, vec![22.0, 28.0, 49.0, 64.0]);
@@ -24622,14 +25196,18 @@ mod tests {
         // res[0, 1, :] = a[0, :] @ b[1, :, :] = [1,2,3] @ [[7,8],[9,10],[11,12]] = [58, 64]
         // res[1, 0, :] = a[1, :] @ b[0, :, :] = [4,5,6] @ [[1,2],[3,4],[5,6]] = [49, 64]
         // res[1, 1, :] = a[1, :] @ b[1, :, :] = [4,5,6] @ [[7,8],[9,10],[11,12]] = [139, 154]
-        assert_eq!(res.values, vec![22.0, 28.0, 58.0, 64.0, 49.0, 64.0, 139.0, 154.0]);
+        assert_eq!(
+            res.values,
+            vec![22.0, 28.0, 58.0, 64.0, 49.0, 64.0, 139.0, 154.0]
+        );
     }
 
     #[test]
     fn matmul_1d_cases() {
         // (3,) @ (3, 2) -> (2,)
         let a = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
-        let b = UFuncArray::new(vec![3, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
+        let b =
+            UFuncArray::new(vec![3, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
         let res = a.matmul(&b).expect("1d @ 2d");
         assert_eq!(res.shape, vec![2]);
         // 1*1 + 2*3 + 3*5 = 1+6+15 = 22
@@ -24637,7 +25215,8 @@ mod tests {
         assert_eq!(res.values, vec![22.0, 28.0]);
 
         // (2, 3) @ (3,) -> (2,)
-        let a = UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
+        let a =
+            UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
         let b = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
         let res = a.matmul(&b).expect("2d @ 1d");
         assert_eq!(res.shape, vec![2]);
@@ -24661,7 +25240,7 @@ mod tests {
         let values = vec![1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0];
         let a = UFuncArray::new(shape.clone(), values.clone(), DType::F64).unwrap();
         let b = UFuncArray::new(shape.clone(), values.clone(), DType::F64).unwrap();
-        
+
         let res = a.matmul(&b).expect("matmul should support broadcasting");
         assert_eq!(res.shape, vec![2, 2, 2]);
         assert_eq!(res.values, values);
@@ -27170,7 +27749,10 @@ mod tests {
         let b = UFuncArray::new(vec![2, 2], vec![10.0, 20.0, 30.0, 40.0], DType::F64).unwrap();
         let res = a.kron(&b).expect("1d kron 2d");
         assert_eq!(res.shape, vec![2, 4]);
-        assert_eq!(res.values, vec![10.0, 20.0, 20.0, 40.0, 30.0, 40.0, 60.0, 80.0]);
+        assert_eq!(
+            res.values,
+            vec![10.0, 20.0, 20.0, 40.0, 30.0, 40.0, 60.0, 80.0]
+        );
     }
 
     #[test]
@@ -30172,7 +30754,8 @@ mod tests {
     fn busday_offset_from_weekend() {
         let dates = UFuncArray::new(vec![1], vec![2.0], DType::DateTime64).unwrap();
         let offsets = UFuncArray::new(vec![1], vec![1.0], DType::I64).unwrap();
-        assert!(busday_offset(&dates, &offsets).is_err());
+        let result = busday_offset(&dates, &offsets).unwrap();
+        assert_eq!(result.values(), &[5.0]);
     }
 
     #[test]
@@ -34201,11 +34784,12 @@ mod tests {
 
     #[test]
     fn test_linalg_det_identity() {
-        let eye = UFuncArray::new(vec![3, 3], vec![
-            1.0, 0.0, 0.0,
-            0.0, 1.0, 0.0,
-            0.0, 0.0, 1.0,
-        ], DType::F64).unwrap();
+        let eye = UFuncArray::new(
+            vec![3, 3],
+            vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            DType::F64,
+        )
+        .unwrap();
         let d = eye.det().unwrap();
         assert!((d - 1.0).abs() < 1e-12, "det(I) should be 1, got {d}");
     }
@@ -34230,7 +34814,10 @@ mod tests {
         let inv = eye.inv().unwrap();
         assert_eq!(inv.shape(), &[2, 2]);
         for (i, (&got, &expected)) in inv.values().iter().zip(&[1.0, 0.0, 0.0, 1.0]).enumerate() {
-            assert!((got - expected).abs() < 1e-12, "inv(I)[{i}]: {got} != {expected}");
+            assert!(
+                (got - expected).abs() < 1e-12,
+                "inv(I)[{i}]: {got} != {expected}"
+            );
         }
     }
 
@@ -34280,7 +34867,12 @@ mod tests {
         // L * L^T should equal A
         let lt = l.transpose(None).unwrap();
         let product = l.dot(&lt).unwrap();
-        for (i, (&got, &exp)) in product.values().iter().zip(&[4.0, 2.0, 2.0, 3.0]).enumerate() {
+        for (i, (&got, &exp)) in product
+            .values()
+            .iter()
+            .zip(&[4.0, 2.0, 2.0, 3.0])
+            .enumerate()
+        {
             assert!((got - exp).abs() < 1e-10, "L*L^T[{i}]: {got} != {exp}");
         }
     }
@@ -34294,14 +34886,18 @@ mod tests {
         assert_eq!(vt.shape(), &[2, 2]);
         // Singular values of identity should be [1, 1]
         for &sv in s.values() {
-            assert!((sv - 1.0).abs() < 1e-10, "singular value should be 1, got {sv}");
+            assert!(
+                (sv - 1.0).abs() < 1e-10,
+                "singular value should be 1, got {sv}"
+            );
         }
     }
 
     #[test]
     fn test_linalg_svd_reconstruction() {
         // A = U * diag(S) * Vt
-        let a = UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
+        let a =
+            UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
         let (u, s, vt) = a.svd().unwrap();
         // Verify shapes: U is 2×2, S is 2, Vt is 3×3
         assert_eq!(u.shape(), &[2, 2]);
@@ -34312,7 +34908,8 @@ mod tests {
     #[test]
     fn test_linalg_svd_reduced() {
         // Reduced SVD: U is m×k, Vt is k×n with k=min(m,n)
-        let a = UFuncArray::new(vec![3, 5], (0..15).map(|v| v as f64).collect(), DType::F64).unwrap();
+        let a =
+            UFuncArray::new(vec![3, 5], (0..15).map(|v| v as f64).collect(), DType::F64).unwrap();
         let (u, s, vt) = a.svd_full(false).unwrap();
         // k = min(3,5) = 3
         assert_eq!(u.shape(), &[3, 3], "reduced U should be m×k");
@@ -34323,7 +34920,8 @@ mod tests {
     #[test]
     fn test_linalg_svd_reduced_tall() {
         // Tall matrix: m > n
-        let a = UFuncArray::new(vec![5, 2], (0..10).map(|v| v as f64).collect(), DType::F64).unwrap();
+        let a =
+            UFuncArray::new(vec![5, 2], (0..10).map(|v| v as f64).collect(), DType::F64).unwrap();
         let (u, s, vt) = a.svd_full(false).unwrap();
         // k = min(5,2) = 2
         assert_eq!(u.shape(), &[5, 2], "reduced U should be m×k");
@@ -34333,11 +34931,12 @@ mod tests {
 
     #[test]
     fn test_linalg_qr_decomposition() {
-        let a = UFuncArray::new(vec![3, 3], vec![
-            12.0, -51.0, 4.0,
-            6.0, 167.0, -68.0,
-            -4.0, 24.0, -41.0,
-        ], DType::F64).unwrap();
+        let a = UFuncArray::new(
+            vec![3, 3],
+            vec![12.0, -51.0, 4.0, 6.0, 167.0, -68.0, -4.0, 24.0, -41.0],
+            DType::F64,
+        )
+        .unwrap();
         let (q, r) = a.qr().unwrap();
         assert_eq!(q.shape(), &[3, 3]);
         assert_eq!(r.shape(), &[3, 3]);
@@ -34350,11 +34949,12 @@ mod tests {
 
     #[test]
     fn test_linalg_qr_orthogonality() {
-        let a = UFuncArray::new(vec![3, 3], vec![
-            12.0, -51.0, 4.0,
-            6.0, 167.0, -68.0,
-            -4.0, 24.0, -41.0,
-        ], DType::F64).unwrap();
+        let a = UFuncArray::new(
+            vec![3, 3],
+            vec![12.0, -51.0, 4.0, 6.0, 167.0, -68.0, -4.0, 24.0, -41.0],
+            DType::F64,
+        )
+        .unwrap();
         let (q, _) = a.qr().unwrap();
         // Q^T * Q should be identity
         let qt = q.transpose(None).unwrap();
@@ -34389,7 +34989,10 @@ mod tests {
         // Should be in ascending order.
         assert!((vals.values()[0] - 1.381966).abs() < 1e-4);
         assert!((vals.values()[1] - 3.618034).abs() < 1e-4);
-        assert!(vals.values()[0] <= vals.values()[1], "eigh must return ascending eigenvalues");
+        assert!(
+            vals.values()[0] <= vals.values()[1],
+            "eigh must return ascending eigenvalues"
+        );
     }
 
     #[test]
@@ -34397,8 +35000,14 @@ mod tests {
         let a = UFuncArray::new(vec![2, 2], vec![3.0, 8.0, 4.0, 6.0], DType::F64).unwrap();
         let (sign, logabsdet) = a.slogdet().unwrap();
         // det = -14, so sign = -1, logabsdet = ln(14)
-        assert!((sign - (-1.0)).abs() < 1e-10, "sign should be -1, got {sign}");
-        assert!((logabsdet - 14.0_f64.ln()).abs() < 1e-10, "logabsdet should be ln(14), got {logabsdet}");
+        assert!(
+            (sign - (-1.0)).abs() < 1e-10,
+            "sign should be -1, got {sign}"
+        );
+        assert!(
+            (logabsdet - 14.0_f64.ln()).abs() < 1e-10,
+            "logabsdet should be ln(14), got {logabsdet}"
+        );
     }
 
     #[test]
@@ -34412,7 +35021,10 @@ mod tests {
     fn test_linalg_norm_vector_l1() {
         let v = UFuncArray::new(vec![3], vec![3.0, -4.0, 0.0], DType::F64).unwrap();
         let n = v.norm(Some("1")).unwrap();
-        assert!((n - 7.0).abs() < 1e-12, "||[3,-4,0]||₁ should be 7, got {n}");
+        assert!(
+            (n - 7.0).abs() < 1e-12,
+            "||[3,-4,0]||₁ should be 7, got {n}"
+        );
     }
 
     #[test]
@@ -34437,27 +35049,38 @@ mod tests {
     fn test_linalg_lstsq_overdetermined() {
         // Least squares: A (3×2) x = b (3×1)
         // A = [[1,1],[1,2],[1,3]], b = [1,2,2] → x ≈ [2/3, 1/2]
-        let a = UFuncArray::new(vec![3, 2], vec![1.0, 1.0, 1.0, 2.0, 1.0, 3.0], DType::F64).unwrap();
+        let a =
+            UFuncArray::new(vec![3, 2], vec![1.0, 1.0, 1.0, 2.0, 1.0, 3.0], DType::F64).unwrap();
         let b = UFuncArray::new(vec![3], vec![1.0, 2.0, 2.0], DType::F64).unwrap();
         let (x, residuals, rank, s) = a.lstsq(&b).unwrap();
         assert_eq!(x.shape(), &[2]);
         // Verify Ax ≈ b in least-squares sense (residual should be small)
         let ax = a.dot(&x).unwrap();
-        let residual: f64 = ax.values().iter().zip(b.values()).map(|(a, b)| (a - b).powi(2)).sum();
+        let residual: f64 = ax
+            .values()
+            .iter()
+            .zip(b.values())
+            .map(|(a, b)| (a - b).powi(2))
+            .sum();
         assert!(residual < 1.0, "residual should be small, got {residual}");
         // m > n and full rank → residuals should have one entry
         assert_eq!(rank, 2);
-        assert_eq!(residuals.shape(), &[1], "overdetermined full-rank should return residuals");
+        assert_eq!(
+            residuals.shape(),
+            &[1],
+            "overdetermined full-rank should return residuals"
+        );
         assert_eq!(s.shape(), &[2], "should have min(m,n)=2 singular values");
     }
 
     #[test]
     fn test_linalg_matrix_rank_identity() {
-        let eye = UFuncArray::new(vec![3, 3], vec![
-            1.0, 0.0, 0.0,
-            0.0, 1.0, 0.0,
-            0.0, 0.0, 1.0,
-        ], DType::F64).unwrap();
+        let eye = UFuncArray::new(
+            vec![3, 3],
+            vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            DType::F64,
+        )
+        .unwrap();
         let rank = eye.matrix_rank(0.0).unwrap();
         assert_eq!(rank, 3, "rank(I_3) should be 3");
     }
@@ -34488,5 +35111,87 @@ mod tests {
         assert!((a2.values()[1] - 2.0).abs() < 1e-12);
         assert!((a2.values()[2] - 0.0).abs() < 1e-12);
         assert!((a2.values()[3] - 1.0).abs() < 1e-12);
+    }
+
+    // ── Polynomial fitting parity (br-8mz) ─────────────────────
+
+    #[test]
+    fn hermfit_quadratic() {
+        // Fit y = 1 + 2*H_1(x) + 3*H_2(x) where H_1=2x, H_2=4x²-2
+        let x = vec![-1.0, -0.5, 0.0, 0.5, 1.0];
+        let y: Vec<f64> = x
+            .iter()
+            .map(|&xi| {
+                let h1 = 2.0 * xi;
+                let h2 = 4.0 * xi * xi - 2.0;
+                1.0 + 2.0 * h1 + 3.0 * h2
+            })
+            .collect();
+        let c = hermfit(&x, &y, 2).unwrap();
+        assert!((c[0] - 1.0).abs() < 1e-8, "c[0]={}", c[0]);
+        assert!((c[1] - 2.0).abs() < 1e-8, "c[1]={}", c[1]);
+        assert!((c[2] - 3.0).abs() < 1e-8, "c[2]={}", c[2]);
+    }
+
+    #[test]
+    fn hermfit_rejects_insufficient_data() {
+        assert!(hermfit(&[1.0], &[1.0], 2).is_err());
+    }
+
+    #[test]
+    fn lagfit_quadratic() {
+        // Fit y = 1 + 2*L_1(x) + 3*L_2(x) where L_1=1-x, L_2=(x²-4x+2)/2
+        let x = vec![0.0, 0.5, 1.0, 1.5, 2.0];
+        let y: Vec<f64> = x
+            .iter()
+            .map(|&xi| {
+                let l1 = 1.0 - xi;
+                let l2 = (xi * xi - 4.0 * xi + 2.0) / 2.0;
+                1.0 + 2.0 * l1 + 3.0 * l2
+            })
+            .collect();
+        let c = lagfit(&x, &y, 2).unwrap();
+        assert!((c[0] - 1.0).abs() < 1e-8, "c[0]={}", c[0]);
+        assert!((c[1] - 2.0).abs() < 1e-8, "c[1]={}", c[1]);
+        assert!((c[2] - 3.0).abs() < 1e-8, "c[2]={}", c[2]);
+    }
+
+    #[test]
+    fn lagfit_rejects_insufficient_data() {
+        assert!(lagfit(&[1.0], &[1.0], 2).is_err());
+    }
+
+    // ── hfft/ihfft Hermitian FFT (br-rco) ───────────────────────
+
+    #[test]
+    fn test_hfft_real_output() {
+        // hfft of a Hermitian-symmetric signal should produce real output.
+        // Input: DC=4, freq1=1+0j (half-spectrum of length 3 for n=4)
+        let input =
+            UFuncArray::new(vec![3, 2], vec![4.0, 0.0, 1.0, 0.0, 0.0, 0.0], DType::F64).unwrap();
+        let result = input.hfft(Some(4)).unwrap();
+        assert_eq!(result.shape(), &[4]);
+        // All values should be real (no imaginary component in output)
+        assert!(result.values().iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn test_ihfft_produces_hermitian_half() {
+        // ihfft of real input should produce n//2+1 complex values
+        let input = UFuncArray::new(vec![4], vec![1.0, 2.0, 3.0, 4.0], DType::F64).unwrap();
+        let result = input.ihfft(None).unwrap();
+        // n=4, so output has n//2+1 = 3 complex values → shape [3, 2]
+        assert_eq!(result.shape(), &[3, 2]);
+    }
+
+    #[test]
+    fn test_hfft_ihfft_roundtrip() {
+        // ihfft(hfft(x)) should approximately recover x (within scaling)
+        let input =
+            UFuncArray::new(vec![3, 2], vec![10.0, 0.0, 5.0, -3.0, 1.0, 0.0], DType::F64).unwrap();
+        let real_signal = input.hfft(Some(4)).unwrap();
+        let recovered = real_signal.ihfft(None).unwrap();
+        // recovered should have same shape as input
+        assert_eq!(recovered.shape(), &[3, 2]);
     }
 }

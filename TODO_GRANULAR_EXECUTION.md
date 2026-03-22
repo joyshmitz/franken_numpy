@@ -423,3 +423,21 @@ Status key:
 - [x] Update `fnp-io` tests to match relaxed header policy
 - [x] Verify entire workspace with `cargo test --workspace`
 - [x] Record fixes in `UPGRADE_LOG.md`
+
+## 17. Systematic Critical Check Phase 2 (2026-03-21)
+
+### 17.1 Exploration and Tracing
+- [x] Trace `DType` promotion and casting rules in `fnp-dtype`
+- [x] Trace `datetime64` and `timedelta64` ufunc algorithms in `fnp-ufunc`
+- [x] Investigate flaky concurrency bugs in `fnp-conformance` logs
+
+### 17.2 Implementation of Fixes
+- [x] Fix `fnp-dtype`: Overhaul `is_float` to include complex, correct `item_size` for variable-length types, and strictly align `can_cast_same_kind` with NumPy's hierarchy
+- [x] Fix `fnp-ufunc`: Adjust `busday_offset` weekend rolling logic to match oracle defaults
+- [x] Fix `fnp-ufunc`: Remove strict length parity in `busday_count` to allow broadcasting
+- [x] Fix `fnp-conformance`: Introduce `FILE_LOG_MUTEX` to prevent JSON corruption from torn writes
+
+### 17.3 Verification
+- [x] Verify `fnp-dtype` casting tests and `datetime_differential` suite
+- [x] Verify entire workspace with `cargo test --workspace`
+- [x] Record fixes in `UPGRADE_LOG.md`

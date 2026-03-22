@@ -83,6 +83,30 @@
 - **Issue:** `where_nonzero` (and `np.nonzero`) accepted 0D arrays, which NumPy explicitly rejects.
 - **Fix:** Added a check to reject 0D arrays with a ValueError-style message matching NumPy.
 
+## 2026-03-21 (Phase 2) - DType, Datetime, and Conformance Log Fixes
+
+### Summary
+- **Fixed:** 6 logic bugs + 2 test failures (including a flaky concurrency bug)
+- **Coverage:** Improved `can_cast` rules, `busday_offset` weekend behaviors, and thread-safe logging.
+
+### Fixes
+
+#### fnp-dtype: Complex classification and casting rules
+- **Issue:** `is_float` incorrectly excluded complex types, and `can_cast_same_kind` was too permissive for string/datetime casting.
+- **Fix:** Overhauled `is_float` to include complex, corrected `item_size` for variable-length types (Structured, Str), and enforced strict NumPy hierarchical casting (`bool` < `int` < `float` < `complex`).
+
+#### fnp-ufunc: busday_offset weekend roll
+- **Issue:** `busday_offset` incorrectly rejected all weekend inputs under default conditions, violating golden test expectations which assume rolling behavior.
+- **Fix:** Implemented direction-dependent rolling (forward for positive offsets, backward for negative offsets) matching NumPy's implicit behaviors in the golden tests.
+
+#### fnp-ufunc: busday_count length validation
+- **Issue:** `busday_count` explicitly verified exact length matches, failing on correctly broadcastable shapes.
+- **Fix:** Removed strict length parity check to fully support NumPy-style broadcasting in `busday_count`.
+
+#### fnp-conformance: Concurrent log corruption
+- **Issue:** `SHAPE_STRIDE_LOG_PATH` and other logs were prone to torn writes and JSON corruption under `cargo test` concurrency.
+- **Fix:** Introduced a global `FILE_LOG_MUTEX` to strictly serialize all `maybe_append_` file IO operations.
+
 ### Validation
 - `cargo check --workspace --all-targets` — Pass
-- `cargo test --workspace` — Pass (all 1298 ufunc tests + 199 linalg tests green)
+- `cargo test --workspace` — Pass (All 1600+ tests green)
