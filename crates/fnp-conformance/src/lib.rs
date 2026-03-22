@@ -1000,11 +1000,15 @@ struct DateTimeDifferentialCase {
     #[serde(default)]
     lhs_values: Vec<f64>,
     #[serde(default)]
+    lhs_strings: Vec<String>,
+    #[serde(default)]
     lhs_dtype: String,
     #[serde(default)]
     rhs_shape: Vec<usize>,
     #[serde(default)]
     rhs_values: Vec<f64>,
+    #[serde(default)]
+    rhs_strings: Vec<String>,
     #[serde(default)]
     rhs_dtype: String,
     #[serde(default)]
@@ -7339,13 +7343,20 @@ pub fn run_datetime_differential_suite(config: &HarnessConfig) -> Result<SuiteRe
 fn execute_datetime_differential_operation(
     case: &DateTimeDifferentialCase,
 ) -> Result<DateTimeOperationOutcome, DateTimeSuiteError> {
-    let lhs = build_datetime_case_array(&case.lhs_shape, &case.lhs_values, &case.lhs_dtype, "lhs")?;
-    let rhs = if case.rhs_values.is_empty() {
+    let lhs = build_datetime_case_array(
+        &case.lhs_shape,
+        &case.lhs_values,
+        &case.lhs_strings,
+        &case.lhs_dtype,
+        "lhs",
+    )?;
+    let rhs = if case.rhs_values.is_empty() && case.rhs_strings.is_empty() {
         None
     } else {
         Some(build_datetime_case_array(
             &case.rhs_shape,
             &case.rhs_values,
+            &case.rhs_strings,
             &case.rhs_dtype,
             "rhs",
         )?)
@@ -7599,46 +7610,109 @@ fn validate_datetime_differential_expectation(
 fn build_datetime_case_array(
     shape_hint: &[usize],
     values: &[f64],
+    strings: &[String],
     dtype_raw: &str,
     side: &str,
 ) -> Result<UFuncArray, DateTimeSuiteError> {
-    if values.is_empty() {
+    if values.is_empty() && strings.is_empty() {
         return Err(DateTimeSuiteError::new(
             "datetime_input_contract_violation",
-            format!("{side}_values must not be empty"),
+            format!("{side}_values or {side}_strings must not be empty"),
+        ));
+    }
+    if !values.is_empty() && !strings.is_empty() {
+        return Err(DateTimeSuiteError::new(
+            "datetime_input_contract_violation",
+            format!("{side}_values and {side}_strings are mutually exclusive"),
         ));
     }
     let shape = if shape_hint.is_empty() {
-        vec![values.len()]
+        vec![if strings.is_empty() {
+            values.len()
+        } else {
+            strings.len()
+        }]
     } else {
         shape_hint.to_vec()
     };
     let expected_len = shape.iter().product::<usize>();
-    if expected_len != values.len() {
+    let actual_len = if strings.is_empty() {
+        values.len()
+    } else {
+        strings.len()
+    };
+    if expected_len != actual_len {
         return Err(DateTimeSuiteError::new(
             "datetime_input_contract_violation",
             format!(
-                "{side}_values length {} does not match {side}_shape {shape:?} (len={expected_len})",
-                values.len()
+                "{side} input length {} does not match {side}_shape {shape:?} (len={expected_len})",
+                actual_len
             ),
         ));
     }
-    let dtype = parse_datetime_fixture_dtype(dtype_raw).map_err(|err| {
+    let (dtype, unit) = parse_datetime_fixture_dtype_with_unit(dtype_raw).map_err(|err| {
         DateTimeSuiteError::new(
             "datetime_input_contract_violation",
             format!("invalid {side}_dtype '{dtype_raw}' ({})", err.message),
         )
     })?;
+    if !strings.is_empty() {
+        let unit = unit.as_deref();
+        return match dtype {
+            DType::DateTime64 => UFuncArray::from_datetime_strings(shape, strings.to_vec(), unit),
+            DType::TimeDelta64 => UFuncArray::from_timedelta_strings(shape, strings.to_vec(), unit),
+            _ => Err(UFuncError::Msg(format!(
+                "{side}_strings only support datetime64/timedelta64 dtypes"
+            ))),
+        }
+        .map_err(map_ufunc_error_to_datetime_suite);
+    }
     UFuncArray::new(shape, values.to_vec(), dtype).map_err(map_ufunc_error_to_datetime_suite)
 }
 
 fn parse_datetime_fixture_dtype(dtype_raw: &str) -> Result<DType, DateTimeSuiteError> {
+    parse_datetime_fixture_dtype_with_unit(dtype_raw).map(|(dtype, _)| dtype)
+}
+
+fn parse_datetime_fixture_dtype_with_unit(
+    dtype_raw: &str,
+) -> Result<(DType, Option<String>), DateTimeSuiteError> {
+    let trimmed = dtype_raw.trim();
+    let normalized = trimmed.to_ascii_lowercase();
+    let parse_temporal =
+        |prefix: &str, dtype: DType| -> Result<(DType, Option<String>), DateTimeSuiteError> {
+            if normalized == prefix {
+                return Ok((dtype, None));
+            }
+            if normalized.starts_with(prefix) && normalized.ends_with(']') {
+                let open = normalized.find('[').ok_or_else(|| {
+                    DateTimeSuiteError::new(
+                        "datetime_fixture_dtype_invalid",
+                        format!("unsupported dtype '{trimmed}'"),
+                    )
+                })?;
+                let unit = normalized[open + 1..normalized.len() - 1].trim();
+                if unit.is_empty() {
+                    return Err(DateTimeSuiteError::new(
+                        "datetime_fixture_dtype_invalid",
+                        format!("unsupported dtype '{trimmed}'"),
+                    ));
+                }
+                return Ok((dtype, Some(unit.to_string())));
+            }
+            Err(DateTimeSuiteError::new(
+                "datetime_fixture_dtype_invalid",
+                format!("unsupported dtype '{trimmed}'"),
+            ))
+        };
     match dtype_raw.trim().to_ascii_lowercase().as_str() {
-        "bool" | "bool_" => Ok(DType::Bool),
-        "i64" | "int64" => Ok(DType::I64),
-        "f64" | "float64" => Ok(DType::F64),
-        "datetime64" => Ok(DType::DateTime64),
-        "timedelta64" => Ok(DType::TimeDelta64),
+        "bool" | "bool_" => Ok((DType::Bool, None)),
+        "i64" | "int64" => Ok((DType::I64, None)),
+        "f64" | "float64" => Ok((DType::F64, None)),
+        value if value.starts_with("datetime64") => parse_temporal("datetime64", DType::DateTime64),
+        value if value.starts_with("timedelta64") => {
+            parse_temporal("timedelta64", DType::TimeDelta64)
+        }
         other => Err(DateTimeSuiteError::new(
             "datetime_fixture_dtype_invalid",
             format!("unsupported dtype '{other}'"),

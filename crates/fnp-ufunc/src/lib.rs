@@ -14,6 +14,49 @@ pub enum UFuncRuntimeMode {
     Hardened,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DateTimeUnit {
+    Week,
+    Day,
+    Hour,
+    Minute,
+    Second,
+    Millisecond,
+    Microsecond,
+    Nanosecond,
+}
+
+impl DateTimeUnit {
+    pub fn parse(raw: &str) -> Result<Self, UFuncError> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "w" => Ok(Self::Week),
+            "d" => Ok(Self::Day),
+            "h" => Ok(Self::Hour),
+            "m" => Ok(Self::Minute),
+            "s" => Ok(Self::Second),
+            "ms" => Ok(Self::Millisecond),
+            "us" => Ok(Self::Microsecond),
+            "ns" => Ok(Self::Nanosecond),
+            other => Err(UFuncError::Msg(format!(
+                "unsupported datetime unit '{other}'"
+            ))),
+        }
+    }
+
+    const fn tick_nanos(self) -> i128 {
+        match self {
+            Self::Week => 7 * 24 * 60 * 60 * 1_000_000_000,
+            Self::Day => 24 * 60 * 60 * 1_000_000_000,
+            Self::Hour => 60 * 60 * 1_000_000_000,
+            Self::Minute => 60 * 1_000_000_000,
+            Self::Second => 1_000_000_000,
+            Self::Millisecond => 1_000_000,
+            Self::Microsecond => 1_000,
+            Self::Nanosecond => 1,
+        }
+    }
+}
+
 impl UFuncRuntimeMode {
     #[must_use]
     pub fn as_str(self) -> &'static str {
@@ -2277,6 +2320,48 @@ impl UFuncArray {
                 })
             }
         }
+    }
+
+    pub fn from_datetime_strings(
+        shape: Vec<usize>,
+        values: Vec<String>,
+        unit: Option<&str>,
+    ) -> Result<Self, UFuncError> {
+        let unit = match unit {
+            Some(raw) => DateTimeUnit::parse(raw)?,
+            None => infer_datetime_target_unit(&values)?,
+        };
+        let ticks = values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                parse_datetime_string_to_ticks(value, unit).map_err(|err| {
+                    UFuncError::Msg(format!("datetime64 parse failed at index {index}: {err}"))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Self::from_storage_with_dtype(shape, ArrayStorage::I64(ticks), DType::DateTime64)
+    }
+
+    pub fn from_timedelta_strings(
+        shape: Vec<usize>,
+        values: Vec<String>,
+        unit: Option<&str>,
+    ) -> Result<Self, UFuncError> {
+        let unit = match unit {
+            Some(raw) => DateTimeUnit::parse(raw)?,
+            None => infer_timedelta_target_unit(&values)?,
+        };
+        let ticks = values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                parse_timedelta_string_to_ticks(value, unit).map_err(|err| {
+                    UFuncError::Msg(format!("timedelta64 parse failed at index {index}: {err}"))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Self::from_storage_with_dtype(shape, ArrayStorage::I64(ticks), DType::TimeDelta64)
     }
 
     #[must_use]
@@ -15698,6 +15783,244 @@ fn normalize_axis(axis: isize, ndim: usize) -> Result<usize, UFuncError> {
 }
 
 // ── numpy datetime/timedelta arithmetic ─────────────────────────────────
+
+fn infer_datetime_target_unit(values: &[String]) -> Result<DateTimeUnit, UFuncError> {
+    let mut inferred: Option<DateTimeUnit> = None;
+    for value in values {
+        let unit = infer_datetime_string_unit(value)?;
+        inferred = Some(match inferred {
+            Some(current) => current.max(unit),
+            None => unit,
+        });
+    }
+    inferred.ok_or_else(|| UFuncError::Msg("datetime64 string input must not be empty".to_string()))
+}
+
+fn infer_datetime_string_unit(raw: &str) -> Result<DateTimeUnit, UFuncError> {
+    let trimmed = raw.trim().trim_end_matches('Z');
+    let time_part = trimmed
+        .split_once('T')
+        .map(|(_, time)| time)
+        .or_else(|| trimmed.split_once(' ').map(|(_, time)| time));
+    let Some(time_part) = time_part else {
+        return Ok(DateTimeUnit::Day);
+    };
+    let (clock, fraction) = match time_part.split_once('.') {
+        Some((clock, fraction)) => (clock, Some(fraction)),
+        None => (time_part, None),
+    };
+    let colon_count = clock.chars().filter(|ch| *ch == ':').count();
+    match (colon_count, fraction.map(str::len)) {
+        (_, Some(0)) => Err(UFuncError::Msg(format!(
+            "invalid datetime string '{raw}': empty fractional component"
+        ))),
+        (_, Some(len)) if len <= 3 => Ok(DateTimeUnit::Millisecond),
+        (_, Some(len)) if len <= 6 => Ok(DateTimeUnit::Microsecond),
+        (_, Some(len)) if len <= 9 => Ok(DateTimeUnit::Nanosecond),
+        (_, Some(_)) => Err(UFuncError::Msg(format!(
+            "invalid datetime string '{raw}': fractional precision above nanoseconds is unsupported"
+        ))),
+        (0, None) => Ok(DateTimeUnit::Hour),
+        (1, None) => Ok(DateTimeUnit::Minute),
+        _ => Ok(DateTimeUnit::Second),
+    }
+}
+
+fn infer_timedelta_target_unit(values: &[String]) -> Result<DateTimeUnit, UFuncError> {
+    let mut inferred: Option<DateTimeUnit> = None;
+    for value in values {
+        let unit = infer_timedelta_string_unit(value)?;
+        inferred = Some(match inferred {
+            Some(current) => current.max(unit),
+            None => unit,
+        });
+    }
+    inferred
+        .ok_or_else(|| UFuncError::Msg("timedelta64 string input must not be empty".to_string()))
+}
+
+fn infer_timedelta_string_unit(raw: &str) -> Result<DateTimeUnit, UFuncError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(UFuncError::Msg(
+            "timedelta64 string input must not be empty".to_string(),
+        ));
+    }
+    let body = trimmed.strip_prefix(['+', '-']).unwrap_or(trimmed);
+    let suffix_start = body
+        .find(|ch: char| ch.is_ascii_alphabetic())
+        .ok_or_else(|| {
+            UFuncError::Msg(format!("invalid timedelta string '{raw}': missing unit"))
+        })?;
+    DateTimeUnit::parse(&body[suffix_start..])
+}
+
+fn parse_datetime_string_to_ticks(raw: &str, unit: DateTimeUnit) -> Result<i64, String> {
+    let trimmed = raw.trim().trim_end_matches('Z');
+    if trimmed.is_empty() {
+        return Err("value must not be empty".to_string());
+    }
+    let (date_part, time_part) = trimmed
+        .split_once('T')
+        .or_else(|| trimmed.split_once(' '))
+        .map_or((trimmed, None), |(date, time)| (date, Some(time)));
+    let (year, month, day) = parse_date_components(date_part)?;
+    let epoch_days = civil_to_epoch_days(year, month, day)?;
+    let mut total_nanos = i128::from(epoch_days) * DateTimeUnit::Day.tick_nanos();
+    if let Some(time_part) = time_part {
+        total_nanos = total_nanos
+            .checked_add(parse_time_component_nanos(time_part)?)
+            .ok_or_else(|| "datetime value overflowed nanosecond accumulator".to_string())?;
+    }
+    i64::try_from(total_nanos.div_euclid(unit.tick_nanos()))
+        .map_err(|_| format!("datetime string '{raw}' exceeds i64 tick range"))
+}
+
+fn parse_timedelta_string_to_ticks(raw: &str, unit: DateTimeUnit) -> Result<i64, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("value must not be empty".to_string());
+    }
+    let (sign, body) = match trimmed.as_bytes()[0] {
+        b'+' => (1_i128, &trimmed[1..]),
+        b'-' => (-1_i128, &trimmed[1..]),
+        _ => (1_i128, trimmed),
+    };
+    let suffix_start = body
+        .find(|ch: char| ch.is_ascii_alphabetic())
+        .ok_or_else(|| format!("invalid timedelta string '{raw}': missing unit"))?;
+    let magnitude = body[..suffix_start]
+        .parse::<i128>()
+        .map_err(|_| format!("invalid timedelta string '{raw}': invalid magnitude"))?;
+    let source_unit = DateTimeUnit::parse(&body[suffix_start..]).map_err(|err| err.to_string())?;
+    let total_nanos = sign
+        .checked_mul(magnitude)
+        .and_then(|value| value.checked_mul(source_unit.tick_nanos()))
+        .ok_or_else(|| format!("timedelta string '{raw}' overflowed nanosecond accumulator"))?;
+    i64::try_from(total_nanos / unit.tick_nanos())
+        .map_err(|_| format!("timedelta string '{raw}' exceeds i64 tick range"))
+}
+
+fn parse_date_components(raw: &str) -> Result<(i32, u32, u32), String> {
+    let mut parts = raw.split('-');
+    let year = parts
+        .next()
+        .ok_or_else(|| format!("invalid datetime string '{raw}': missing year"))?
+        .parse::<i32>()
+        .map_err(|_| format!("invalid datetime string '{raw}': invalid year"))?;
+    let month = parts
+        .next()
+        .ok_or_else(|| format!("invalid datetime string '{raw}': missing month"))?
+        .parse::<u32>()
+        .map_err(|_| format!("invalid datetime string '{raw}': invalid month"))?;
+    let day = parts
+        .next()
+        .ok_or_else(|| format!("invalid datetime string '{raw}': missing day"))?
+        .parse::<u32>()
+        .map_err(|_| format!("invalid datetime string '{raw}': invalid day"))?;
+    if parts.next().is_some() {
+        return Err(format!(
+            "invalid datetime string '{raw}': unexpected date suffix"
+        ));
+    }
+    Ok((year, month, day))
+}
+
+fn parse_time_component_nanos(raw: &str) -> Result<i128, String> {
+    let (clock, fraction) = match raw.split_once('.') {
+        Some((clock, fraction)) => (clock, Some(fraction)),
+        None => (raw, None),
+    };
+    let mut parts = clock.split(':');
+    let hour = parts
+        .next()
+        .ok_or_else(|| format!("invalid time component '{raw}': missing hour"))?
+        .parse::<u32>()
+        .map_err(|_| format!("invalid time component '{raw}': invalid hour"))?;
+    let minute = parts
+        .next()
+        .unwrap_or("0")
+        .parse::<u32>()
+        .map_err(|_| format!("invalid time component '{raw}': invalid minute"))?;
+    let second = parts
+        .next()
+        .unwrap_or("0")
+        .parse::<u32>()
+        .map_err(|_| format!("invalid time component '{raw}': invalid second"))?;
+    if parts.next().is_some() {
+        return Err(format!(
+            "invalid time component '{raw}': unexpected trailing fields"
+        ));
+    }
+    if hour >= 24 || minute >= 60 || second >= 60 {
+        return Err(format!(
+            "invalid time component '{raw}': out-of-range clock"
+        ));
+    }
+    let fractional_nanos = match fraction {
+        Some("") => {
+            return Err(format!(
+                "invalid time component '{raw}': empty fractional seconds"
+            ));
+        }
+        Some(fraction) if fraction.len() <= 9 && fraction.chars().all(|ch| ch.is_ascii_digit()) => {
+            let digits = fraction
+                .parse::<i128>()
+                .map_err(|_| format!("invalid time component '{raw}': invalid fraction"))?;
+            digits * 10_i128.pow((9 - fraction.len()) as u32)
+        }
+        Some(_) => {
+            return Err(format!(
+                "invalid time component '{raw}': fractional precision above nanoseconds is unsupported"
+            ));
+        }
+        None => 0,
+    };
+    Ok(i128::from(hour) * DateTimeUnit::Hour.tick_nanos()
+        + i128::from(minute) * DateTimeUnit::Minute.tick_nanos()
+        + i128::from(second) * DateTimeUnit::Second.tick_nanos()
+        + fractional_nanos)
+}
+
+fn civil_to_epoch_days(year: i32, month: u32, day: u32) -> Result<i64, String> {
+    if !(1..=12).contains(&month) {
+        return Err(format!("invalid calendar month {month}"));
+    }
+    let max_day = days_in_month(year, month);
+    if day == 0 || day > max_day {
+        return Err(format!(
+            "invalid calendar day {day} for {year:04}-{month:02}"
+        ));
+    }
+    let month_i32 =
+        i32::try_from(month).map_err(|_| format!("calendar month {month} is out of range"))?;
+    let day_i32 = i32::try_from(day).map_err(|_| format!("calendar day {day} is out of range"))?;
+    let adjusted_year = year - i32::from(month <= 2);
+    let era = if adjusted_year >= 0 {
+        adjusted_year / 400
+    } else {
+        (adjusted_year - 399) / 400
+    };
+    let year_of_era = adjusted_year - era * 400;
+    let month_prime = month_i32 + if month_i32 > 2 { -3 } else { 9 };
+    let day_of_year = (153 * month_prime + 2) / 5 + day_i32 - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    Ok(i64::from(era * 146_097 + day_of_era - 719_468))
+}
+
+const fn days_in_month(year: i32, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+const fn is_leap_year(year: i32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+}
 
 /// Weekday for a date represented as days since Unix epoch (1970-01-01, Thursday).
 /// Returns 0=Monday .. 6=Sunday (NumPy convention).
@@ -30628,6 +30951,59 @@ mod tests {
     }
 
     #[test]
+    fn datetime_string_parsing_infers_day_ticks() {
+        let dates = UFuncArray::from_datetime_strings(
+            vec![2],
+            vec!["1970-01-01".to_string(), "2024-01-15".to_string()],
+            None,
+        )
+        .unwrap();
+        assert_eq!(dates.dtype(), DType::DateTime64);
+        assert_eq!(dates.values(), &[0.0, 19_737.0]);
+        assert_eq!(
+            dates.to_storage().unwrap(),
+            ArrayStorage::I64(vec![0, 19_737])
+        );
+    }
+
+    #[test]
+    fn datetime_string_parsing_supports_explicit_hour_unit() {
+        let dates = UFuncArray::from_datetime_strings(
+            vec![2],
+            vec![
+                "1970-01-01T00".to_string(),
+                "1970-01-02T03:45:59".to_string(),
+            ],
+            Some("h"),
+        )
+        .unwrap();
+        assert_eq!(dates.values(), &[0.0, 27.0]);
+    }
+
+    #[test]
+    fn timedelta_string_parsing_converts_suffix_units() {
+        let deltas = UFuncArray::from_timedelta_strings(
+            vec![3],
+            vec!["36h".to_string(), "-90m".to_string(), "2D".to_string()],
+            Some("m"),
+        )
+        .unwrap();
+        assert_eq!(deltas.dtype(), DType::TimeDelta64);
+        assert_eq!(deltas.values(), &[2_160.0, -90.0, 2_880.0]);
+    }
+
+    #[test]
+    fn datetime_string_parsing_rejects_invalid_calendar_dates() {
+        let err =
+            UFuncArray::from_datetime_strings(vec![1], vec!["2024-02-30".to_string()], Some("D"))
+                .expect_err("invalid calendar date should fail");
+        assert!(matches!(
+            err,
+            UFuncError::Msg(message) if message.contains("invalid calendar day")
+        ));
+    }
+
+    #[test]
     fn timedelta_add_sub() {
         let t1 = UFuncArray::new(vec![2], vec![10.0, 20.0], DType::TimeDelta64).unwrap();
         let t2 = UFuncArray::new(vec![2], vec![3.0, 7.0], DType::TimeDelta64).unwrap();
@@ -35193,5 +35569,95 @@ mod tests {
         let recovered = real_signal.ihfft(None).unwrap();
         // recovered should have same shape as input
         assert_eq!(recovered.shape(), &[3, 2]);
+    }
+
+    // ── astype_with_casting tests (br-a2j) ──────────────────────
+
+    #[test]
+    fn astype_with_casting_safe_allows_widening() {
+        let a = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::I32).unwrap();
+        let result = a.astype_with_casting(DType::F64, "safe");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn astype_with_casting_safe_rejects_narrowing() {
+        let a = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        let result = a.astype_with_casting(DType::I32, "safe");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn astype_with_casting_unsafe_allows_anything() {
+        let a = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        let result = a.astype_with_casting(DType::I32, "unsafe");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn astype_with_casting_no_requires_same_type() {
+        let a = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        assert!(a.astype_with_casting(DType::F64, "no").is_ok());
+        assert!(a.astype_with_casting(DType::I32, "no").is_err());
+    }
+
+    // ── MaskedArray cov/corrcoef tests (br-a2j) ────────────────
+
+    #[test]
+    fn masked_cov_basic() {
+        // Two variables, 4 observations, no mask
+        let data = UFuncArray::new(
+            vec![2, 4],
+            vec![1.0, 2.0, 3.0, 4.0, 2.0, 4.0, 6.0, 8.0],
+            DType::F64,
+        )
+        .unwrap();
+        let ma = MaskedArray::new(data, None, None).unwrap();
+        let cov = ma.cov().unwrap();
+        assert_eq!(cov.data().shape(), &[2, 2]);
+        // var(row0) = var([1,2,3,4]) = 5/3 ≈ 1.667
+        assert!((cov.data().values()[0] - 5.0 / 3.0).abs() < 1e-10);
+        // cov(row0, row1) = cov([1,2,3,4], [2,4,6,8]) = 10/3 ≈ 3.333
+        assert!((cov.data().values()[1] - 10.0 / 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn masked_corrcoef_perfect_correlation() {
+        // y = 2*x → perfect correlation = 1.0
+        let data = UFuncArray::new(
+            vec![2, 4],
+            vec![1.0, 2.0, 3.0, 4.0, 2.0, 4.0, 6.0, 8.0],
+            DType::F64,
+        )
+        .unwrap();
+        let ma = MaskedArray::new(data, None, None).unwrap();
+        let corr = ma.corrcoef().unwrap();
+        assert_eq!(corr.data().shape(), &[2, 2]);
+        // Diagonal should be 1.0
+        assert!((corr.data().values()[0] - 1.0).abs() < 1e-10);
+        assert!((corr.data().values()[3] - 1.0).abs() < 1e-10);
+        // Off-diagonal should be 1.0 (perfect positive correlation)
+        assert!((corr.data().values()[1] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn masked_cov_with_mask() {
+        // Mask one observation from each variable
+        let data = UFuncArray::new(
+            vec![2, 4],
+            vec![1.0, 2.0, 3.0, 4.0, 10.0, 20.0, 30.0, 40.0],
+            DType::F64,
+        )
+        .unwrap();
+        let mask = UFuncArray::new(
+            vec![2, 4],
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0],
+            DType::Bool,
+        )
+        .unwrap();
+        let ma = MaskedArray::new(data, Some(mask), None).unwrap();
+        let cov = ma.cov().unwrap();
+        assert_eq!(cov.data().shape(), &[2, 2]);
+        // Should compute using only unmasked-in-both-rows observations
     }
 }
