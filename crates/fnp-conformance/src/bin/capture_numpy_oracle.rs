@@ -20,9 +20,13 @@ fn run() -> Result<(), String> {
 
     let capture = capture_numpy_oracle(&input_path, &output_path, &cfg.oracle_root)?;
     if require_real_numpy_oracle() && capture.oracle_source == "pure_python_fallback" {
-        return Err(
-            "FNP_REQUIRE_REAL_NUMPY_ORACLE=1 but oracle capture used pure_python_fallback; set FNP_ORACLE_PYTHON to a NumPy-backed interpreter".to_string(),
-        );
+        let diagnostics = capture
+            .oracle_diagnostics
+            .as_deref()
+            .unwrap_or("no diagnostic details recorded");
+        return Err(format!(
+            "FNP_REQUIRE_REAL_NUMPY_ORACLE=1 but oracle capture used pure_python_fallback; set FNP_ORACLE_PYTHON to a NumPy-backed interpreter (diagnostics: {diagnostics})"
+        ));
     }
     println!(
         "captured {} oracle cases using {}",

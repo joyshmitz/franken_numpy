@@ -24,6 +24,7 @@ with open(input_path, 'r', encoding='utf-8') as fh:
     cases = json.load(fh)
 
 oracle_source = 'legacy'
+oracle_diagnostics = []
 np = None
 
 try:
@@ -36,7 +37,8 @@ try:
     np_file = str(getattr(np, '__file__', ''))
     if 'legacy_numpy_code' not in np_file:
         oracle_source = 'system'
-except Exception:
+except Exception as exc:
+    oracle_diagnostics.append(f"legacy import failed: {exc!r}")
     try:
         oracle_source = 'system'
         if 'numpy' in sys.modules:
@@ -45,7 +47,8 @@ except Exception:
             sys.path.remove(legacy_root)
         np = importlib.import_module('numpy')
         _ = np.arange(1)
-    except Exception:
+    except Exception as exc:
+        oracle_diagnostics.append(f"system import failed: {exc!r}")
         oracle_source = 'pure_python_fallback'
         np = None
 
@@ -1239,6 +1242,7 @@ for case in cases:
 payload = {
     'schema_version': 1,
     'oracle_source': oracle_source,
+    'oracle_diagnostics': '; '.join(oracle_diagnostics) if oracle_diagnostics else None,
     'generated_at_unix_ms': 0,
     'cases': results,
 }
@@ -1393,6 +1397,8 @@ pub struct UFuncOracleCase {
 pub struct UFuncOracleCapture {
     pub schema_version: u8,
     pub oracle_source: String,
+    #[serde(default)]
+    pub oracle_diagnostics: Option<String>,
     pub generated_at_unix_ms: u128,
     pub cases: Vec<UFuncOracleCase>,
 }
@@ -2241,6 +2247,7 @@ mod tests {
         let capture = UFuncOracleCapture {
             schema_version: 1,
             oracle_source: "system".to_string(),
+            oracle_diagnostics: None,
             generated_at_unix_ms: 1,
             cases: vec![UFuncOracleCase {
                 id: "case1".to_string(),
@@ -2364,6 +2371,7 @@ mod tests {
         let capture = UFuncOracleCapture {
             schema_version: 1,
             oracle_source: "system".to_string(),
+            oracle_diagnostics: None,
             generated_at_unix_ms: 42,
             cases: vec![],
         };
@@ -2372,11 +2380,13 @@ mod tests {
         let fallback = UFuncOracleCapture {
             schema_version: 1,
             oracle_source: "pure_python_fallback".to_string(),
+            oracle_diagnostics: Some("system import failed: ImportError('x')".to_string()),
             generated_at_unix_ms: 42,
             cases: vec![],
         };
         assert_ne!(fallback.oracle_source, "system");
         assert_eq!(fallback.oracle_source, "pure_python_fallback");
+        assert!(fallback.oracle_diagnostics.is_some());
     }
 
     #[test]
@@ -2385,6 +2395,7 @@ mod tests {
         let capture = UFuncOracleCapture {
             schema_version: 2,
             oracle_source: "legacy".to_string(),
+            oracle_diagnostics: Some("legacy import failed: RuntimeError('boom')".to_string()),
             generated_at_unix_ms: 12345678,
             cases: vec![
                 UFuncOracleCase {
@@ -2409,6 +2420,10 @@ mod tests {
         let loaded = load_oracle_capture(&path).expect("load");
         assert_eq!(loaded.schema_version, 2);
         assert_eq!(loaded.oracle_source, "legacy");
+        assert_eq!(
+            loaded.oracle_diagnostics.as_deref(),
+            Some("legacy import failed: RuntimeError('boom')")
+        );
         assert_eq!(loaded.cases.len(), 2);
         assert_eq!(loaded.cases[0].id, "sin_basic");
         assert_eq!(loaded.cases[0].values.len(), 3);
