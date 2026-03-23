@@ -238,49 +238,128 @@ pub fn validate_flatiter_write(
     Ok(selected)
 }
 
-fn count_selected_indices(len: usize, index: &FlatIterIndex) -> Result<usize, TransferError> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FlatIterContractError {
+    IndexingViolation(&'static str),
+}
+
+impl FlatIterContractError {
+    #[must_use]
+    pub fn reason_code(&self) -> &'static str {
+        "flatiter_indexing_contract_violation"
+    }
+}
+
+impl std::fmt::Display for FlatIterContractError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::IndexingViolation(msg) => write!(f, "{msg}"),
+        }
+    }
+}
+
+impl std::error::Error for FlatIterContractError {}
+
+pub fn resolve_flatiter_indices(
+    len: usize,
+    index: &FlatIterIndex,
+) -> Result<Vec<usize>, FlatIterContractError> {
     match index {
         FlatIterIndex::Single(i) => {
             if *i >= len {
-                Err(TransferError::FlatiterReadViolation(
+                Err(FlatIterContractError::IndexingViolation(
                     "single index out of bounds",
                 ))
             } else {
-                Ok(1)
+                Ok(vec![*i])
             }
         }
         FlatIterIndex::Slice { start, stop, step } => {
             if *step == 0 {
-                return Err(TransferError::FlatiterReadViolation(
+                return Err(FlatIterContractError::IndexingViolation(
                     "slice step must be > 0",
                 ));
             }
             if *start > *stop || *stop > len {
-                return Err(TransferError::FlatiterReadViolation(
+                return Err(FlatIterContractError::IndexingViolation(
                     "slice bounds are invalid for flatiter",
                 ));
             }
-            let span = stop - start;
-            Ok(span.div_ceil(*step))
+            Ok((*start..*stop).step_by(*step).collect())
         }
         FlatIterIndex::Fancy(indices) => {
             if indices.iter().any(|idx| *idx >= len) {
-                Err(TransferError::FlatiterReadViolation(
+                Err(FlatIterContractError::IndexingViolation(
                     "fancy index out of bounds",
                 ))
             } else {
-                Ok(indices.len())
+                Ok(indices.clone())
             }
         }
         FlatIterIndex::BoolMask(mask) => {
             if mask.len() != len {
-                return Err(TransferError::FlatiterReadViolation(
+                return Err(FlatIterContractError::IndexingViolation(
                     "bool mask length must equal flatiter length",
                 ));
             }
-            Ok(count_true_mask(mask))
+            Ok(mask
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, &selected)| selected.then_some(idx))
+                .collect())
         }
     }
+}
+
+pub fn read_flatiter<T: Copy>(
+    values: &[T],
+    index: &FlatIterIndex,
+) -> Result<Vec<T>, FlatIterContractError> {
+    let indices = resolve_flatiter_indices(values.len(), index)?;
+    Ok(indices.into_iter().map(|idx| values[idx]).collect())
+}
+
+pub fn write_flatiter<T: Copy>(
+    values: &mut [T],
+    writeable: bool,
+    index: &FlatIterIndex,
+    assignment: &[T],
+) -> Result<usize, FlatIterContractError> {
+    if !writeable {
+        return Err(FlatIterContractError::IndexingViolation(
+            "flatiter write requires a writeable underlying array",
+        ));
+    }
+
+    let indices = resolve_flatiter_indices(values.len(), index)?;
+    let selected = indices.len();
+    if assignment.len() != 1 && assignment.len() != selected {
+        return Err(FlatIterContractError::IndexingViolation(
+            "assignment must be scalar or match selected lane count",
+        ));
+    }
+
+    if assignment.len() == 1 {
+        for idx in indices {
+            values[idx] = assignment[0];
+        }
+        return Ok(selected);
+    }
+
+    for (idx, value) in indices.into_iter().zip(assignment.iter().copied()) {
+        values[idx] = value;
+    }
+    Ok(selected)
+}
+
+fn count_selected_indices(len: usize, index: &FlatIterIndex) -> Result<usize, TransferError> {
+    resolve_flatiter_indices(len, index)
+        .map(|indices| indices.len())
+        .map_err(|err| {
+            TransferError::FlatiterReadViolation(match err {
+                FlatIterContractError::IndexingViolation(msg) => msg,
+            })
+        })
 }
 
 #[must_use]
@@ -2269,6 +2348,66 @@ mod tests {
         let idx = FlatIterIndex::Single(100);
         let err = validate_flatiter_write(10, &idx, 1).expect_err("out of bounds should fail");
         assert_eq!(err.reason_code(), "flatiter_transfer_write_violation");
+    }
+
+    #[test]
+    fn flatiter_index_resolution_matches_slice_and_mask_semantics() {
+        let slice = FlatIterIndex::Slice {
+            start: 1,
+            stop: 8,
+            step: 3,
+        };
+        assert_eq!(
+            resolve_flatiter_indices(10, &slice).expect("slice should resolve"),
+            vec![1, 4, 7]
+        );
+
+        let mask = FlatIterIndex::BoolMask(vec![false, true, false, true, false]);
+        assert_eq!(
+            resolve_flatiter_indices(5, &mask).expect("mask should resolve"),
+            vec![1, 3]
+        );
+    }
+
+    #[test]
+    fn flatiter_read_returns_selected_values_in_order() {
+        let values = vec![10.0, 20.0, 30.0, 40.0, 50.0];
+        let idx = FlatIterIndex::Fancy(vec![4, 1, 1]);
+        assert_eq!(
+            read_flatiter(&values, &idx).expect("read should succeed"),
+            vec![50.0, 20.0, 20.0]
+        );
+    }
+
+    #[test]
+    fn flatiter_write_requires_writeable_storage() {
+        let mut values = vec![1.0, 2.0, 3.0];
+        let err = write_flatiter(&mut values, false, &FlatIterIndex::Single(0), &[9.0])
+            .expect_err("non-writeable flatiter write should fail");
+        assert_eq!(err.reason_code(), "flatiter_indexing_contract_violation");
+    }
+
+    #[test]
+    fn flatiter_write_supports_scalar_broadcast_assignment() {
+        let mut values = vec![1.0, 2.0, 3.0, 4.0];
+        let idx = FlatIterIndex::Slice {
+            start: 1,
+            stop: 4,
+            step: 2,
+        };
+        let written = write_flatiter(&mut values, true, &idx, &[9.0])
+            .expect("scalar assignment should broadcast");
+        assert_eq!(written, 2);
+        assert_eq!(values, vec![1.0, 9.0, 3.0, 9.0]);
+    }
+
+    #[test]
+    fn flatiter_write_rejects_assignment_arity_mismatch() {
+        let mut values = vec![1.0, 2.0, 3.0, 4.0];
+        let idx = FlatIterIndex::Fancy(vec![0, 2, 3]);
+        let err = write_flatiter(&mut values, true, &idx, &[7.0, 8.0])
+            .expect_err("non-scalar mismatched assignment should fail");
+        assert_eq!(err.reason_code(), "flatiter_indexing_contract_violation");
     }
 
     // -----------------------------------------------------------------------
