@@ -16225,14 +16225,14 @@ fn apply_binary_op_i64(op: BinaryOp, a: i64, b: i64) -> i64 {
         BinaryOp::BitwiseOr => a | b,
         BinaryOp::BitwiseXor => a ^ b,
         BinaryOp::LeftShift => {
-            if b < 0 || b >= 64 {
+            if !(0..64).contains(&b) {
                 0
             } else {
                 a.wrapping_shl(b as u32)
             }
         }
         BinaryOp::RightShift => {
-            if b < 0 || b >= 64 {
+            if !(0..64).contains(&b) {
                 if a < 0 { -1 } else { 0 }
             } else {
                 a.wrapping_shr(b as u32)
