@@ -328,6 +328,327 @@ impl TransferLogRecord {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NditerOrder {
+    C,
+    F,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NditerOptions {
+    pub order: NditerOrder,
+    pub external_loop: bool,
+}
+
+impl Default for NditerOptions {
+    fn default() -> Self {
+        Self {
+            order: NditerOrder::C,
+            external_loop: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NditerPlan {
+    shape: Vec<usize>,
+    compatible_strides: Vec<isize>,
+    order: NditerOrder,
+    external_loop: bool,
+    iteration_shape: Vec<usize>,
+    inner_loop_axis: Option<usize>,
+    inner_loop_len: usize,
+    element_count: usize,
+}
+
+impl NditerPlan {
+    pub fn new(
+        shape: Vec<usize>,
+        item_size: usize,
+        options: NditerOptions,
+    ) -> Result<Self, NditerError> {
+        if item_size == 0 {
+            return Err(NditerError::InvalidConfiguration(
+                "item_size must be > 0 for nditer planning",
+            ));
+        }
+
+        let element_count = checked_element_count(&shape)?;
+        let compatible_strides = compatible_nditer_strides(&shape, item_size, options.order)?;
+        let (iteration_shape, inner_loop_axis, inner_loop_len) =
+            plan_external_loop(&shape, options);
+
+        Ok(Self {
+            shape,
+            compatible_strides,
+            order: options.order,
+            external_loop: options.external_loop,
+            iteration_shape,
+            inner_loop_axis,
+            inner_loop_len,
+            element_count,
+        })
+    }
+
+    #[must_use]
+    pub fn shape(&self) -> &[usize] {
+        &self.shape
+    }
+
+    #[must_use]
+    pub fn compatible_strides(&self) -> &[isize] {
+        &self.compatible_strides
+    }
+
+    #[must_use]
+    pub fn order(&self) -> NditerOrder {
+        self.order
+    }
+
+    #[must_use]
+    pub fn external_loop(&self) -> bool {
+        self.external_loop
+    }
+
+    #[must_use]
+    pub fn iteration_shape(&self) -> &[usize] {
+        &self.iteration_shape
+    }
+
+    #[must_use]
+    pub fn inner_loop_axis(&self) -> Option<usize> {
+        self.inner_loop_axis
+    }
+
+    #[must_use]
+    pub fn inner_loop_len(&self) -> usize {
+        self.inner_loop_len
+    }
+
+    #[must_use]
+    pub fn element_count(&self) -> usize {
+        self.element_count
+    }
+
+    pub fn linear_index_to_multi_index(
+        &self,
+        linear_index: usize,
+    ) -> Result<Vec<usize>, NditerError> {
+        if self.shape.is_empty() {
+            return if linear_index == 0 {
+                Ok(Vec::new())
+            } else {
+                Err(NditerError::MultiIndexViolation(
+                    "scalar nditer only accepts linear index 0",
+                ))
+            };
+        }
+        if linear_index >= self.element_count {
+            return Err(NditerError::MultiIndexViolation(
+                "linear index out of bounds for nditer shape",
+            ));
+        }
+
+        let mut remainder = linear_index;
+        let mut multi = vec![0usize; self.shape.len()];
+        match self.order {
+            NditerOrder::C => {
+                for axis in (0..self.shape.len()).rev() {
+                    let dim = self.shape[axis];
+                    if dim == 0 {
+                        multi[axis] = 0;
+                    } else {
+                        multi[axis] = remainder % dim;
+                        remainder /= dim;
+                    }
+                }
+            }
+            NditerOrder::F => {
+                for (axis, dim) in self.shape.iter().copied().enumerate() {
+                    if dim == 0 {
+                        multi[axis] = 0;
+                    } else {
+                        multi[axis] = remainder % dim;
+                        remainder /= dim;
+                    }
+                }
+            }
+        }
+        Ok(multi)
+    }
+
+    pub fn multi_index_to_linear_index(&self, multi_index: &[usize]) -> Result<usize, NditerError> {
+        if multi_index.len() != self.shape.len() {
+            return Err(NditerError::MultiIndexViolation(
+                "multi-index rank must match nditer rank",
+            ));
+        }
+
+        if self.shape.is_empty() {
+            return Ok(0);
+        }
+
+        let mut linear = 0usize;
+        match self.order {
+            NditerOrder::C => {
+                for (axis, &idx) in multi_index.iter().enumerate() {
+                    let dim = self.shape[axis];
+                    if idx >= dim {
+                        return Err(NditerError::MultiIndexViolation(
+                            "multi-index component out of bounds",
+                        ));
+                    }
+                    linear = linear
+                        .checked_mul(dim)
+                        .and_then(|value| value.checked_add(idx))
+                        .ok_or(NditerError::InvalidConfiguration(
+                            "linear index overflow while seeking multi-index",
+                        ))?;
+                }
+            }
+            NditerOrder::F => {
+                let mut stride = 1usize;
+                for (axis, &idx) in multi_index.iter().enumerate() {
+                    let dim = self.shape[axis];
+                    if idx >= dim {
+                        return Err(NditerError::MultiIndexViolation(
+                            "multi-index component out of bounds",
+                        ));
+                    }
+                    linear = linear
+                        .checked_add(idx.checked_mul(stride).ok_or(
+                            NditerError::InvalidConfiguration(
+                                "linear index overflow while seeking multi-index",
+                            ),
+                        )?)
+                        .ok_or(NditerError::InvalidConfiguration(
+                            "linear index overflow while seeking multi-index",
+                        ))?;
+                    stride = stride
+                        .checked_mul(dim)
+                        .ok_or(NditerError::InvalidConfiguration(
+                            "linear index overflow while seeking multi-index",
+                        ))?;
+                }
+            }
+        }
+
+        Ok(linear)
+    }
+
+    pub fn seek_multi_index(&self, multi_index: &[usize]) -> Result<usize, NditerError> {
+        self.multi_index_to_linear_index(multi_index)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NditerError {
+    InvalidConfiguration(&'static str),
+    MultiIndexViolation(&'static str),
+}
+
+impl NditerError {
+    #[must_use]
+    pub fn reason_code(&self) -> &'static str {
+        match self {
+            Self::InvalidConfiguration(_) => "nditer_constructor_invalid_configuration",
+            Self::MultiIndexViolation(_) => "nditer_multi_index_contract_violation",
+        }
+    }
+}
+
+impl std::fmt::Display for NditerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidConfiguration(msg) | Self::MultiIndexViolation(msg) => write!(f, "{msg}"),
+        }
+    }
+}
+
+impl std::error::Error for NditerError {}
+
+fn checked_element_count(shape: &[usize]) -> Result<usize, NditerError> {
+    shape.iter().try_fold(1usize, |acc, &dim| {
+        acc.checked_mul(dim)
+            .ok_or(NditerError::InvalidConfiguration(
+                "shape element count overflow in nditer planning",
+            ))
+    })
+}
+
+fn compatible_nditer_strides(
+    shape: &[usize],
+    item_size: usize,
+    order: NditerOrder,
+) -> Result<Vec<isize>, NditerError> {
+    let item_size_isize = isize::try_from(item_size).map_err(|_| {
+        NditerError::InvalidConfiguration("item_size exceeds isize range for stride planning")
+    })?;
+
+    if shape.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut strides = vec![0isize; shape.len()];
+    let mut stride = item_size_isize;
+    match order {
+        NditerOrder::C => {
+            for axis in (0..shape.len()).rev() {
+                strides[axis] = stride;
+                let dim = isize::try_from(shape[axis]).map_err(|_| {
+                    NditerError::InvalidConfiguration(
+                        "shape dimension exceeds isize range for stride planning",
+                    )
+                })?;
+                stride =
+                    stride
+                        .checked_mul(dim.max(1))
+                        .ok_or(NditerError::InvalidConfiguration(
+                            "compatible stride overflow in C-order nditer planning",
+                        ))?;
+            }
+        }
+        NditerOrder::F => {
+            for (axis, &extent) in shape.iter().enumerate() {
+                strides[axis] = stride;
+                let dim = isize::try_from(extent).map_err(|_| {
+                    NditerError::InvalidConfiguration(
+                        "shape dimension exceeds isize range for stride planning",
+                    )
+                })?;
+                stride =
+                    stride
+                        .checked_mul(dim.max(1))
+                        .ok_or(NditerError::InvalidConfiguration(
+                            "compatible stride overflow in F-order nditer planning",
+                        ))?;
+            }
+        }
+    }
+    Ok(strides)
+}
+
+fn plan_external_loop(
+    shape: &[usize],
+    options: NditerOptions,
+) -> (Vec<usize>, Option<usize>, usize) {
+    if !options.external_loop || shape.is_empty() {
+        return (shape.to_vec(), None, 1);
+    }
+
+    let axis = match options.order {
+        NditerOrder::C => shape.len() - 1,
+        NditerOrder::F => 0,
+    };
+    let inner_loop_len = shape[axis];
+    let iteration_shape = shape
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, &dim)| (idx != axis).then_some(dim))
+        .collect();
+    (iteration_shape, Some(axis), inner_loop_len)
+}
+
 // ---------------------------------------------------------------------------
 // Transfer-loop selector state machine (P2C003-R01 through R10)
 // ---------------------------------------------------------------------------
@@ -917,6 +1238,95 @@ mod tests {
             assert!(record.is_replay_complete());
             assert_eq!(record.reason_code, *reason_code);
         }
+    }
+
+    #[test]
+    fn nditer_plan_c_order_reports_contiguous_strides_and_seek() {
+        let plan = NditerPlan::new(
+            vec![2, 3, 4],
+            8,
+            NditerOptions {
+                order: NditerOrder::C,
+                external_loop: false,
+            },
+        )
+        .expect("plan");
+        assert_eq!(plan.compatible_strides(), &[96, 32, 8]);
+        assert_eq!(
+            plan.linear_index_to_multi_index(17).expect("seek"),
+            vec![1, 1, 1]
+        );
+        assert_eq!(plan.seek_multi_index(&[1, 1, 1]).expect("reverse seek"), 17);
+    }
+
+    #[test]
+    fn nditer_plan_f_order_reports_contiguous_strides_and_seek() {
+        let plan = NditerPlan::new(
+            vec![2, 3, 4],
+            8,
+            NditerOptions {
+                order: NditerOrder::F,
+                external_loop: false,
+            },
+        )
+        .expect("plan");
+        assert_eq!(plan.compatible_strides(), &[8, 16, 48]);
+        assert_eq!(
+            plan.linear_index_to_multi_index(17).expect("seek"),
+            vec![1, 2, 2]
+        );
+        assert_eq!(plan.seek_multi_index(&[1, 2, 2]).expect("reverse seek"), 17);
+    }
+
+    #[test]
+    fn nditer_plan_external_loop_c_order_tracks_last_axis() {
+        let plan = NditerPlan::new(
+            vec![2, 3, 4],
+            8,
+            NditerOptions {
+                order: NditerOrder::C,
+                external_loop: true,
+            },
+        )
+        .expect("plan");
+        assert_eq!(plan.iteration_shape(), &[2, 3]);
+        assert_eq!(plan.inner_loop_axis(), Some(2));
+        assert_eq!(plan.inner_loop_len(), 4);
+    }
+
+    #[test]
+    fn nditer_plan_external_loop_f_order_tracks_first_axis() {
+        let plan = NditerPlan::new(
+            vec![2, 3, 4],
+            8,
+            NditerOptions {
+                order: NditerOrder::F,
+                external_loop: true,
+            },
+        )
+        .expect("plan");
+        assert_eq!(plan.iteration_shape(), &[3, 4]);
+        assert_eq!(plan.inner_loop_axis(), Some(0));
+        assert_eq!(plan.inner_loop_len(), 2);
+    }
+
+    #[test]
+    fn nditer_plan_rejects_zero_item_size() {
+        let err = NditerPlan::new(vec![2, 3], 0, NditerOptions::default())
+            .expect_err("zero item size should fail");
+        assert_eq!(
+            err.reason_code(),
+            "nditer_constructor_invalid_configuration"
+        );
+    }
+
+    #[test]
+    fn nditer_plan_rejects_out_of_bounds_multi_index() {
+        let plan = NditerPlan::new(vec![2, 3], 8, NditerOptions::default()).expect("plan");
+        let err = plan
+            .seek_multi_index(&[2, 0])
+            .expect_err("out-of-bounds multi-index should fail");
+        assert_eq!(err.reason_code(), "nditer_multi_index_contract_violation");
     }
 
     // -----------------------------------------------------------------------
