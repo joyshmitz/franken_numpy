@@ -3493,6 +3493,15 @@ impl UFuncArray {
     }
 
     pub fn elementwise_binary(&self, rhs: &Self, op: BinaryOp) -> Result<Self, UFuncError> {
+        self.elementwise_binary_with_registry(rhs, op, &UFuncLoopRegistry::new())
+    }
+
+    pub fn elementwise_binary_with_registry(
+        &self,
+        rhs: &Self,
+        op: BinaryOp,
+        registry: &UFuncLoopRegistry,
+    ) -> Result<Self, UFuncError> {
         if matches!(
             op,
             BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div
@@ -3501,7 +3510,7 @@ impl UFuncArray {
             return self.elementwise_complex_binary(rhs, op);
         }
 
-        let plan = plan_binary_dispatch(self, rhs)?;
+        let plan = plan_binary_dispatch_with_registry(op.name(), self, rhs, registry, None)?.plan;
         let out_shape = plan.out_shape;
         let out_count = plan.out_count;
         let mut float_error_flags = FloatErrorFlags::default();
@@ -23590,6 +23599,28 @@ mod tests {
         assert_eq!(selection.method, BinaryDispatchMethod::BuiltinPromoted);
         assert_eq!(selection.custom_loop_name, None);
         assert_eq!(selection.plan.out_dtype, DType::F64);
+    }
+
+    #[test]
+    fn elementwise_binary_with_registry_applies_custom_loop_output_dtype() {
+        let lhs = UFuncArray::new(vec![2], vec![1.0, 2.0], DType::I32).expect("lhs");
+        let rhs = UFuncArray::new(vec![2], vec![3.0, 4.0], DType::I32).expect("rhs");
+        let mut registry = UFuncLoopRegistry::new();
+        registry
+            .register(
+                "custom_add_i32_to_f32",
+                "add",
+                vec![DType::I32, DType::I32],
+                vec![DType::F32],
+            )
+            .expect("registration");
+
+        let result = lhs
+            .elementwise_binary_with_registry(&rhs, BinaryOp::Add, &registry)
+            .expect("registry-backed execution should succeed");
+
+        assert_eq!(result.dtype(), DType::F32);
+        assert_eq!(result.values(), &[4.0, 6.0]);
     }
 
     #[test]

@@ -230,9 +230,9 @@ pub fn validate_flatiter_write(
         TransferError::FlatiterReadViolation(msg) => TransferError::FlatiterWriteViolation(msg),
         _ => TransferError::FlatiterWriteViolation("invalid flatiter index for write"),
     })?;
-    if selected != values_len {
+    if values_len != 1 && selected != values_len {
         return Err(TransferError::FlatiterWriteViolation(
-            "values_len must match selected write lanes",
+            "values_len must be scalar or match selected write lanes",
         ));
     }
     Ok(selected)
@@ -2396,6 +2396,16 @@ mod tests {
         let err =
             validate_flatiter_write(10, &idx, 3).expect_err("3 values for 4 lanes should fail");
         assert_eq!(err.reason_code(), "flatiter_transfer_write_violation");
+    }
+
+    #[test]
+    fn flatiter_write_scalar_broadcast_validation_is_allowed() {
+        let idx = FlatIterIndex::Slice {
+            start: 0,
+            stop: 4,
+            step: 1,
+        };
+        assert_eq!(validate_flatiter_write(10, &idx, 1).unwrap(), 4);
     }
 
     #[test]
