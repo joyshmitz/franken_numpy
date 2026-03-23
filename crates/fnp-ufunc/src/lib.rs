@@ -5821,11 +5821,10 @@ impl UFuncArray {
             let mut out_values = vec![0.0f64; out_count];
 
             for (i, out_value) in out_values.iter_mut().enumerate() {
-                let mut acc = 0.0;
+                let row_ptr = i * k;
                 for p in 0..k {
-                    acc += self.values[i * k + p] * rhs.values[p];
+                    *out_value += self.values[row_ptr + p] * rhs.values[p];
                 }
-                *out_value = acc;
             }
             let dtype = promote(self.dtype, rhs.dtype);
             return Ok(Self {
@@ -5865,15 +5864,16 @@ impl UFuncArray {
         let b_matrix_size = k * b_last_dim;
 
         for i in 0..a_batch_count {
+            let a_row_ptr = i * k;
             for j in 0..b_prefix_count {
-                for l in 0..b_last_dim {
-                    let mut acc = 0.0;
-                    for p in 0..k {
-                        // a[i, p] * b[j, p, l]
-                        acc += self.values[i * k + p]
-                            * rhs.values[j * b_matrix_size + p * b_last_dim + l];
+                let b_batch_ptr = j * b_matrix_size;
+                let out_batch_ptr = (i * b_prefix_count + j) * b_last_dim;
+                for p in 0..k {
+                    let a_val = self.values[a_row_ptr + p];
+                    let b_row_ptr = b_batch_ptr + p * b_last_dim;
+                    for l in 0..b_last_dim {
+                        out_values[out_batch_ptr + l] += a_val * rhs.values[b_row_ptr + l];
                     }
-                    out_values[(i * b_prefix_count + j) * b_last_dim + l] = acc;
                 }
             }
         }
@@ -5952,12 +5952,14 @@ impl UFuncArray {
             let out_ptr = b_idx * out_matrix_size;
 
             for i in 0..m {
-                for j in 0..n {
-                    let mut acc = 0.0;
-                    for p in 0..k {
-                        acc += self.values[a_ptr + i * k + p] * rhs.values[b_ptr + p * n + j];
+                let a_row_ptr = a_ptr + i * k;
+                let out_row_ptr = out_ptr + i * n;
+                for p in 0..k {
+                    let a_val = self.values[a_row_ptr + p];
+                    let b_row_ptr = b_ptr + p * n;
+                    for j in 0..n {
+                        out_values[out_row_ptr + j] += a_val * rhs.values[b_row_ptr + j];
                     }
-                    out_values[out_ptr + i * n + j] = acc;
                 }
             }
 

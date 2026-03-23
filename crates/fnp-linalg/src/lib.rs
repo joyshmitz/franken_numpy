@@ -3112,12 +3112,11 @@ pub fn vector_norm(values: &[f64], ord: Option<VectorNormOrder>) -> Result<f64, 
         VectorNormOrder::Inf => values.iter().map(|v| v.abs()).fold(0.0, f64::max),
         VectorNormOrder::NegInf => values.iter().map(|v| v.abs()).fold(f64::INFINITY, f64::min),
         VectorNormOrder::P(p) => {
-            if p == 1.0 {
+            if (p - 1.0).abs() < f64::EPSILON {
                 values.iter().map(|v| v.abs()).sum()
-            } else if p == 2.0 {
+            } else if (p - 2.0).abs() < f64::EPSILON {
                 values.iter().map(|v| v * v).sum::<f64>().sqrt()
-            } else {
-                values
+            } else {                values
                     .iter()
                     .map(|v| v.abs().powf(p))
                     .sum::<f64>()
