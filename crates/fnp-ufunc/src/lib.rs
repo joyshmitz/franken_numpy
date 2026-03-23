@@ -4295,48 +4295,26 @@ impl UFuncArray {
                 "reshape: order must be 'C' or 'F', got '{order}'"
             )));
         }
-        // F-order reshape: read in Fortran order from old shape, write in C order to new shape
+        // F-order reshape: read source in Fortran (column-major) order,
+        // store the flat sequence as the new C-order values.
         let n = self.values.len();
         let old_shape = &self.shape;
         let old_ndim = old_shape.len();
-        let new_ndim = resolved.len();
-        let old_strides = c_strides_elems(old_shape);
-        let new_strides = c_strides_elems(&resolved);
-        let mut values = vec![0.0; n];
-        for flat in 0..n {
-            // Convert flat index to F-order multi-index in OLD shape
-            let mut rem = flat;
-            let mut old_idx = vec![0usize; old_ndim];
+        let old_c_strides = c_strides_elems(old_shape);
+        let mut values = Vec::with_capacity(n);
+        for f_flat in 0..n {
+            // Convert F-order flat index to old multi-index, then to C-order source index
+            let mut rem = f_flat;
+            let mut src_c = 0usize;
             for d in 0..old_ndim {
                 let dim = old_shape[d];
                 if dim > 0 {
-                    old_idx[d] = rem % dim;
+                    let coord = rem % dim;
                     rem /= dim;
+                    src_c += coord * old_c_strides[d];
                 }
             }
-            let src = old_idx
-                .iter()
-                .zip(&old_strides)
-                .map(|(&i, &s)| i * s)
-                .sum::<usize>();
-            // Convert flat index to F-order multi-index in NEW shape
-            let mut rem2 = flat;
-            let mut new_idx = vec![0usize; new_ndim];
-            for d in 0..new_ndim {
-                let dim = resolved[d];
-                if dim > 0 {
-                    new_idx[d] = rem2 % dim;
-                    rem2 /= dim;
-                }
-            }
-            let dst = new_idx
-                .iter()
-                .zip(&new_strides)
-                .map(|(&i, &s)| i * s)
-                .sum::<usize>();
-            if src < n && dst < n {
-                values[dst] = self.values[src];
-            }
+            values.push(if src_c < n { self.values[src_c] } else { 0.0 });
         }
         Ok(Self {
             shape: resolved,
