@@ -560,6 +560,24 @@ pub struct NditerBroadcastPlan {
     pub operands: Vec<NditerOperandBroadcastPlan>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NditerOverlapPolicyInput {
+    pub copy_if_overlap: bool,
+    pub overlap_assume_elementwise: bool,
+    pub observed_overlap: bool,
+    pub src_offset: usize,
+    pub dst_offset: usize,
+    pub byte_len: usize,
+    pub mode: RuntimeMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NditerOverlapDecision {
+    pub overlap_action: OverlapAction,
+    pub used_elementwise_assumption: bool,
+    pub audit_required: bool,
+}
+
 pub fn plan_nditer_broadcast(
     operands: &[NditerOperandSpec],
     item_size: usize,
@@ -623,11 +641,51 @@ pub fn plan_nditer_broadcast(
     })
 }
 
+pub fn resolve_nditer_overlap_policy(
+    input: NditerOverlapPolicyInput,
+) -> Result<NditerOverlapDecision, NditerError> {
+    if !input.observed_overlap {
+        return Ok(NditerOverlapDecision {
+            overlap_action: OverlapAction::NoCopy,
+            used_elementwise_assumption: false,
+            audit_required: false,
+        });
+    }
+
+    if input.overlap_assume_elementwise {
+        return Ok(NditerOverlapDecision {
+            overlap_action: OverlapAction::NoCopy,
+            used_elementwise_assumption: true,
+            audit_required: input.mode == RuntimeMode::Hardened,
+        });
+    }
+
+    if !input.copy_if_overlap {
+        return Err(NditerError::OverlapPolicyTriggered(
+            "observed overlap requires copy_if_overlap or overlap_assume_elementwise",
+        ));
+    }
+
+    let overlap_action = overlap_copy_policy(input.src_offset, input.dst_offset, input.byte_len)
+        .map_err(|err| match err {
+            TransferError::OverlapPolicyTriggered(msg) => NditerError::OverlapPolicyTriggered(msg),
+            _ => NditerError::OverlapPolicyTriggered(
+                "unexpected transfer overlap policy error in nditer",
+            ),
+        })?;
+    Ok(NditerOverlapDecision {
+        overlap_action,
+        used_elementwise_assumption: false,
+        audit_required: input.mode == RuntimeMode::Hardened,
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NditerError {
     InvalidConfiguration(&'static str),
     MultiIndexViolation(&'static str),
     NoBroadcastViolation(&'static str),
+    OverlapPolicyTriggered(&'static str),
 }
 
 impl NditerError {
@@ -637,6 +695,7 @@ impl NditerError {
             Self::InvalidConfiguration(_) => "nditer_constructor_invalid_configuration",
             Self::MultiIndexViolation(_) => "nditer_multi_index_contract_violation",
             Self::NoBroadcastViolation(_) => "nditer_no_broadcast_violation",
+            Self::OverlapPolicyTriggered(_) => "nditer_overlap_policy_triggered",
         }
     }
 }
@@ -646,7 +705,8 @@ impl std::fmt::Display for NditerError {
         match self {
             Self::InvalidConfiguration(msg)
             | Self::MultiIndexViolation(msg)
-            | Self::NoBroadcastViolation(msg) => write!(f, "{msg}"),
+            | Self::NoBroadcastViolation(msg)
+            | Self::OverlapPolicyTriggered(msg) => write!(f, "{msg}"),
         }
     }
 }
@@ -1511,6 +1571,55 @@ mod tests {
             err.reason_code(),
             "nditer_constructor_invalid_configuration"
         );
+    }
+
+    #[test]
+    fn nditer_overlap_policy_uses_copy_direction_when_copy_if_overlap_enabled() {
+        let decision = resolve_nditer_overlap_policy(NditerOverlapPolicyInput {
+            copy_if_overlap: true,
+            overlap_assume_elementwise: false,
+            observed_overlap: true,
+            src_offset: 0,
+            dst_offset: 4,
+            byte_len: 8,
+            mode: RuntimeMode::Strict,
+        })
+        .expect("copy_if_overlap should resolve");
+        assert_eq!(decision.overlap_action, OverlapAction::BackwardCopy);
+        assert!(!decision.used_elementwise_assumption);
+        assert!(!decision.audit_required);
+    }
+
+    #[test]
+    fn nditer_overlap_policy_allows_explicit_elementwise_assumption() {
+        let decision = resolve_nditer_overlap_policy(NditerOverlapPolicyInput {
+            copy_if_overlap: false,
+            overlap_assume_elementwise: true,
+            observed_overlap: true,
+            src_offset: 0,
+            dst_offset: 4,
+            byte_len: 8,
+            mode: RuntimeMode::Hardened,
+        })
+        .expect("elementwise assumption should bypass copy path");
+        assert_eq!(decision.overlap_action, OverlapAction::NoCopy);
+        assert!(decision.used_elementwise_assumption);
+        assert!(decision.audit_required);
+    }
+
+    #[test]
+    fn nditer_overlap_policy_rejects_unmediated_overlap() {
+        let err = resolve_nditer_overlap_policy(NditerOverlapPolicyInput {
+            copy_if_overlap: false,
+            overlap_assume_elementwise: false,
+            observed_overlap: true,
+            src_offset: 0,
+            dst_offset: 4,
+            byte_len: 8,
+            mode: RuntimeMode::Strict,
+        })
+        .expect_err("unmediated overlap should reject");
+        assert_eq!(err.reason_code(), "nditer_overlap_policy_triggered");
     }
 
     // -----------------------------------------------------------------------
