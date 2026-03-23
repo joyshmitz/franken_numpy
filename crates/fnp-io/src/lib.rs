@@ -2463,6 +2463,11 @@ pub fn memmap(
 /// Reads the NPY header to determine shape/dtype, then memory-maps the
 /// data payload region of the file.
 pub fn memmap_npy(path: &std::path::Path, mode: MemmapMode) -> Result<MemmapArray, IOError> {
+    if mode == MemmapMode::Write {
+        return Err(IOError::MemmapContractViolation(
+            "write mode is invalid for existing npy-backed memmap",
+        ));
+    }
     // Read the header to determine shape/dtype/offset
     let header_bytes = std::fs::read(path)
         .map_err(|_| IOError::MemmapContractViolation("failed to read NPY file for header"))?;
@@ -5002,6 +5007,26 @@ mod tests {
         let (_, values, _) = load(&updated).unwrap();
         assert_eq!(values[0], 42.0);
         assert_eq!(values[1], 20.0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn memmap_npy_rejects_write_mode() {
+        let dir = std::env::temp_dir().join("fnp_memmap_test_npy_write_mode");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("npy_write_mode_test.npy");
+        let values = vec![7.0, 8.0];
+        let npy_bytes = save(&[2], &values, IOSupportedDType::F64).unwrap();
+        std::fs::write(&path, &npy_bytes).unwrap();
+
+        let err = memmap_npy(&path, MemmapMode::Write).expect_err("write mode must fail closed");
+        assert_eq!(err.reason_code(), "io_memmap_contract_violation");
+
+        let persisted = std::fs::read(&path).expect("file should remain intact");
+        assert_eq!(
+            persisted, npy_bytes,
+            "rejecting write mode must not mutate file"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
