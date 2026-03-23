@@ -4,6 +4,10 @@ use fnp_dtype::{
     ArrayStorage, DType, promote, promote_for_mean_reduction, promote_for_sum_reduction,
 };
 use fnp_ndarray::{ShapeError, broadcast_shape, element_count, fix_unknown_dimension};
+use fnp_runtime::{
+    CompatibilityClass, DecisionAction as RuntimeDecisionAction, DecisionAuditContext,
+    DecisionEvent, EvidenceLedger, RuntimeMode,
+};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
@@ -15705,6 +15709,9 @@ pub enum UFuncError {
     LoopRegistryInvalid {
         detail: String,
     },
+    PolicyUnknownMetadata {
+        detail: String,
+    },
     Msg(String),
 }
 
@@ -15752,6 +15759,9 @@ impl std::fmt::Display for UFuncError {
             Self::LoopRegistryInvalid { detail } => {
                 write!(f, "ufunc loop registry invalid: {detail}")
             }
+            Self::PolicyUnknownMetadata { detail } => {
+                write!(f, "ufunc policy unknown metadata: {detail}")
+            }
             Self::Msg(msg) => write!(f, "{msg}"),
         }
     }
@@ -15781,6 +15791,7 @@ impl UFuncError {
             Self::TypeResolutionInvalid { .. } => "ufunc_type_resolution_invalid",
             Self::ReductionContractViolation { .. } => "ufunc_reduction_contract_violation",
             Self::LoopRegistryInvalid { .. } => "ufunc_loop_registry_invalid",
+            Self::PolicyUnknownMetadata { .. } => "ufunc_policy_unknown_metadata",
             Self::Msg(_) => "ufunc_operation_error",
         }
     }
@@ -15797,6 +15808,12 @@ pub struct UFuncLogRecord {
     pub passed: bool,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct UFuncPolicyDecision {
+    pub action: RuntimeDecisionAction,
+    pub event: DecisionEvent,
+}
+
 impl UFuncLogRecord {
     #[must_use]
     pub fn is_replay_complete(&self) -> bool {
@@ -15810,6 +15827,60 @@ impl UFuncLogRecord {
                 .iter()
                 .all(|artifact| !artifact.trim().is_empty())
     }
+}
+
+pub fn mediate_ufunc_runtime_policy(
+    mode_raw: &str,
+    class_raw: &str,
+    risk_score: f64,
+    hardened_validation_threshold: f64,
+    log_record: &UFuncLogRecord,
+) -> Result<UFuncPolicyDecision, UFuncError> {
+    let mode = RuntimeMode::from_wire(mode_raw.trim()).ok_or_else(|| {
+        UFuncError::PolicyUnknownMetadata {
+            detail: format!("unknown mode metadata '{mode_raw}'"),
+        }
+    })?;
+
+    let class = match class_raw.trim() {
+        "known_compatible" => CompatibilityClass::KnownCompatible,
+        "known_incompatible" => CompatibilityClass::KnownIncompatible,
+        "unknown" => CompatibilityClass::Unknown,
+        other => {
+            return Err(UFuncError::PolicyUnknownMetadata {
+                detail: format!("unknown compatibility class metadata '{other}'"),
+            });
+        }
+    };
+
+    let context = DecisionAuditContext {
+        fixture_id: log_record.fixture_id.clone(),
+        seed: log_record.seed,
+        env_fingerprint: log_record.env_fingerprint.clone(),
+        artifact_refs: log_record.artifact_refs.clone(),
+        reason_code: log_record.reason_code.clone(),
+    };
+
+    let mut ledger = EvidenceLedger::new();
+    let action = fnp_runtime::decide_and_record_with_context(
+        &mut ledger,
+        mode,
+        class,
+        risk_score,
+        hardened_validation_threshold,
+        context,
+        format!(
+            "ufunc boundary metadata mode={} class={}",
+            mode.as_str(),
+            class.as_str()
+        ),
+    );
+    let event = ledger
+        .last()
+        .cloned()
+        .expect("runtime policy decision should always be recorded");
+
+    Ok(UFuncPolicyDecision { action, event })
 }
 
 #[must_use]
@@ -22491,18 +22562,20 @@ mod tests {
         hermroots, hermsub, hermval, is_busday, isneginf, isposinf, lag2poly, lagadd, lagder,
         lagfit, lagfromroots, lagmul, lagroots, lagsub, lagval, lcm_arrays, leg2poly, legadd,
         legder, legdiv, legfit, legfromroots, legint, legmul, legroots, legsub, legval, ma_is_mask,
-        ma_is_masked, ma_make_mask, ma_mask_or, modf, normalize_fixed_signature_keywords,
-        normalize_signature_keywords, pad_empty, pad_linear_ramp, pad_stat,
-        parse_fixed_signature_string, parse_gufunc_signature, plan_binary_dispatch,
-        plan_binary_dispatch_with_registry, plan_binary_dispatch_with_signature, poly2cheb,
-        poly2herm, poly2lag, poly2leg, register_custom_loop, resolve_override_dispatch,
-        scimath_arccos, scimath_arcsin, scimath_arctanh, scimath_log, scimath_log2, scimath_log10,
-        scimath_power, scimath_sqrt, seterr, seterr_state, seterrcall, sort_complex,
-        take_float_error_events, unique_all, unique_counts, unique_inverse, unique_values,
-        validate_override_payload_class, where_nonzero,
+        ma_is_masked, ma_make_mask, ma_mask_or, mediate_ufunc_runtime_policy, modf,
+        normalize_fixed_signature_keywords, normalize_signature_keywords, pad_empty,
+        pad_linear_ramp, pad_stat, parse_fixed_signature_string, parse_gufunc_signature,
+        plan_binary_dispatch, plan_binary_dispatch_with_registry,
+        plan_binary_dispatch_with_signature, poly2cheb, poly2herm, poly2lag, poly2leg,
+        register_custom_loop, resolve_override_dispatch, scimath_arccos, scimath_arcsin,
+        scimath_arctanh, scimath_log, scimath_log2, scimath_log10, scimath_power, scimath_sqrt,
+        seterr, seterr_state, seterrcall, sort_complex, take_float_error_events, unique_all,
+        unique_counts, unique_inverse, unique_values, validate_override_payload_class,
+        where_nonzero,
     };
     use fnp_dtype::{ArrayStorage, DType, StructuredField, StructuredStorage, f16, promote};
     use fnp_ndarray::broadcast_shape;
+    use fnp_runtime::{CompatibilityClass, DecisionAction as RuntimeDecisionAction, RuntimeMode};
     use std::sync::{Arc, Mutex, RwLock};
 
     fn packet005_artifacts() -> Vec<String> {
@@ -26513,6 +26586,90 @@ mod tests {
             assert!(record.is_replay_complete());
             assert_eq!(record.reason_code, *reason_code);
         }
+    }
+
+    #[test]
+    fn packet005_policy_bridge_rejects_unknown_mode_metadata() {
+        let record = UFuncLogRecord {
+            fixture_id: "UP-005-policy-unknown-mode".to_string(),
+            seed: 5201,
+            mode: UFuncRuntimeMode::Strict,
+            env_fingerprint: "fnp-ufunc-tests".to_string(),
+            artifact_refs: packet005_artifacts(),
+            reason_code: "ufunc_policy_unknown_metadata".to_string(),
+            passed: false,
+        };
+
+        let err =
+            mediate_ufunc_runtime_policy("mystery_mode", "known_compatible", 0.2, 0.5, &record)
+                .expect_err("unknown mode metadata should fail closed");
+
+        assert!(matches!(err, UFuncError::PolicyUnknownMetadata { .. }));
+        assert_eq!(err.reason_code(), "ufunc_policy_unknown_metadata");
+    }
+
+    #[test]
+    fn packet005_policy_bridge_rejects_unknown_class_metadata() {
+        let record = UFuncLogRecord {
+            fixture_id: "UP-005-policy-unknown-class".to_string(),
+            seed: 5202,
+            mode: UFuncRuntimeMode::Strict,
+            env_fingerprint: "fnp-ufunc-tests".to_string(),
+            artifact_refs: packet005_artifacts(),
+            reason_code: "ufunc_policy_unknown_metadata".to_string(),
+            passed: false,
+        };
+
+        let err = mediate_ufunc_runtime_policy("strict", "mystery_class", 0.2, 0.5, &record)
+            .expect_err("unknown class metadata should fail closed");
+
+        assert!(matches!(err, UFuncError::PolicyUnknownMetadata { .. }));
+        assert_eq!(err.reason_code(), "ufunc_policy_unknown_metadata");
+    }
+
+    #[test]
+    fn packet005_policy_bridge_records_hardened_known_compatible_decision() {
+        let record = UFuncLogRecord {
+            fixture_id: "UP-005-policy-hardened".to_string(),
+            seed: 5203,
+            mode: UFuncRuntimeMode::Hardened,
+            env_fingerprint: "fnp-ufunc-tests".to_string(),
+            artifact_refs: packet005_artifacts(),
+            reason_code: "ufunc_dispatch_resolution_failed".to_string(),
+            passed: true,
+        };
+
+        let decision =
+            mediate_ufunc_runtime_policy("hardened", "known_compatible", 0.9, 0.5, &record)
+                .expect("known compatible metadata should be admissible");
+
+        assert_eq!(decision.action, RuntimeDecisionAction::FullValidate);
+        assert_eq!(decision.event.mode, RuntimeMode::Hardened);
+        assert_eq!(decision.event.class, CompatibilityClass::KnownCompatible);
+        assert_eq!(
+            decision.event.reason_code,
+            "ufunc_dispatch_resolution_failed"
+        );
+    }
+
+    #[test]
+    fn packet005_policy_bridge_fail_closes_explicit_unknown_class() {
+        let record = UFuncLogRecord {
+            fixture_id: "UP-005-policy-explicit-unknown".to_string(),
+            seed: 5204,
+            mode: UFuncRuntimeMode::Strict,
+            env_fingerprint: "fnp-ufunc-tests".to_string(),
+            artifact_refs: packet005_artifacts(),
+            reason_code: "ufunc_policy_unknown_metadata".to_string(),
+            passed: false,
+        };
+
+        let decision = mediate_ufunc_runtime_policy("strict", "unknown", 0.1, 0.5, &record)
+            .expect("explicit unknown class is valid metadata but must fail closed");
+
+        assert_eq!(decision.action, RuntimeDecisionAction::FailClosed);
+        assert_eq!(decision.event.mode, RuntimeMode::Strict);
+        assert_eq!(decision.event.class, CompatibilityClass::Unknown);
     }
 
     // ── Array creation function tests ────────────────────────────────
