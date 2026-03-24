@@ -4031,6 +4031,8 @@ pub fn generator_from_seed_sequence(
 }
 
 pub fn validate_rng_policy_metadata(mode: &str, class: &str) -> Result<(), RandomPolicyError> {
+    let mode = mode.trim();
+    let class = class.trim();
     let known_mode = mode == "strict" || mode == "hardened";
     let known_class = class == "known_compatible"
         || class == "known_compatible_low_risk"
@@ -4743,6 +4745,8 @@ mod tests {
             .expect("legacy known incompatible metadata");
         validate_rng_policy_metadata("strict", "unknown")
             .expect("legacy unknown semantics metadata");
+        validate_rng_policy_metadata(" strict ", " known_compatible_low_risk ")
+            .expect("whitespace-padded metadata should normalize");
 
         let unknown_mode = validate_rng_policy_metadata("mystery", "known_compatible_low_risk")
             .expect_err("unknown mode must fail closed");

@@ -3643,6 +3643,8 @@ pub fn validate_backend_bridge(
 }
 
 pub fn validate_policy_metadata(mode: &str, class: &str) -> Result<(), LinAlgError> {
+    let mode = mode.trim();
+    let class = class.trim();
     let known_mode = mode == "strict" || mode == "hardened";
     let known_class = class == "known_compatible"
         || class == "known_compatible_low_risk"
@@ -5401,6 +5403,8 @@ mod tests {
         validate_policy_metadata("hardened", "known_incompatible")
             .expect("legacy known incompatible");
         validate_policy_metadata("strict", "unknown").expect("legacy unknown semantics");
+        validate_policy_metadata(" strict ", " known_compatible_low_risk ")
+            .expect("whitespace-padded metadata should normalize");
 
         let err = validate_policy_metadata("weird", "known_compatible_low_risk")
             .expect_err("unknown mode should fail");
