@@ -18024,7 +18024,9 @@ impl MaskedArray {
         let result_data = self.data.elementwise_binary(&other.data, op)?;
         let result_mask = match (&self.mask, &other.mask) {
             (None, None) => None,
-            (Some(m), None) | (None, Some(m)) => Some(m.clone()),
+            (Some(m), None) | (None, Some(m)) => {
+                Some(m.broadcast_to(result_data.shape()).map_err(MAError::from)?)
+            }
             (Some(m1), Some(m2)) => Some(m1.elementwise_binary(m2, BinaryOp::LogicalOr)?),
         };
         Ok(Self {
@@ -32383,6 +32385,70 @@ mod tests {
         assert_eq!(result.mask().unwrap().values(), &[0.0, 1.0, 1.0]);
         // Data values computed regardless of mask
         assert_eq!(result.data().values(), &[11.0, 22.0, 33.0]);
+    }
+
+    #[test]
+    fn masked_array_binary_op_broadcasts_single_source_mask() {
+        let lhs_data =
+            UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
+        let lhs_mask = UFuncArray::new(vec![1, 3], vec![0.0, 1.0, 0.0], DType::Bool).unwrap();
+        let lhs = MaskedArray {
+            data: lhs_data,
+            mask: Some(lhs_mask),
+            fill_value: 1e20,
+            hard_mask: false,
+        };
+
+        let rhs_data = UFuncArray::new(
+            vec![2, 3],
+            vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0],
+            DType::F64,
+        )
+        .unwrap();
+        let rhs = MaskedArray::new(rhs_data, None, None).unwrap();
+
+        let result = lhs.elementwise_binary(&rhs, BinaryOp::Add).unwrap();
+
+        assert_eq!(result.data().shape(), &[2, 3]);
+        assert_eq!(
+            result.data().values(),
+            &[11.0, 22.0, 33.0, 44.0, 55.0, 66.0]
+        );
+        assert_eq!(result.mask().unwrap().shape(), &[2, 3]);
+        assert_eq!(
+            result.mask().unwrap().values(),
+            &[0.0, 1.0, 0.0, 0.0, 1.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn masked_array_binary_op_broadcasts_rhs_only_mask() {
+        let lhs_data =
+            UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
+        let lhs = MaskedArray::new(lhs_data, None, None).unwrap();
+
+        let rhs_data = UFuncArray::new(
+            vec![2, 3],
+            vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0],
+            DType::F64,
+        )
+        .unwrap();
+        let rhs_mask = UFuncArray::new(vec![2, 1], vec![1.0, 0.0], DType::Bool).unwrap();
+        let rhs = MaskedArray {
+            data: rhs_data,
+            mask: Some(rhs_mask),
+            fill_value: 1e20,
+            hard_mask: false,
+        };
+
+        let result = lhs.elementwise_binary(&rhs, BinaryOp::Add).unwrap();
+
+        assert_eq!(result.data().shape(), &[2, 3]);
+        assert_eq!(result.mask().unwrap().shape(), &[2, 3]);
+        assert_eq!(
+            result.mask().unwrap().values(),
+            &[1.0, 1.0, 1.0, 0.0, 0.0, 0.0]
+        );
     }
 
     #[test]
