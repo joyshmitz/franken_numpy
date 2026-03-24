@@ -2894,6 +2894,9 @@ impl Generator {
         if (sum - 1.0).abs() > 1e-8 || p.iter().any(|&v| v < 0.0) {
             return Err(RandomError::InvalidUpperBound);
         }
+        if !replace && p.iter().filter(|&&weight| weight > 0.0).count() < size {
+            return Err(RandomError::InvalidParameter);
+        }
 
         if replace {
             // Inverse-CDF sampling
@@ -5426,6 +5429,19 @@ mod tests {
         // Negative probability
         let p2 = [0.5, 0.7, -0.2];
         assert!(rng.choice_weighted(&a, 1, true, &p2).is_err());
+    }
+
+    #[test]
+    fn choice_weighted_no_replace_rejects_request_larger_than_positive_support() {
+        let mut rng = test_generator();
+        let a = [1.0, 2.0, 3.0];
+        let p = [1.0, 0.0, 0.0];
+
+        let err = rng
+            .choice_weighted(&a, 2, false, &p)
+            .expect_err("sampling past non-zero support should fail closed");
+
+        assert_eq!(err, RandomError::InvalidParameter);
     }
 
     // ── maxwell distribution tests ──
