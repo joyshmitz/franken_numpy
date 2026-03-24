@@ -229,10 +229,10 @@ pub fn decide_compatibility_from_wire(
     risk_score: f64,
     hardened_validation_threshold: f64,
 ) -> DecisionAction {
-    let Some(mode) = RuntimeMode::from_wire(mode_raw) else {
+    let Some(mode) = RuntimeMode::from_wire(mode_raw.trim()) else {
         return DecisionAction::FailClosed;
     };
-    let class = CompatibilityClass::from_wire(class_raw);
+    let class = CompatibilityClass::from_wire(class_raw.trim());
     decide_compatibility(mode, class, risk_score, hardened_validation_threshold)
 }
 
@@ -912,6 +912,18 @@ mod tests {
         );
         assert_eq!(
             decide_compatibility_from_wire("strict", "unknown_semantics", 0.1, 0.5),
+            DecisionAction::FailClosed
+        );
+    }
+
+    #[test]
+    fn wire_decoding_trims_metadata_before_parsing() {
+        assert_eq!(
+            decide_compatibility_from_wire(" strict ", " known_compatible ", 0.1, 0.5),
+            DecisionAction::Allow
+        );
+        assert_eq!(
+            decide_compatibility_from_wire(" hardened ", " unknown ", 0.1, 0.5),
             DecisionAction::FailClosed
         );
     }
