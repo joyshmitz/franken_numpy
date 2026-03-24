@@ -3755,23 +3755,42 @@ pub fn batch_solve(
     b_shape: &[usize],
 ) -> Result<Vec<f64>, LinAlgError> {
     let (a_batch, n) = parse_batched_square(a_shape)?;
-    // b can be (..., n) or (..., n, m)
     if b_shape.is_empty() {
         return Err(LinAlgError::ShapeContractViolation(
             "batch_solve: b must have at least 1 dimension",
         ));
     }
-    let b_last = b_shape[b_shape.len() - 1];
-    if b_last != n {
-        return Err(LinAlgError::ShapeContractViolation(
-            "batch_solve: last dimension of b must match n",
-        ));
-    }
-    let b_batch = if b_shape.len() <= 1 {
-        1
-    } else {
-        b_shape[..b_shape.len() - 1].iter().product()
-    };
+
+    // Prefer the matrix RHS lane when the penultimate dimension matches n so
+    // shapes like (n, m) are interpreted as multiple right-hand sides, while
+    // batch vector shapes like (..., n) still use the single-RHS solver.
+    let (b_batch, rhs_cols, rhs_width, vector_rhs) =
+        if b_shape.len() >= 2 && b_shape[b_shape.len() - 2] == n {
+            let rhs_cols = b_shape[b_shape.len() - 1];
+            let rhs_width = n
+                .checked_mul(rhs_cols)
+                .ok_or(LinAlgError::ShapeContractViolation(
+                    "batch_solve: rhs width overflow",
+                ))?;
+            let b_batch = if b_shape.len() <= 2 {
+                1
+            } else {
+                b_shape[..b_shape.len() - 2].iter().product()
+            };
+            (b_batch, rhs_cols, rhs_width, false)
+        } else if b_shape[b_shape.len() - 1] == n {
+            let b_batch = if b_shape.len() <= 1 {
+                1
+            } else {
+                b_shape[..b_shape.len() - 1].iter().product()
+            };
+            (b_batch, 1, n, true)
+        } else {
+            return Err(LinAlgError::ShapeContractViolation(
+                "batch_solve: rhs shape must end with n or (n, m)",
+            ));
+        };
+
     let batch = a_batch.max(b_batch);
     if (a_batch != 1 && a_batch != batch) || (b_batch != 1 && b_batch != batch) {
         return Err(LinAlgError::ShapeContractViolation(
@@ -3779,14 +3798,30 @@ pub fn batch_solve(
         ));
     }
     let mat_size = n * n;
-    let mut result = Vec::with_capacity(batch * n);
+    if a.len() != a_batch * mat_size {
+        return Err(LinAlgError::ShapeContractViolation(
+            "batch_solve: A data length does not match shape",
+        ));
+    }
+    if b.len() != b_batch * rhs_width {
+        return Err(LinAlgError::ShapeContractViolation(
+            "batch_solve: B data length does not match shape",
+        ));
+    }
+
+    let mut result = Vec::with_capacity(batch * rhs_width);
     for idx in 0..batch {
         let a_idx = if a_batch == 1 { 0 } else { idx };
         let b_idx = if b_batch == 1 { 0 } else { idx };
         let a_sub = &a[a_idx * mat_size..(a_idx + 1) * mat_size];
-        let b_sub = &b[b_idx * n..(b_idx + 1) * n];
-        let x = solve_nxn(a_sub, b_sub, n)?;
-        result.extend_from_slice(&x);
+        let b_sub = &b[b_idx * rhs_width..(b_idx + 1) * rhs_width];
+        if vector_rhs {
+            let x = solve_nxn(a_sub, b_sub, n)?;
+            result.extend_from_slice(&x);
+        } else {
+            let x = solve_nxn_multi(a_sub, b_sub, n, rhs_cols)?;
+            result.extend_from_slice(&x);
+        }
     }
     Ok(result)
 }
@@ -7324,6 +7359,21 @@ mod tests {
         assert!((x[3] - 2.0).abs() < 1e-12);
         assert!((x[4] - 3.0).abs() < 1e-12);
         assert!((x[5] - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn batch_solve_accepts_matrix_rhs() {
+        let a = vec![2.0, 0.0, 0.0, 3.0]; // diag(2, 3)
+        let b = vec![
+            4.0, 2.0, //
+            9.0, 6.0,
+        ];
+        let a_shape = [2, 2];
+        let b_shape = [2, 2];
+
+        let x = batch_solve(&a, &a_shape, &b, &b_shape).expect("matrix rhs batch_solve");
+
+        assert_eq!(x, vec![2.0, 1.0, 3.0, 2.0]);
     }
 
     #[test]
