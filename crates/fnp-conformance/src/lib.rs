@@ -8956,6 +8956,7 @@ fn execute_linalg_operation(
                 input.shape,
                 input.rhs,
                 input.rhs_shape,
+                input.rhs_shape.len() < input.shape.len() || input.rhs_shape.len() == 1,
             )?))
         }
         "spectral_branch" => {

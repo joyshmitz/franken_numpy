@@ -6718,6 +6718,62 @@ impl UFuncArray {
         Ok(Self::scalar(sum, dtype))
     }
 
+    /// Cross product of two vectors (`np.cross`).
+    ///
+    /// Supports 2-D and 3-D vectors. For 2-D vectors `[a, b]` and `[c, d]`,
+    /// returns the scalar `a*d - b*c`. For 3-D vectors, returns the 3-D cross product.
+    pub fn cross(&self, other: &Self) -> Result<Self, UFuncError> {
+        if self.shape.len() != 1 || other.shape.len() != 1 {
+            return Err(UFuncError::Msg(
+                "cross: inputs must be 1-D vectors".to_string(),
+            ));
+        }
+        let a_len = self.shape[0];
+        let b_len = other.shape[0];
+        if (a_len != 2 && a_len != 3) || (b_len != 2 && b_len != 3) {
+            return Err(UFuncError::Msg(
+                "cross: inputs must have length 2 or 3".to_string(),
+            ));
+        }
+        let dtype = promote(self.dtype, other.dtype);
+        let a = &self.values;
+        let b = &other.values;
+        if a_len == 2 && b_len == 2 {
+            // 2D × 2D → scalar
+            Ok(Self::scalar(a[0] * b[1] - a[1] * b[0], dtype))
+        } else {
+            // Extend 2-D to 3-D by padding with 0
+            let ax = if a_len == 3 {
+                [a[0], a[1], a[2]]
+            } else {
+                [a[0], a[1], 0.0]
+            };
+            let bx = if b_len == 3 {
+                [b[0], b[1], b[2]]
+            } else {
+                [b[0], b[1], 0.0]
+            };
+            let cx = ax[1] * bx[2] - ax[2] * bx[1];
+            let cy = ax[2] * bx[0] - ax[0] * bx[2];
+            let cz = ax[0] * bx[1] - ax[1] * bx[0];
+            if a_len == 2 || b_len == 2 {
+                // Mixed 2D/3D → 3D result
+                Ok(Self::from_values_with_dtype(
+                    vec![3],
+                    vec![cx, cy, cz],
+                    dtype,
+                )?)
+            } else {
+                // 3D × 3D → 3D
+                Ok(Self::from_values_with_dtype(
+                    vec![3],
+                    vec![cx, cy, cz],
+                    dtype,
+                )?)
+            }
+        }
+    }
+
     /// Compute the dot product of two or more arrays in an optimized order (`np.multi_dot`).
     ///
     /// Uses dynamic programming (chain matrix multiplication) to find the
@@ -10976,30 +11032,6 @@ impl UFuncArray {
         ))
     }
 
-    /// Cross product of two 3-element vectors (np.cross).
-    pub fn cross(&self, rhs: &Self) -> Result<Self, UFuncError> {
-        if self.shape.len() != 1 || rhs.shape.len() != 1 {
-            return Err(UFuncError::Msg(
-                "cross: only 1-D arrays supported".to_string(),
-            ));
-        }
-        if self.shape[0] != 3 || rhs.shape[0] != 3 {
-            return Err(UFuncError::Msg(
-                "cross: inputs must have exactly 3 elements".to_string(),
-            ));
-        }
-        let (a0, a1, a2) = (self.values[0], self.values[1], self.values[2]);
-        let (b0, b1, b2) = (rhs.values[0], rhs.values[1], rhs.values[2]);
-        let values = vec![a1 * b2 - a2 * b1, a2 * b0 - a0 * b2, a0 * b1 - a1 * b0];
-        let dtype = promote(self.dtype, rhs.dtype);
-        Ok(Self {
-            shape: vec![3],
-            values,
-            dtype,
-            integer_sidecar: None,
-        })
-    }
-
     // ── window functions ────────
 
     /// Return the Hamming window of length M (np.hamming).
@@ -14853,11 +14885,17 @@ impl UFuncArray {
         if self.values.is_empty() {
             return DType::F64;
         }
-        let all_bool = self.values.iter().all(|&v| v == 0.0 || v == 1.0);
+        let all_bool = self
+            .values
+            .iter()
+            .all(|&v| (v == 0.0 && !v.is_sign_negative()) || v == 1.0);
         if all_bool {
             return DType::Bool;
         }
-        let all_int = self.values.iter().all(|&v| v == v.floor() && v.is_finite());
+        let all_int = self
+            .values
+            .iter()
+            .all(|&v| v == v.floor() && v.is_finite() && !(v == 0.0 && v.is_sign_negative()));
         if all_int {
             let min_v = self.values.iter().cloned().fold(f64::INFINITY, f64::min);
             let max_v = self
@@ -15964,17 +16002,17 @@ fn parse_fixed_signature_dtype(token: &str) -> Result<DType, UFuncError> {
     let normalized = token.trim();
     let alias = match normalized {
         "?" => "bool",
-        "b" => "i8",
-        "B" => "u8",
-        "h" => "i16",
-        "H" => "u16",
-        "i" => "i32",
-        "I" => "u32",
-        "l" | "q" | "p" => "i64",
-        "L" | "Q" | "P" => "u64",
-        "e" => "f16",
-        "f" => "f32",
-        "d" | "g" => "f64",
+        "b" => "int8",
+        "B" => "uint8",
+        "h" => "int16",
+        "H" => "uint16",
+        "i" => "int32",
+        "I" => "uint32",
+        "l" | "q" | "p" => "int64",
+        "L" | "Q" | "P" => "uint64",
+        "e" => "float16",
+        "f" => "float32",
+        "d" | "g" => "float64",
         "F" => "complex64",
         "D" | "G" => "complex128",
         "M" => "datetime64",
@@ -17481,6 +17519,9 @@ pub fn is_busday(dates: &UFuncArray) -> Result<UFuncArray, UFuncError> {
         .values()
         .iter()
         .map(|&d| {
+            if d.is_nan() {
+                return 0.0;
+            }
             let wd = epoch_day_to_weekday(d as i64);
             if wd < 5 { 1.0 } else { 0.0 }
         })
@@ -17503,37 +17544,39 @@ pub fn busday_count(start: &UFuncArray, end: &UFuncArray) -> Result<UFuncArray, 
     let start_bc = start.broadcast_to(&broadcast_shape)?;
     let end_bc = end.broadcast_to(&broadcast_shape)?;
 
-    let values: Vec<f64> = start_bc
-        .values()
-        .iter()
-        .zip(end_bc.values().iter())
-        .map(|(&s, &e)| {
-            let s_day = s as i64;
-            let e_day = e as i64;
-            if s_day == e_day {
-                return 0.0;
+    let mut values = Vec::with_capacity(start_bc.values().len());
+    for (&s, &e) in start_bc.values().iter().zip(end_bc.values().iter()) {
+        if s.is_nan() || e.is_nan() {
+            return Err(UFuncError::Msg(
+                "Cannot compute a business day count with a NaT (not-a-time) date".to_string(),
+            ));
+        }
+        let s_day = s as i64;
+        let e_day = e as i64;
+        if s_day == e_day {
+            values.push(0.0);
+            continue;
+        }
+        let (lo, hi, sign) = if s_day < e_day {
+            (s_day, e_day, 1.0)
+        } else {
+            (e_day, s_day, -1.0)
+        };
+        // Full weeks contain exactly 5 business days each
+        let total_days = hi - lo;
+        let full_weeks = total_days / 7;
+        let remainder = total_days % 7;
+        let mut count = full_weeks * 5;
+        // Count business days in the remaining partial week
+        let start_wd = epoch_day_to_weekday(lo);
+        for i in 0..remainder {
+            let wd = (start_wd as i64 + i) % 7;
+            if wd < 5 {
+                count += 1;
             }
-            let (lo, hi, sign) = if s_day < e_day {
-                (s_day, e_day, 1.0)
-            } else {
-                (e_day, s_day, -1.0)
-            };
-            // Full weeks contain exactly 5 business days each
-            let total_days = hi - lo;
-            let full_weeks = total_days / 7;
-            let remainder = total_days % 7;
-            let mut count = full_weeks * 5;
-            // Count business days in the remaining partial week
-            let start_wd = epoch_day_to_weekday(lo);
-            for i in 0..remainder {
-                let wd = (start_wd as i64 + i) % 7;
-                if wd < 5 {
-                    count += 1;
-                }
-            }
-            count as f64 * sign
-        })
-        .collect();
+        }
+        values.push(count as f64 * sign);
+    }
     UFuncArray::new(broadcast_shape, values, DType::I64)
 }
 
@@ -17557,54 +17600,55 @@ pub fn busday_offset(dates: &UFuncArray, offsets: &UFuncArray) -> Result<UFuncAr
         .map_err(UFuncError::Shape)?;
     let dates_bc = dates.broadcast_to(&broadcast_shape)?;
     let offsets_bc = offsets.broadcast_to(&broadcast_shape)?;
-    let values: Vec<f64> = dates_bc
-        .values()
-        .iter()
-        .zip(offsets_bc.values().iter())
-        .map(|(&d, &off)| {
-            let mut current = d as i64;
-            let off_i = off as i64;
+    let mut values = Vec::with_capacity(dates_bc.values().len());
+    for (&d, &off) in dates_bc.values().iter().zip(offsets_bc.values().iter()) {
+        if d.is_nan() {
+            return Err(UFuncError::Msg("NaT input in busday_offset".to_string()));
+        }
+        if off.is_nan() {
+            return Err(UFuncError::Msg(
+                "cannot convert float NaN to integer".to_string(),
+            ));
+        }
+        let mut current = d as i64;
+        let off_i = off as i64;
 
-            let is_weekend = epoch_day_to_weekday(current) >= 5;
+        let is_weekend = epoch_day_to_weekday(current) >= 5;
 
-            // If offset is 0 and we are on a weekend, NumPy's default roll='raise'
-            // would raise an error.
-            if off_i == 0 && is_weekend {
-                return f64::NAN;
+        // If offset is 0 and we are on a weekend, NumPy's default roll='raise'
+        // would raise an error.
+        if off_i == 0 && is_weekend {
+            return Err(UFuncError::Msg(
+                "busday_offset: non-business day date in input".to_string(),
+            ));
+        }
+
+        if off_i > 0 {
+            // Roll forward if starting on a weekend
+            while epoch_day_to_weekday(current) >= 5 {
+                current += 1;
             }
-
-            if off_i > 0 {
-                // Roll forward if starting on a weekend
-                while epoch_day_to_weekday(current) >= 5 {
-                    current += 1;
-                }
-                let mut remaining = off_i;
-                while remaining > 0 {
-                    current += 1;
-                    if epoch_day_to_weekday(current) < 5 {
-                        remaining -= 1;
-                    }
-                }
-            } else if off_i < 0 {
-                // Roll backward if starting on a weekend
-                while epoch_day_to_weekday(current) >= 5 {
-                    current -= 1;
-                }
-                let mut remaining = off_i.abs();
-                while remaining > 0 {
-                    current -= 1;
-                    if epoch_day_to_weekday(current) < 5 {
-                        remaining -= 1;
-                    }
+            let mut remaining = off_i;
+            while remaining > 0 {
+                current += 1;
+                if epoch_day_to_weekday(current) < 5 {
+                    remaining -= 1;
                 }
             }
-            current as f64
-        })
-        .collect();
-    if values.iter().any(|v| v.is_nan()) {
-        return Err(UFuncError::Msg(
-            "busday_offset: non-business day date in input".to_string(),
-        ));
+        } else if off_i < 0 {
+            // Roll backward if starting on a weekend
+            while epoch_day_to_weekday(current) >= 5 {
+                current -= 1;
+            }
+            let mut remaining = off_i.abs();
+            while remaining > 0 {
+                current -= 1;
+                if epoch_day_to_weekday(current) < 5 {
+                    remaining -= 1;
+                }
+            }
+        }
+        values.push(current as f64);
     }
     UFuncArray::new(broadcast_shape, values, DType::DateTime64)
 }
@@ -28193,10 +28237,12 @@ mod tests {
     }
 
     #[test]
-    fn cross_wrong_length() {
+    fn cross_mixed_length() {
         let a = UFuncArray::new(vec![2], vec![1.0, 2.0], DType::F64).unwrap();
         let b = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
-        assert!(a.cross(&b).is_err());
+        let result = a.cross(&b).unwrap();
+        assert_eq!(result.shape(), &[3]);
+        assert_eq!(result.values(), &[6.0, -3.0, 0.0]);
     }
 
     #[test]
@@ -29996,6 +30042,35 @@ mod tests {
         let b = UFuncArray::new(vec![2, 2], vec![5.0, 6.0, 7.0, 8.0], DType::F64).unwrap();
         let r = a.vdot(&b).unwrap();
         assert_eq!(r.values(), &[70.0]); // 1*5+2*6+3*7+4*8=70
+    }
+
+    #[test]
+    fn cross_3d() {
+        // np.cross([1, 0, 0], [0, 1, 0]) = [0, 0, 1]
+        let a = UFuncArray::new(vec![3], vec![1.0, 0.0, 0.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![3], vec![0.0, 1.0, 0.0], DType::F64).unwrap();
+        let r = a.cross(&b).unwrap();
+        assert_eq!(r.shape(), &[3]);
+        assert_eq!(r.values(), &[0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn cross_2d_scalar() {
+        // np.cross([1, 2], [3, 4]) = 1*4 - 2*3 = -2
+        let a = UFuncArray::new(vec![2], vec![1.0, 2.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![2], vec![3.0, 4.0], DType::F64).unwrap();
+        let r = a.cross(&b).unwrap();
+        assert_eq!(r.values(), &[-2.0]);
+    }
+
+    #[test]
+    fn cross_mixed_2d_3d() {
+        // np.cross([1, 2], [3, 4, 5]) = [2*5, -1*5, 1*4 - 2*3] = [10, -5, -2]
+        let a = UFuncArray::new(vec![2], vec![1.0, 2.0], DType::F64).unwrap();
+        let b = UFuncArray::new(vec![3], vec![3.0, 4.0, 5.0], DType::F64).unwrap();
+        let r = a.cross(&b).unwrap();
+        assert_eq!(r.shape(), &[3]);
+        assert_eq!(r.values(), &[10.0, -5.0, -2.0]);
     }
 
     #[test]

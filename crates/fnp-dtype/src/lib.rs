@@ -31,11 +31,11 @@ impl DType {
     pub const fn name(self) -> &'static str {
         match self {
             Self::Bool => "bool",
-            Self::I8 => "i8",
+            Self::I8 => "int8",
             Self::I16 => "i16",
             Self::I32 => "i32",
             Self::I64 => "i64",
-            Self::U8 => "u8",
+            Self::U8 => "uint8",
             Self::U16 => "u16",
             Self::U32 => "u32",
             Self::U64 => "u64",
@@ -72,14 +72,14 @@ impl DType {
     pub fn parse(name: &str) -> Option<Self> {
         match name {
             "bool" => Some(Self::Bool),
-            "i1" | "i8" | "int8" => Some(Self::I8),
+            "i1" | "int8" => Some(Self::I8),
             "i2" | "i16" | "int16" => Some(Self::I16),
             "i4" | "i32" | "int32" => Some(Self::I32),
-            "i8_" | "i64" | "int64" => Some(Self::I64),
-            "u1" | "u8" | "uint8" => Some(Self::U8),
+            "i8" | "i64" | "int64" => Some(Self::I64),
+            "u1" | "uint8" => Some(Self::U8),
             "u2" | "u16" | "uint16" => Some(Self::U16),
             "u4" | "u32" | "uint32" => Some(Self::U32),
-            "u8_" | "u64" | "uint64" => Some(Self::U64),
+            "u8" | "u64" | "uint64" => Some(Self::U64),
             "f2" | "f16" | "float16" | "half" => Some(Self::F16),
             "f4" | "f32" | "float32" => Some(Self::F32),
             "f8" | "f64" | "float64" => Some(Self::F64),
@@ -526,6 +526,10 @@ fn can_cast_same_kind(from: DType, to: DType) -> bool {
 pub fn min_scalar_type(value: f64) -> DType {
     if value.is_nan() || value.is_infinite() {
         return DType::F64;
+    }
+    // Handle negative zero explicitly
+    if value == 0.0 && value.is_sign_negative() {
+        return DType::F16;
     }
     if value != value.floor() {
         #[allow(clippy::cast_possible_truncation)]
@@ -1663,6 +1667,22 @@ mod tests {
         assert_eq!(DType::parse("float16"), Some(DType::F16));
         assert_eq!(DType::parse("float32"), Some(DType::F32));
         assert_eq!(DType::parse("float64"), Some(DType::F64));
+    }
+
+    #[test]
+    fn parse_numpy_byte_width_shorthand() {
+        // NumPy convention: iN/uN/fN where N is byte count, not bit count
+        assert_eq!(DType::parse("i1"), Some(DType::I8));
+        assert_eq!(DType::parse("i2"), Some(DType::I16));
+        assert_eq!(DType::parse("i4"), Some(DType::I32));
+        assert_eq!(DType::parse("i8"), Some(DType::I64)); // 8 bytes = int64
+        assert_eq!(DType::parse("u1"), Some(DType::U8));
+        assert_eq!(DType::parse("u2"), Some(DType::U16));
+        assert_eq!(DType::parse("u4"), Some(DType::U32));
+        assert_eq!(DType::parse("u8"), Some(DType::U64)); // 8 bytes = uint64
+        assert_eq!(DType::parse("f2"), Some(DType::F16));
+        assert_eq!(DType::parse("f4"), Some(DType::F32));
+        assert_eq!(DType::parse("f8"), Some(DType::F64));
     }
 
     #[test]

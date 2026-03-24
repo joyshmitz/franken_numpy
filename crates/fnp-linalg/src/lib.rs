@@ -2027,7 +2027,7 @@ fn hessenberg_qr_iter(h: &mut [f64], mut z: Option<&mut [f64]>, n: usize) {
 }
 
 /// Compute eigenvalues of a symmetric NxN matrix via QR iteration.
-/// Returns eigenvalues in descending order.
+/// Returns eigenvalues in ascending order (NumPy convention).
 /// The matrix must be symmetric; behavior is undefined for non-symmetric input.
 pub fn eigvalsh_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
     if a.len() != n * n || n == 0 {
@@ -2047,8 +2047,8 @@ pub fn eigvalsh_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
 }
 
 /// Compute eigenvalues and eigenvectors of a symmetric NxN matrix via QR iteration.
-/// Returns (eigenvalues, eigenvectors_flat) where eigenvectors are stored column-major
-/// in a flat n*n array. Eigenvalues are in ascending order (NumPy convention).
+/// Returns (eigenvalues, eigenvectors_flat) where eigenvectors are stored as columns
+/// in a row-major n*n array. Eigenvalues are in ascending order (NumPy convention).
 pub fn eigh_nxn(a: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), LinAlgError> {
     if a.len() != n * n || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
@@ -2390,7 +2390,9 @@ pub fn eig_nxn_full(a: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), LinAlgE
                 if denom.abs() > 1e-15 {
                     vr_re[j * n + col] = -sum / denom;
                 } else {
-                    vr_re[j * n + col] = -sum / 1e-15;
+                    // Near-singular: use sign-preserving epsilon to avoid sign flip
+                    let safe_denom = if denom >= 0.0 { 1e-15 } else { -1e-15 };
+                    vr_re[j * n + col] = -sum / safe_denom;
                 }
             }
             col += 1;
@@ -3756,6 +3758,7 @@ pub fn batch_solve(
     a_shape: &[usize],
     b: &[f64],
     b_shape: &[usize],
+    vector_rhs: bool,
 ) -> Result<Vec<f64>, LinAlgError> {
     let (a_batch, n) = parse_batched_square(a_shape)?;
     if b_shape.is_empty() {
@@ -3764,35 +3767,37 @@ pub fn batch_solve(
         ));
     }
 
-    // NumPy rule: vector RHS when b.ndim == a.ndim - 1 (last dim == n),
-    // matrix RHS when b.ndim == a.ndim (penultimate dim == n).
-    let (b_batch, rhs_cols, rhs_width, vector_rhs) =
-        if b_shape.len() == a_shape.len() && b_shape.len() >= 2 && b_shape[b_shape.len() - 2] == n
-        {
-            let rhs_cols = b_shape[b_shape.len() - 1];
-            let rhs_width = n
-                .checked_mul(rhs_cols)
-                .ok_or(LinAlgError::ShapeContractViolation(
-                    "batch_solve: rhs width overflow",
-                ))?;
-            let b_batch = if b_shape.len() <= 2 {
-                1
-            } else {
-                b_shape[..b_shape.len() - 2].iter().product()
-            };
-            (b_batch, rhs_cols, rhs_width, false)
-        } else if b_shape[b_shape.len() - 1] == n {
-            let b_batch = if b_shape.len() <= 1 {
-                1
-            } else {
-                b_shape[..b_shape.len() - 1].iter().product()
-            };
-            (b_batch, 1, n, true)
-        } else {
+    let (b_batch, rhs_cols, rhs_width) = if vector_rhs {
+        if b_shape[b_shape.len() - 1] != n {
             return Err(LinAlgError::ShapeContractViolation(
-                "batch_solve: rhs shape must end with n or (n, m)",
+                "batch_solve: vector b length must match n",
             ));
+        }
+        let b_batch = if b_shape.len() <= 1 {
+            1
+        } else {
+            b_shape[..b_shape.len() - 1].iter().product()
         };
+        (b_batch, 1, n)
+    } else {
+        if b_shape.len() < 2 || b_shape[b_shape.len() - 2] != n {
+            return Err(LinAlgError::ShapeContractViolation(
+                "batch_solve: matrix b penultimate dimension must match n",
+            ));
+        }
+        let rhs_cols = b_shape[b_shape.len() - 1];
+        let rhs_width = n
+            .checked_mul(rhs_cols)
+            .ok_or(LinAlgError::ShapeContractViolation(
+                "batch_solve: rhs width overflow",
+            ))?;
+        let b_batch = if b_shape.len() <= 2 {
+            1
+        } else {
+            b_shape[..b_shape.len() - 2].iter().product()
+        };
+        (b_batch, rhs_cols, rhs_width)
+    };
 
     let batch = a_batch.max(b_batch);
     if (a_batch != 1 && a_batch != batch) || (b_batch != 1 && b_batch != batch) {
@@ -7357,7 +7362,7 @@ mod tests {
         let b = vec![4.0, 9.0, 2.0, 6.0, 6.0, 3.0]; // 3 vectors
         let a_shape = [1, 2, 2]; // batch=1
         let b_shape = [3, 2]; // batch=3
-        let x = batch_solve(&a, &a_shape, &b, &b_shape).expect("batch_solve");
+        let x = batch_solve(&a, &a_shape, &b, &b_shape, true).expect("batch_solve");
         assert_eq!(x.len(), 6);
         // x[0] = [2, 3], x[1] = [1, 2], x[2] = [3, 1]
         assert!((x[0] - 2.0).abs() < 1e-12);
@@ -7378,7 +7383,7 @@ mod tests {
         let a_shape = [2, 2];
         let b_shape = [2, 2];
 
-        let x = batch_solve(&a, &a_shape, &b, &b_shape).expect("matrix rhs batch_solve");
+        let x = batch_solve(&a, &a_shape, &b, &b_shape, false).expect("matrix rhs batch_solve");
 
         assert_eq!(x, vec![2.0, 1.0, 3.0, 2.0]);
     }
@@ -7973,4 +7978,15 @@ mod tests {
         assert_eq!(matrix_rank_2x2([[1.0, 2.0], [3.0, 4.0]], 1e-10).unwrap(), 2);
         assert_eq!(matrix_rank_2x2([[1.0, 2.0], [2.0, 4.0]], 1e-10).unwrap(), 1);
     }
+}
+
+#[test]
+fn test_batch_solve_broadcasting_bug() {
+    let a = vec![
+        1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+    ];
+    let a_shape = [2, 3, 3];
+    let b = vec![1.0; 12];
+    let b_shape = [3, 4];
+    println!("{:?}", batch_solve(&a, &a_shape, &b, &b_shape, false));
 }
