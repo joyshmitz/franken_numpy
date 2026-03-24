@@ -36,12 +36,20 @@ pub enum CompatibilityClass {
 
 impl CompatibilityClass {
     #[must_use]
-    pub fn from_wire(value: &str) -> Self {
+    pub fn parse_wire(value: &str) -> Option<Self> {
         match value {
-            "known_compatible" => Self::KnownCompatible,
-            "known_incompatible" => Self::KnownIncompatible,
-            _ => Self::Unknown,
+            "known_compatible" | "known_compatible_low_risk" | "known_compatible_high_risk" => {
+                Some(Self::KnownCompatible)
+            }
+            "known_incompatible" | "known_incompatible_semantics" => Some(Self::KnownIncompatible),
+            "unknown" | "unknown_semantics" => Some(Self::Unknown),
+            _ => None,
         }
+    }
+
+    #[must_use]
+    pub fn from_wire(value: &str) -> Self {
+        Self::parse_wire(value).unwrap_or(Self::Unknown)
     }
 
     #[must_use]
@@ -889,6 +897,22 @@ mod tests {
         assert_eq!(
             decide_compatibility_from_wire("hardened", "known_compatible", 0.9, 0.5),
             DecisionAction::FullValidate
+        );
+        assert_eq!(
+            decide_compatibility_from_wire("strict", "known_compatible_low_risk", 0.1, 0.5),
+            DecisionAction::Allow
+        );
+        assert_eq!(
+            decide_compatibility_from_wire("hardened", "known_compatible_high_risk", 0.9, 0.5),
+            DecisionAction::FullValidate
+        );
+        assert_eq!(
+            decide_compatibility_from_wire("strict", "known_incompatible_semantics", 0.1, 0.5),
+            DecisionAction::FailClosed
+        );
+        assert_eq!(
+            decide_compatibility_from_wire("strict", "unknown_semantics", 0.1, 0.5),
+            DecisionAction::FailClosed
         );
     }
 

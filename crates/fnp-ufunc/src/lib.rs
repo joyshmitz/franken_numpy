@@ -15862,16 +15862,14 @@ pub fn mediate_ufunc_runtime_policy(
         }
     })?;
 
-    let class = match class_raw.trim() {
-        "known_compatible" => CompatibilityClass::KnownCompatible,
-        "known_incompatible" => CompatibilityClass::KnownIncompatible,
-        "unknown" => CompatibilityClass::Unknown,
-        other => {
-            return Err(UFuncError::PolicyUnknownMetadata {
-                detail: format!("unknown compatibility class metadata '{other}'"),
-            });
+    let class = CompatibilityClass::parse_wire(class_raw.trim()).ok_or_else(|| {
+        UFuncError::PolicyUnknownMetadata {
+            detail: format!(
+                "unknown compatibility class metadata '{}'",
+                class_raw.trim()
+            ),
         }
-    };
+    })?;
 
     let context = DecisionAuditContext {
         fixture_id: log_record.fixture_id.clone(),
@@ -26744,6 +26742,32 @@ mod tests {
     }
 
     #[test]
+    fn packet005_policy_bridge_accepts_rich_known_compatible_metadata() {
+        let record = UFuncLogRecord {
+            fixture_id: "UP-005-policy-rich-known-compatible".to_string(),
+            seed: 5205,
+            mode: UFuncRuntimeMode::Hardened,
+            env_fingerprint: "fnp-ufunc-tests".to_string(),
+            artifact_refs: packet005_artifacts(),
+            reason_code: "ufunc_dispatch_resolution_failed".to_string(),
+            passed: true,
+        };
+
+        let decision = mediate_ufunc_runtime_policy(
+            "hardened",
+            "known_compatible_high_risk",
+            0.9,
+            0.5,
+            &record,
+        )
+        .expect("rich known compatible metadata should be admissible");
+
+        assert_eq!(decision.action, RuntimeDecisionAction::FullValidate);
+        assert_eq!(decision.event.mode, RuntimeMode::Hardened);
+        assert_eq!(decision.event.class, CompatibilityClass::KnownCompatible);
+    }
+
+    #[test]
     fn packet005_policy_bridge_fail_closes_explicit_unknown_class() {
         let record = UFuncLogRecord {
             fixture_id: "UP-005-policy-explicit-unknown".to_string(),
@@ -26761,6 +26785,32 @@ mod tests {
         assert_eq!(decision.action, RuntimeDecisionAction::FailClosed);
         assert_eq!(decision.event.mode, RuntimeMode::Strict);
         assert_eq!(decision.event.class, CompatibilityClass::Unknown);
+    }
+
+    #[test]
+    fn packet005_policy_bridge_fail_closes_rich_incompatible_metadata() {
+        let record = UFuncLogRecord {
+            fixture_id: "UP-005-policy-rich-incompatible".to_string(),
+            seed: 5206,
+            mode: UFuncRuntimeMode::Strict,
+            env_fingerprint: "fnp-ufunc-tests".to_string(),
+            artifact_refs: packet005_artifacts(),
+            reason_code: "ufunc_policy_unknown_metadata".to_string(),
+            passed: false,
+        };
+
+        let decision = mediate_ufunc_runtime_policy(
+            "strict",
+            "known_incompatible_semantics",
+            0.1,
+            0.5,
+            &record,
+        )
+        .expect("rich incompatible metadata should be valid but fail closed");
+
+        assert_eq!(decision.action, RuntimeDecisionAction::FailClosed);
+        assert_eq!(decision.event.mode, RuntimeMode::Strict);
+        assert_eq!(decision.event.class, CompatibilityClass::KnownIncompatible);
     }
 
     // ── Array creation function tests ────────────────────────────────
