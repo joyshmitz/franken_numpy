@@ -2010,9 +2010,12 @@ fn encode_complex_element(
 
 pub fn validate_io_policy_metadata(mode: &str, class: &str) -> Result<(), IOError> {
     let known_mode = mode == "strict" || mode == "hardened";
-    let known_class = class == "known_compatible_low_risk"
+    let known_class = class == "known_compatible"
+        || class == "known_compatible_low_risk"
         || class == "known_compatible_high_risk"
+        || class == "known_incompatible"
         || class == "known_incompatible_semantics"
+        || class == "unknown"
         || class == "unknown_semantics";
 
     if !known_mode || !known_class {
@@ -3514,6 +3517,10 @@ mod tests {
     fn policy_metadata_is_fail_closed_for_unknowns() {
         validate_io_policy_metadata("strict", "known_compatible_low_risk").expect("known strict");
         validate_io_policy_metadata("hardened", "unknown_semantics").expect("known hardened");
+        validate_io_policy_metadata("strict", "known_compatible").expect("legacy known compatible");
+        validate_io_policy_metadata("hardened", "known_incompatible")
+            .expect("legacy known incompatible");
+        validate_io_policy_metadata("strict", "unknown").expect("legacy unknown semantics");
 
         let err = validate_io_policy_metadata("mystery", "known_compatible_low_risk")
             .expect_err("unknown mode");

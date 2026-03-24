@@ -3642,9 +3642,12 @@ pub fn validate_backend_bridge(
 
 pub fn validate_policy_metadata(mode: &str, class: &str) -> Result<(), LinAlgError> {
     let known_mode = mode == "strict" || mode == "hardened";
-    let known_class = class == "known_compatible_low_risk"
+    let known_class = class == "known_compatible"
+        || class == "known_compatible_low_risk"
         || class == "known_compatible_high_risk"
+        || class == "known_incompatible"
         || class == "known_incompatible_semantics"
+        || class == "unknown"
         || class == "unknown_semantics";
 
     if !known_mode || !known_class {
@@ -3761,11 +3764,11 @@ pub fn batch_solve(
         ));
     }
 
-    // Prefer the matrix RHS lane when the penultimate dimension matches n so
-    // shapes like (n, m) are interpreted as multiple right-hand sides, while
-    // batch vector shapes like (..., n) still use the single-RHS solver.
+    // NumPy rule: vector RHS when b.ndim == a.ndim - 1 (last dim == n),
+    // matrix RHS when b.ndim == a.ndim (penultimate dim == n).
     let (b_batch, rhs_cols, rhs_width, vector_rhs) =
-        if b_shape.len() >= 2 && b_shape[b_shape.len() - 2] == n {
+        if b_shape.len() == a_shape.len() && b_shape.len() >= 2 && b_shape[b_shape.len() - 2] == n
+        {
             let rhs_cols = b_shape[b_shape.len() - 1];
             let rhs_width = n
                 .checked_mul(rhs_cols)
@@ -5389,6 +5392,10 @@ mod tests {
         validate_policy_metadata("strict", "known_compatible_low_risk").expect("known strict");
         validate_policy_metadata("hardened", "known_incompatible_semantics")
             .expect("known hardened");
+        validate_policy_metadata("strict", "known_compatible").expect("legacy known compatible");
+        validate_policy_metadata("hardened", "known_incompatible")
+            .expect("legacy known incompatible");
+        validate_policy_metadata("strict", "unknown").expect("legacy unknown semantics");
 
         let err = validate_policy_metadata("weird", "known_compatible_low_risk")
             .expect_err("unknown mode should fail");

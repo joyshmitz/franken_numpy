@@ -4032,9 +4032,12 @@ pub fn generator_from_seed_sequence(
 
 pub fn validate_rng_policy_metadata(mode: &str, class: &str) -> Result<(), RandomPolicyError> {
     let known_mode = mode == "strict" || mode == "hardened";
-    let known_class = class == "known_compatible_low_risk"
+    let known_class = class == "known_compatible"
+        || class == "known_compatible_low_risk"
         || class == "known_compatible_high_risk"
+        || class == "known_incompatible"
         || class == "known_incompatible_semantics"
+        || class == "unknown"
         || class == "unknown_semantics";
 
     if !known_mode || !known_class {
@@ -4734,6 +4737,12 @@ mod tests {
             .expect("known strict metadata");
         validate_rng_policy_metadata("hardened", "unknown_semantics")
             .expect("known hardened metadata");
+        validate_rng_policy_metadata("strict", "known_compatible")
+            .expect("legacy known compatible metadata");
+        validate_rng_policy_metadata("hardened", "known_incompatible")
+            .expect("legacy known incompatible metadata");
+        validate_rng_policy_metadata("strict", "unknown")
+            .expect("legacy unknown semantics metadata");
 
         let unknown_mode = validate_rng_policy_metadata("mystery", "known_compatible_low_risk")
             .expect_err("unknown mode must fail closed");
