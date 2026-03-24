@@ -49,7 +49,7 @@
 
 | Crate | Tests | Description |
 |---|---|---|
-| fnp-ufunc | 1,406 | Core array operations, math, sorting, polynomials, reductions, oracle tests, linalg bridge, FFT (hfft/ihfft), hermfit/lagfit, masked cov/corrcoef, datetime parsing, gufunc validation, parameter parity (clip_optional, reshape_order, histogram_full, unique_axis, concatenate_with_dtype) |
+| fnp-ufunc | 1,413 | Core array operations, math, sorting, polynomials, reductions, oracle tests, linalg bridge, FFT (hfft/ihfft), hermfit/lagfit, masked cov/corrcoef, datetime parsing, gufunc validation, parameter parity (clip_optional, reshape_order, histogram_full, unique_axis, concatenate_with_dtype) |
 | fnp-ndarray | 55 | Shape legality, stride calculus, broadcast contracts, overlap detection, multi-axis negative strides |
 | fnp-linalg | 200 | Linear algebra decompositions, solvers, norms, 16 NumPy oracle tests |
 | fnp-random | 184 | RNG distributions (40 oracle-verified), seeding, reproducibility, large-n binomial/multinomial |
@@ -58,7 +58,7 @@
 | fnp-conformance | 114 | Differential parity, metamorphic identities, adversarial fuzzing, witness stability, matmul conformance |
 | fnp-dtype | 117 | Dtype taxonomy, promotion table, cast policy primitives, NumPy byte-width parsing |
 | fnp-runtime | 53 | Mode split, fail-closed decoding, override-audit gate, Bayesian decision engine, evidence ledger |
-| **Total** | **2,397** | |
+| **Total** | **2,405** | |
 
 ## Remaining Gaps (Python-specific, low priority)
 
@@ -72,17 +72,17 @@
 
 **Array creation**: zeros, ones, empty, full, arange, linspace, logspace, geomspace, eye, identity, diag, meshgrid, fromfunction, frombuffer, fromfile, copy, asarray, array
 
-**Shape manipulation**: reshape, ravel, flatten, transpose, swapaxes, expand_dims, squeeze, broadcast_to, broadcast_arrays, concatenate, stack, vstack, hstack, dstack, split, array_split, tile, repeat, pad
+**Shape manipulation**: reshape, ravel, flatten, transpose, swapaxes, expand_dims, squeeze, broadcast_to, broadcast_arrays, broadcast_shapes, concatenate, stack, vstack, hstack, dstack, split, array_split, tile, repeat, pad, append, delete, insert, roll, flip, fliplr, flipud, rot90, moveaxis, rollaxis, resize, trim_zeros, column_stack
 
 **Math (unary)**: abs, negative, positive, sign, sqrt, square, cbrt, exp, exp2, expm1, log, log2, log10, log1p, sin, cos, tan, arcsin, arccos, arctan, sinh, cosh, tanh, arcsinh, arccosh, arctanh, degrees, radians, floor, ceil, rint, trunc, round, reciprocal, spacing, fabs, signbit, isnan, isinf, isfinite, logical_not, bitwise_not
 
 **Math (binary)**: add, subtract, multiply, divide, floor_divide, remainder, power, float_power, fmod, arctan2, copysign, heaviside, nextafter, fmax, fmin, logaddexp, logaddexp2, ldexp, hypot, gcd, lcm, bitwise_and, bitwise_or, bitwise_xor, logical_and, logical_or, logical_xor, equal, not_equal, less, less_equal, greater, greater_equal
 
-**Math (special)**: frexp, modf, divmod, isposinf, isneginf, bitwise_count, sort_complex, clip, where, copyto
+**Math (special)**: frexp, modf, divmod, isposinf, isneginf, bitwise_count, sort_complex, clip, where, copyto, sinc, unwrap, conj, real, imag, real_if_close, angle
 
-**Reductions**: sum, prod, min, max, mean, var, std, argmin, argmax, cumsum, cumprod, all, any, count_nonzero, nansum, nanprod, nanmin, nanmax, nanmean, nanstd, nanvar, ptp
+**Reductions**: sum, prod, min, max, mean, var, std, argmin, argmax, cumsum, cumprod, all, any, count_nonzero, nansum, nanprod, nanmin, nanmax, nanmean, nanstd, nanvar, nanargmin, nanargmax, nancumsum, nancumprod, nanpercentile, nanquantile, ptp
 
-**Sorting/searching**: sort, argsort, searchsorted, partition, argpartition, unique, unique_all, unique_counts, unique_inverse, unique_values, nonzero, flatnonzero, where_nonzero, argwhere, isin
+**Sorting/searching**: sort, argsort, searchsorted, partition, argpartition, unique, unique_all, unique_counts, unique_inverse, unique_values, nonzero, flatnonzero, where_nonzero, argwhere, isin, extract, place, select, piecewise
 
 **Set operations**: union1d, intersect1d, setdiff1d, setxor1d, in1d
 
@@ -90,13 +90,17 @@
 
 **Financial**: fv, pv, pmt, ppmt, ipmt, nper, rate, npv, irr, mirr
 
-**Statistics**: histogram, histogram_bin_edges, bincount, digitize, percentile, quantile, median, average, corrcoef, cov
+**Signal processing**: convolve, correlate, convolve2d, correlate2d
+
+**Statistics**: histogram, histogram2d, histogramdd, histogram_bin_edges, bincount, digitize, percentile, quantile, median, average, corrcoef, cov
 
 **String ops**: 33 numpy.char functions
 
 **I/O**: load, save, savez, savez_compressed, loadtxt, savetxt, genfromtxt, fromfile, tofile, array2string
 
-**Linalg**: solve, det, inv, eig, svd, qr, cholesky, lstsq, norm, matrix_rank, matrix_power, multi_dot, tensorsolve, tensorinv, pinv, cond, slogdet, funm
+**Linear algebra**: dot, vdot, cross, matmul, inner, outer, tensordot, einsum, einsum_path, kron, solve, det, inv, eig, eigh, eigvals, eigvalsh, svd, qr, cholesky, lstsq, norm, matrix_rank, matrix_power, multi_dot, tensorsolve, tensorinv, pinv, cond, slogdet, funm, solve_triangular, block
+
+**Indexing helpers**: ix_, mgrid, ogrid, indices, unravel_index, ravel_multi_index, take, put, choose, compress, diagonal, triu, tril
 
 **Random**: 39 statistical distributions via PCG64 plus permutation/state helpers
 

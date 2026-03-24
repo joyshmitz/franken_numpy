@@ -8340,6 +8340,16 @@ impl UFuncArray {
         }
     }
 
+    /// Convert to array, raising an error if any element is not finite — np.asarray_chkfinite.
+    pub fn asarray_chkfinite(&self) -> Result<Self, UFuncError> {
+        if self.values.iter().any(|v| !v.is_finite()) {
+            return Err(UFuncError::Msg(
+                "array must not contain infs or NaNs".to_string(),
+            ));
+        }
+        Ok(self.clone())
+    }
+
     /// Ensure the array satisfies certain requirements — np.require.
     ///
     /// `dtype`: optional target dtype. Returns a (possibly cast) copy.
@@ -27331,6 +27341,24 @@ mod tests {
         let a = UFuncArray::new(vec![2], vec![1.0, 2.0], DType::F64).unwrap();
         let b = a.ascontiguousarray(None);
         assert_eq!(b.values(), a.values());
+    }
+
+    #[test]
+    fn asarray_chkfinite_accepts_finite() {
+        let a = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        assert!(a.asarray_chkfinite().is_ok());
+    }
+
+    #[test]
+    fn asarray_chkfinite_rejects_nan() {
+        let a = UFuncArray::new(vec![2], vec![1.0, f64::NAN], DType::F64).unwrap();
+        assert!(a.asarray_chkfinite().is_err());
+    }
+
+    #[test]
+    fn asarray_chkfinite_rejects_inf() {
+        let a = UFuncArray::new(vec![2], vec![f64::INFINITY, 1.0], DType::F64).unwrap();
+        assert!(a.asarray_chkfinite().is_err());
     }
 
     #[test]

@@ -75,19 +75,19 @@
     "reason_code": "unknown_runtime_mode_and_class"
   },
   {
-    "id": "wire_whitespace_mode_fail_closed",
+    "id": "wire_whitespace_mode_trimmed_allow",
     "mode_raw": "  strict  ",
     "class_raw": "known_compatible",
     "risk_score": 0.2,
     "threshold": 0.7,
-    "expected_action": "fail_closed",
+    "expected_action": "allow",
     "seed": 206,
     "env_fingerprint": "linux-x86_64-rust2024",
     "artifact_refs": [
       "artifacts/contracts/SECURITY_COMPATIBILITY_THREAT_MATRIX_V1.md",
       "artifacts/contracts/security_control_checks_v1.yaml"
     ],
-    "reason_code": "whitespace_padded_mode"
+    "reason_code": "whitespace_trimmed_before_parse"
   },
   {
     "id": "wire_uppercase_mode_fail_closed",
