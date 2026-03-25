@@ -8082,12 +8082,13 @@ mod tests {
 }
 
 #[test]
-fn test_batch_solve_broadcasting_bug() {
+fn batch_solve_broadcasts_matrix_rhs_across_stacked_lhs() {
     let a = vec![
         1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
     ];
     let a_shape = [2, 3, 3];
     let b = vec![1.0; 12];
     let b_shape = [3, 4];
-    println!("{:?}", batch_solve(&a, &a_shape, &b, &b_shape, false));
+    let solved = batch_solve(&a, &a_shape, &b, &b_shape, false).expect("batch_solve");
+    assert_eq!(solved, vec![1.0; 24]);
 }
