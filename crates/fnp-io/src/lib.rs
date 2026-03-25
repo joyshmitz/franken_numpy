@@ -2055,12 +2055,20 @@ pub fn fromstring(data: &[u8], dtype: IOSupportedDType, sep: &str) -> Result<Vec
         let text = std::str::from_utf8(data).map_err(|_| {
             IOError::ReadPayloadIncomplete("fromstring: invalid UTF-8 in text mode")
         })?;
-        let values: Vec<f64> = text
-            .split(sep)
-            .filter(|s| !s.trim().is_empty())
-            .map(|s| parse_text_element_for_dtype(s.trim(), dtype))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| IOError::ReadPayloadIncomplete("fromstring: parse error"))?;
+
+        let parse_tokens = |tokens: Vec<&str>| {
+            tokens
+                .into_iter()
+                .map(|s| parse_text_element_for_dtype(s.trim(), dtype))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| IOError::ReadPayloadIncomplete("fromstring: parse error"))
+        };
+
+        let values = if sep.chars().all(char::is_whitespace) {
+            parse_tokens(text.split_whitespace().collect())?
+        } else {
+            parse_tokens(text.split(sep).filter(|s| !s.trim().is_empty()).collect())?
+        };
         Ok(values)
     }
 }
@@ -4236,6 +4244,13 @@ mod tests {
         let data = b"0 2 -3";
         let vals = fromstring(data, IOSupportedDType::Bool, " ").unwrap();
         assert_eq!(vals, vec![0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn fromstring_text_mode_space_separator_accepts_mixed_whitespace() {
+        let data = b"1.0\n2.5\t3.7  4.0";
+        let vals = fromstring(data, IOSupportedDType::F64, " ").unwrap();
+        assert_eq!(vals, vec![1.0, 2.5, 3.7, 4.0]);
     }
 
     #[test]
