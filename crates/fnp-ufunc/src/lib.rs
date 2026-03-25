@@ -3193,16 +3193,18 @@ impl UFuncArray {
 
     /// Generate a Vandermonde matrix (`np.vander`).
     ///
-    /// Given 1-D input `x` of length `n`, returns an `(n, N)` matrix where column `j`
-    /// contains `x^(N-1-j)` (decreasing powers by default). If `increasing` is true,
+    /// Given 1-D input `x` of length `m`, returns an `(m, n)` matrix where
+    /// column `j` contains `x^(n-1-j)` by default. If `increasing` is true,
     /// column `j` contains `x^j`.
     pub fn vander(&self, n_cols: Option<usize>, increasing: bool) -> Result<Self, UFuncError> {
         if self.shape.len() != 1 {
             return Err(UFuncError::Msg("vander: input must be 1-D".to_string()));
         }
+
         let m = self.shape[0];
         let n = n_cols.unwrap_or(m);
         let mut values = Vec::with_capacity(m * n);
+
         for &x in &self.values {
             if increasing {
                 let mut power = 1.0;
@@ -3220,6 +3222,7 @@ impl UFuncArray {
                 values.extend_from_slice(&row);
             }
         }
+
         Self::from_values_with_dtype(vec![m, n], values, DType::F64)
     }
 
@@ -13556,34 +13559,6 @@ impl UFuncArray {
     }
 
     // ── misc math ────────
-
-    /// Vandermonde matrix (np.vander).
-    /// Returns a matrix where columns are powers of the input vector.
-    pub fn vander(&self, n: Option<usize>, increasing: bool) -> Result<Self, UFuncError> {
-        if self.shape.len() != 1 {
-            return Err(UFuncError::Msg("vander: input must be 1-D".to_string()));
-        }
-        let m = self.shape[0];
-        let cols = n.unwrap_or(m);
-        let mut values = Vec::with_capacity(m * cols);
-        for &x in &self.values {
-            if increasing {
-                for j in 0..cols {
-                    values.push(x.powi(j as i32));
-                }
-            } else {
-                for j in (0..cols).rev() {
-                    values.push(x.powi(j as i32));
-                }
-            }
-        }
-        Ok(Self {
-            shape: vec![m, cols],
-            values,
-            dtype: DType::F64,
-            integer_sidecar: None,
-        })
-    }
 
     /// Differences between consecutive elements of an array (np.ediff1d).
     pub fn ediff1d(&self) -> Result<Self, UFuncError> {
@@ -30567,16 +30542,6 @@ mod tests {
         assert_eq!(v.values()[3], 4.0);
         assert_eq!(v.values()[4], 2.0);
         assert_eq!(v.values()[5], 1.0);
-    }
-
-    #[test]
-    fn vander_increasing() {
-        let x = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
-        let v = x.vander(None, true).unwrap();
-        // Row for x=2: [1, 2, 4]
-        assert_eq!(v.values()[3], 1.0);
-        assert_eq!(v.values()[4], 2.0);
-        assert_eq!(v.values()[5], 4.0);
     }
 
     #[test]

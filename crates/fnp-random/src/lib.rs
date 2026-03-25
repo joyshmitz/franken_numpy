@@ -847,31 +847,44 @@ impl PhiloxRng {
     }
 
     pub fn from_state_entries(entries: &[(String, u64)]) -> Option<Self> {
-        let mut ctr = [0u64; 4];
-        let mut key = [0u64; 2];
-        let mut buffer = [0u64; 4];
-        let mut buffer_pos = 4;
+        let mut ctr0 = None;
+        let mut ctr1 = None;
+        let mut ctr2 = None;
+        let mut ctr3 = None;
+        let mut key0 = None;
+        let mut key1 = None;
+        let mut buf0 = None;
+        let mut buf1 = None;
+        let mut buf2 = None;
+        let mut buf3 = None;
+        let mut buffer_pos = None;
         for (k, v) in entries {
             match k.trim() {
-                "philox_ctr0" => ctr[0] = *v,
-                "philox_ctr1" => ctr[1] = *v,
-                "philox_ctr2" => ctr[2] = *v,
-                "philox_ctr3" => ctr[3] = *v,
-                "philox_key0" => key[0] = *v,
-                "philox_key1" => key[1] = *v,
-                "philox_buf0" => buffer[0] = *v,
-                "philox_buf1" => buffer[1] = *v,
-                "philox_buf2" => buffer[2] = *v,
-                "philox_buf3" => buffer[3] = *v,
-                "philox_pos" => buffer_pos = *v as usize,
+                "philox_ctr0" => ctr0 = Some(*v),
+                "philox_ctr1" => ctr1 = Some(*v),
+                "philox_ctr2" => ctr2 = Some(*v),
+                "philox_ctr3" => ctr3 = Some(*v),
+                "philox_key0" => key0 = Some(*v),
+                "philox_key1" => key1 = Some(*v),
+                "philox_buf0" => buf0 = Some(*v),
+                "philox_buf1" => buf1 = Some(*v),
+                "philox_buf2" => buf2 = Some(*v),
+                "philox_buf3" => buf3 = Some(*v),
+                "philox_pos" => {
+                    let pos = usize::try_from(*v).ok()?;
+                    if pos > 4 {
+                        return None;
+                    }
+                    buffer_pos = Some(pos);
+                }
                 _ => {}
             }
         }
         Some(Self {
-            ctr,
-            key,
-            buffer,
-            buffer_pos,
+            ctr: [ctr0?, ctr1?, ctr2?, ctr3?],
+            key: [key0?, key1?],
+            buffer: [buf0?, buf1?, buf2?, buf3?],
+            buffer_pos: buffer_pos?,
         })
     }
 }
@@ -928,17 +941,22 @@ impl Sfc64Rng {
     }
 
     pub fn from_state_entries(entries: &[(String, u64)]) -> Option<Self> {
-        let mut s = [0u64; 4];
+        let mut s0 = None;
+        let mut s1 = None;
+        let mut s2 = None;
+        let mut s3 = None;
         for (k, v) in entries {
             match k.trim() {
-                "sfc64_s0" => s[0] = *v,
-                "sfc64_s1" => s[1] = *v,
-                "sfc64_s2" => s[2] = *v,
-                "sfc64_s3" => s[3] = *v,
+                "sfc64_s0" => s0 = Some(*v),
+                "sfc64_s1" => s1 = Some(*v),
+                "sfc64_s2" => s2 = Some(*v),
+                "sfc64_s3" => s3 = Some(*v),
                 _ => {}
             }
         }
-        Some(Self { s })
+        Some(Self {
+            s: [s0?, s1?, s2?, s3?],
+        })
     }
 }
 
@@ -4590,6 +4608,51 @@ mod tests {
         for _ in 0..32 {
             assert_eq!(source.next_u64(), restored.next_u64());
         }
+    }
+
+    #[test]
+    fn bit_generator_state_schema_rejects_truncated_philox_restore_state() {
+        let mut generator =
+            BitGenerator::new(BitGeneratorKind::Philox, SeedMaterial::U64(77)).expect("generator");
+        let mut state = generator.state();
+        state
+            .schema_entries
+            .retain(|(key, _)| key != "philox_ctr0" && key != "philox_buf3");
+
+        let err = generator
+            .set_state(&state)
+            .expect_err("missing philox state entries must fail closed");
+        assert_eq!(err.reason_code(), "rng_state_schema_invalid");
+    }
+
+    #[test]
+    fn bit_generator_state_schema_rejects_invalid_philox_buffer_position() {
+        let mut generator =
+            BitGenerator::new(BitGeneratorKind::Philox, SeedMaterial::U64(91)).expect("generator");
+        let mut state = generator.state();
+        for (key, value) in &mut state.schema_entries {
+            if key == "philox_pos" {
+                *value = 9;
+            }
+        }
+
+        let err = generator
+            .set_state(&state)
+            .expect_err("out-of-range philox buffer position must fail closed");
+        assert_eq!(err.reason_code(), "rng_state_schema_invalid");
+    }
+
+    #[test]
+    fn bit_generator_state_schema_rejects_truncated_sfc64_restore_state() {
+        let mut generator =
+            BitGenerator::new(BitGeneratorKind::Sfc64, SeedMaterial::U64(123)).expect("generator");
+        let mut state = generator.state();
+        state.schema_entries.retain(|(key, _)| key != "sfc64_s2");
+
+        let err = generator
+            .set_state(&state)
+            .expect_err("missing sfc64 state entries must fail closed");
+        assert_eq!(err.reason_code(), "rng_state_schema_invalid");
     }
 
     #[test]
