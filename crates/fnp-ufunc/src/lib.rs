@@ -4450,12 +4450,16 @@ impl UFuncArray {
             None => {
                 let n = self.values.len();
                 let mean = self.values.iter().copied().sum::<f64>() / n as f64;
-                let var = self
-                    .values
-                    .iter()
-                    .map(|&v| (v - mean) * (v - mean))
-                    .sum::<f64>()
-                    / (n.saturating_sub(ddof)) as f64;
+                let denom = n.saturating_sub(ddof) as f64;
+                let var = if denom == 0.0 {
+                    f64::NAN
+                } else {
+                    self.values
+                        .iter()
+                        .map(|&v| (v - mean) * (v - mean))
+                        .sum::<f64>()
+                        / denom
+                };
                 let shape = if keepdims {
                     vec![1; self.shape.len()]
                 } else {
@@ -13215,7 +13219,8 @@ impl UFuncArray {
                     .iter()
                     .copied()
                     .filter(|v| !v.is_nan())
-                    .fold(f64::NEG_INFINITY, f64::max);
+                    .reduce(f64::max)
+                    .unwrap_or(f64::NAN);
                 let shape = if keepdims {
                     vec![1; self.shape.len()]
                 } else {
@@ -13233,8 +13238,15 @@ impl UFuncArray {
                 if self.shape[ax] == 0 {
                     return Err(UFuncError::EmptyReduction { op: "nanmax" });
                 }
-                let (filled, _) = self.nan_fill_for_axis(ax, f64::NEG_INFINITY);
-                filled.reduce_max(Some(ax as isize), keepdims)
+                let axis_len = self.shape[ax];
+                let (filled, nan_counts) = self.nan_fill_for_axis(ax, f64::NEG_INFINITY);
+                let mut result = filled.reduce_max(Some(ax as isize), keepdims)?;
+                for (val, &count) in result.values.iter_mut().zip(&nan_counts) {
+                    if count == axis_len {
+                        *val = f64::NAN;
+                    }
+                }
+                Ok(result)
             }
         }
     }
@@ -19390,13 +19402,13 @@ pub fn unique_values(x: &UFuncArray) -> UFuncArray {
 /// `numpy.unique_counts(x)` — sorted unique values and their counts.
 pub fn unique_counts(x: &UFuncArray) -> (UFuncArray, UFuncArray) {
     let (values, _, _, counts) = x.unique_with_info(false, false, true);
-    (values, counts.expect("counts requested"))
+    (values, counts.unwrap_or_else(|| unreachable!("counts requested")))
 }
 
 /// `numpy.unique_inverse(x)` — sorted unique values and indices to reconstruct.
 pub fn unique_inverse(x: &UFuncArray) -> (UFuncArray, UFuncArray) {
     let (values, _, inverse, _) = x.unique_with_info(false, true, false);
-    (values, inverse.expect("inverse requested"))
+    (values, inverse.unwrap_or_else(|| unreachable!("inverse requested")))
 }
 
 /// `numpy.unique_all(x)` — sorted unique values, first indices, inverse indices, and counts.
@@ -19404,9 +19416,9 @@ pub fn unique_all(x: &UFuncArray) -> (UFuncArray, UFuncArray, UFuncArray, UFuncA
     let (values, indices, inverse, counts) = x.unique_with_info(true, true, true);
     (
         values,
-        indices.expect("indices requested"),
-        inverse.expect("inverse requested"),
-        counts.expect("counts requested"),
+        indices.unwrap_or_else(|| unreachable!("indices requested")),
+        inverse.unwrap_or_else(|| unreachable!("inverse requested")),
+        counts.unwrap_or_else(|| unreachable!("counts requested")),
     )
 }
 
@@ -21538,10 +21550,9 @@ fn trim_start_whitespace_index(s: &str) -> usize {
 fn trim_end_whitespace_index(s: &str, end: usize) -> usize {
     let mut cur = end;
     while cur > 0 {
-        let ch = s[..cur]
-            .chars()
-            .next_back()
-            .expect("valid char when cur > 0");
+        let Some(ch) = s[..cur].chars().next_back() else {
+            break;
+        };
         if !ch.is_whitespace() {
             break;
         }
@@ -21606,10 +21617,11 @@ fn rsplit_whitespace_python(s: &str, maxsplit: usize) -> Vec<String> {
             parts.reverse();
             return parts;
         }
-        end = trim_end_whitespace_index(
-            s,
-            split_idx.expect("whitespace split index present when start > 0"),
-        );
+        let Some(split_idx_val) = split_idx else {
+            parts.reverse();
+            return parts;
+        };
+        end = trim_end_whitespace_index(s, split_idx_val);
         if end == 0 {
             parts.reverse();
             return parts;
