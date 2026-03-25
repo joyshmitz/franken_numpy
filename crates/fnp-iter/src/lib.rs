@@ -153,8 +153,8 @@ pub fn select_transfer_class(input: TransferSelectorInput) -> Result<TransferCla
         ));
     }
 
-    let src_unit = input.src_stride == input.item_size as isize;
-    let dst_unit = input.dst_stride == input.item_size as isize;
+    let src_unit = input.src_stride == item_size;
+    let dst_unit = input.dst_stride == item_size;
     if input.aligned && src_unit && dst_unit {
         if input.cast_is_lossless {
             Ok(TransferClass::Contiguous)

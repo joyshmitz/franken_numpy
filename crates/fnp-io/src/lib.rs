@@ -1681,15 +1681,18 @@ pub fn savetxt(
             match config.fmt {
                 "%.18e" | "%e" => {
                     use std::fmt::Write;
-                    write!(output, "{v:e}").unwrap();
+                    write!(output, "{v:e}")
+                        .map_err(|_| IOError::WriteContractViolation("formatting failed"))?;
                 }
                 "%d" | "%i" => {
                     use std::fmt::Write;
-                    write!(output, "{}", v as i64).unwrap();
+                    write!(output, "{}", v as i64)
+                        .map_err(|_| IOError::WriteContractViolation("formatting failed"))?;
                 }
                 _ => {
                     use std::fmt::Write;
-                    write!(output, "{v}").unwrap();
+                    write!(output, "{v}")
+                        .map_err(|_| IOError::WriteContractViolation("formatting failed"))?;
                 }
             }
         }

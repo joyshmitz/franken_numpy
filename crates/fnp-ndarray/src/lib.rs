@@ -303,8 +303,9 @@ fn required_view_nbytes(
         if dim <= 1 {
             continue;
         }
+        let dim_minus_1 = isize::try_from(dim - 1).map_err(|_| ShapeError::Overflow)?;
         let end = stride
-            .checked_mul((dim - 1) as isize)
+            .checked_mul(dim_minus_1)
             .ok_or(ShapeError::Overflow)?;
         if end >= 0 {
             max_offset = max_offset.checked_add(end).ok_or(ShapeError::Overflow)?;
@@ -439,7 +440,10 @@ impl NdLayout {
             if stride != expected_stride {
                 return false;
             }
-            let Some(next) = expected_stride.checked_mul(dim as isize) else {
+            let Ok(dim_isize) = isize::try_from(dim) else {
+                return false;
+            };
+            let Some(next) = expected_stride.checked_mul(dim_isize) else {
                 return false;
             };
             expected_stride = next;
@@ -471,7 +475,10 @@ impl NdLayout {
             if stride != expected_stride {
                 return false;
             }
-            let Some(next) = expected_stride.checked_mul(dim as isize) else {
+            let Ok(dim_isize) = isize::try_from(dim) else {
+                return false;
+            };
+            let Some(next) = expected_stride.checked_mul(dim_isize) else {
                 return false;
             };
             expected_stride = next;

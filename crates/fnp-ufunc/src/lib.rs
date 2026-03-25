@@ -2115,7 +2115,10 @@ impl UFuncArrayView {
             if stride != expected {
                 return false;
             }
-            let Some(next) = expected.checked_mul(dim as isize) else {
+            let Ok(dim_isize) = isize::try_from(dim) else {
+                return false;
+            };
+            let Some(next) = expected.checked_mul(dim_isize) else {
                 return false;
             };
             expected = next;
@@ -2136,7 +2139,10 @@ impl UFuncArrayView {
             if stride != expected {
                 return false;
             }
-            let Some(next) = expected.checked_mul(dim as isize) else {
+            let Ok(dim_isize) = isize::try_from(dim) else {
+                return false;
+            };
+            let Some(next) = expected.checked_mul(dim_isize) else {
                 return false;
             };
             expected = next;
@@ -3183,6 +3189,38 @@ impl UFuncArray {
             }
         }
         Self::from_values_with_dtype(vec![n, cols], values, dtype)
+    }
+
+    /// Generate a Vandermonde matrix (`np.vander`).
+    ///
+    /// Given 1-D input `x` of length `n`, returns an `(n, N)` matrix where column `j`
+    /// contains `x^(N-1-j)` (decreasing powers by default). If `increasing` is true,
+    /// column `j` contains `x^j`.
+    pub fn vander(&self, n_cols: Option<usize>, increasing: bool) -> Result<Self, UFuncError> {
+        if self.shape.len() != 1 {
+            return Err(UFuncError::Msg("vander: input must be 1-D".to_string()));
+        }
+        let m = self.shape[0];
+        let n = n_cols.unwrap_or(m);
+        let mut values = Vec::with_capacity(m * n);
+        for &x in &self.values {
+            if increasing {
+                let mut power = 1.0;
+                for _ in 0..n {
+                    values.push(power);
+                    power *= x;
+                }
+            } else {
+                let mut row = vec![0.0; n];
+                let mut power = 1.0;
+                for j in (0..n).rev() {
+                    row[j] = power;
+                    power *= x;
+                }
+                values.extend_from_slice(&row);
+            }
+        }
+        Self::from_values_with_dtype(vec![m, n], values, DType::F64)
     }
 
     /// Extract a diagonal or construct a diagonal array.
@@ -15979,7 +16017,7 @@ pub fn mediate_ufunc_runtime_policy(
     let event = ledger
         .last()
         .cloned()
-        .expect("runtime policy decision should always be recorded");
+        .ok_or_else(|| UFuncError::Msg("runtime policy decision was not recorded".into()))?;
 
     Ok(UFuncPolicyDecision { action, event })
 }
@@ -28789,6 +28827,33 @@ mod tests {
         let r = UFuncArray::identity(3, DType::F64).unwrap();
         assert_eq!(r.shape(), &[3, 3]);
         assert_eq!(r.values(), &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn vander_default_decreasing() {
+        // np.vander([1, 2, 3]) = [[1,1,1],[4,2,1],[9,3,1]]
+        let x = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        let v = x.vander(None, false).unwrap();
+        assert_eq!(v.shape(), &[3, 3]);
+        assert_eq!(v.values(), &[1.0, 1.0, 1.0, 4.0, 2.0, 1.0, 9.0, 3.0, 1.0]);
+    }
+
+    #[test]
+    fn vander_increasing() {
+        // np.vander([1, 2, 3], increasing=True) = [[1,1,1],[1,2,4],[1,3,9]]
+        let x = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        let v = x.vander(None, true).unwrap();
+        assert_eq!(v.shape(), &[3, 3]);
+        assert_eq!(v.values(), &[1.0, 1.0, 1.0, 1.0, 2.0, 4.0, 1.0, 3.0, 9.0]);
+    }
+
+    #[test]
+    fn vander_custom_cols() {
+        // np.vander([1, 2], N=4) = [[1,1,1,1],[8,4,2,1]]
+        let x = UFuncArray::new(vec![2], vec![1.0, 2.0], DType::F64).unwrap();
+        let v = x.vander(Some(4), false).unwrap();
+        assert_eq!(v.shape(), &[2, 4]);
+        assert_eq!(v.values(), &[1.0, 1.0, 1.0, 1.0, 8.0, 4.0, 2.0, 1.0]);
     }
 
     #[test]
