@@ -8690,6 +8690,20 @@ fn approx_equal_values(expected: &[f64], actual: &[f64], abs_tol: f64, rel_tol: 
     }
 
     for (&a, &b) in expected.iter().zip(actual.iter()) {
+        if a.is_nan() || b.is_nan() {
+            if !(a.is_nan() && b.is_nan()) {
+                return false;
+            }
+            continue;
+        }
+
+        if a.is_infinite() || b.is_infinite() {
+            if a != b {
+                return false;
+            }
+            continue;
+        }
+
         let abs_err = (a - b).abs();
         let threshold = abs_tol + rel_tol * a.abs();
         if abs_err > threshold {
@@ -11928,5 +11942,33 @@ mod tests {
                 "loop class mismatch for {ctx:?}"
             );
         }
+    }
+
+    #[test]
+    fn approx_equal_values_rejects_nan_vs_finite_mismatches() {
+        assert!(!crate::approx_equal_values(&[1.0], &[f64::NAN], 1e-9, 1e-9));
+        assert!(!crate::approx_equal_values(&[f64::NAN], &[1.0], 1e-9, 1e-9));
+    }
+
+    #[test]
+    fn approx_equal_values_accepts_matching_non_finite_values_only() {
+        assert!(crate::approx_equal_values(
+            &[f64::NAN],
+            &[f64::NAN],
+            1e-9,
+            1e-9
+        ));
+        assert!(crate::approx_equal_values(
+            &[f64::INFINITY, f64::NEG_INFINITY],
+            &[f64::INFINITY, f64::NEG_INFINITY],
+            1e-9,
+            1e-9
+        ));
+        assert!(!crate::approx_equal_values(
+            &[f64::INFINITY],
+            &[f64::NEG_INFINITY],
+            1e-9,
+            1e-9
+        ));
     }
 }
