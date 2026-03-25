@@ -1559,7 +1559,15 @@ impl RngBackend {
         match self {
             Self::Deterministic(rng) => rng.bounded_u64(upper_bound),
             Self::Pcg64Dxsm(rng) => rng.bounded_u64(upper_bound),
-            Self::Mt19937(rng) => Ok(u64::from(rng.bounded_u32(upper_bound as u32)?)),
+            Self::Mt19937(rng) => {
+                let threshold = u64::MAX - u64::MAX % upper_bound;
+                loop {
+                    let candidate = rng.next_u64();
+                    if candidate < threshold {
+                        return Ok(candidate % upper_bound);
+                    }
+                }
+            }
             Self::Philox(rng) => {
                 let threshold = u64::MAX - u64::MAX % upper_bound;
                 loop {
@@ -6100,6 +6108,31 @@ mod tests {
     fn mt19937_bounded_u32_rejects_zero() {
         let mut rng = Mt19937Rng::from_u32_seed(42);
         assert!(rng.bounded_u32(0).is_err());
+    }
+
+    #[test]
+    fn bit_generator_mt19937_bounded_u64_preserves_large_upper_bounds() {
+        let mut rng = BitGenerator::new(BitGeneratorKind::Mt19937, SeedMaterial::U64(987654321))
+            .expect("mt19937 bit generator");
+        let upper_bound = (1_u64 << 40) + 17;
+        let mut saw_value_above_u32 = false;
+
+        for _ in 0..64 {
+            let value = rng.bounded_u64(upper_bound).expect("bounded_u64");
+            assert!(
+                value < upper_bound,
+                "value {value} must stay below {upper_bound}"
+            );
+            if value > u64::from(u32::MAX) {
+                saw_value_above_u32 = true;
+                break;
+            }
+        }
+
+        assert!(
+            saw_value_above_u32,
+            "large upper bounds must not be truncated to 32-bit space"
+        );
     }
 
     #[test]
