@@ -11,11 +11,23 @@ pub const IO_PACKET_ID: &str = "FNP-P2C-009";
 pub const NPY_MAGIC_PREFIX: [u8; 6] = [0x93, b'N', b'U', b'M', b'P', b'Y'];
 pub const NPZ_MAGIC_PREFIX: [u8; 4] = [b'P', b'K', 0x03, 0x04];
 
+/// Maximum NPY header size in bytes. Defends against allocation bombs from crafted
+/// `.npy` files. NumPy v1.0 uses a 2-byte header length field (max 65535); v2.0 uses 4 bytes
+/// but we cap at 64KB which covers all legitimate headers.
 pub const MAX_HEADER_BYTES: usize = 65_536;
+/// Maximum number of entries in a `.npz` archive. Defends against archive bombs that
+/// create millions of tiny files to exhaust file descriptors or metadata allocations.
 pub const MAX_ARCHIVE_MEMBERS: usize = 4_096;
+/// Maximum total uncompressed size of all `.npz` archive entries (2 GB). Defends against
+/// zip bombs where a small compressed file expands to gigabytes.
 pub const MAX_ARCHIVE_UNCOMPRESSED_BYTES: usize = 2 * 1024 * 1024 * 1024;
-pub const MAX_TEXT_ELEMENTS: usize = 16 * 1024 * 1024; // 128MB of f64s
+/// Maximum number of f64 elements for text-based IO (loadtxt/genfromtxt). At 8 bytes per
+/// element, this caps memory usage at ~128 MB. Prevents OOM from extremely large text files.
+pub const MAX_TEXT_ELEMENTS: usize = 16 * 1024 * 1024;
+/// Maximum number of IO dispatch retries for transient failures during format detection.
 pub const MAX_DISPATCH_RETRIES: usize = 8;
+/// Maximum validation retries for memory-mapped file integrity checks. Higher than
+/// dispatch retries because filesystem caching can cause transient inconsistencies.
 pub const MAX_MEMMAP_VALIDATION_RETRIES: usize = 64;
 
 pub const IO_PACKET_REASON_CODES: [&str; 10] = [

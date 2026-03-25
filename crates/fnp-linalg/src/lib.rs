@@ -6,9 +6,26 @@ use core::fmt;
 pub type LstsqResult = (Vec<f64>, Vec<f64>, usize, Vec<f64>);
 
 pub const LINALG_PACKET_ID: &str = "FNP-P2C-008";
+/// Maximum recursive depth when searching for an optimal rcond tolerance.
+/// Prevents stack overflow in degenerate tolerance-tuning scenarios.
 pub const MAX_TOLERANCE_SEARCH_DEPTH: usize = 128;
+/// Maximum retry attempts for backend solver revalidation after a transient failure.
+/// Covers scenarios like temporary numerical instability from ill-conditioned inputs.
 pub const MAX_BACKEND_REVALIDATION_ATTEMPTS: usize = 64;
+/// Maximum shape compatibility checks for batch operations. Prevents O(n^2) broadcast
+/// validation from hanging on arrays with extremely many batch dimensions.
 pub const MAX_BATCH_SHAPE_CHECKS: usize = 2_000_000;
+
+/// Iteration limit coefficient for SVD bidiagonal QR convergence: max_iters = coeff * n * n.
+pub const SVD_QR_ITERATION_COEFF: usize = 100;
+/// Iteration limit coefficient for eigenvalue/Schur QR convergence: max_iters = coeff * n * n.
+pub const EIGEN_QR_ITERATION_COEFF: usize = 60;
+/// Maximum iterations for matrix square root (Denman-Beavers).
+pub const SQRTM_MAX_ITERATIONS: usize = 50;
+/// Maximum Taylor series terms for matrix exponential / logarithm.
+pub const MATRIX_FUNC_TAYLOR_TERMS: usize = 30;
+/// Maximum scaling iterations for matrix logarithm.
+pub const LOGM_MAX_SCALING_ITERATIONS: usize = 20;
 
 pub const LINALG_PACKET_REASON_CODES: [&str; 10] = [
     "linalg_shape_contract_violation",
@@ -1356,7 +1373,7 @@ fn svd_bidiag_full(a: &[f64], m: usize, n: usize) -> Result<SvdFullResult, LinAl
     // Works with (d, e) without forming B^T*B, avoiding condition-number squaring.
     // Left rotations accumulate into U (column operations), right into Vt (row operations).
     let eps_mach = f64::EPSILON;
-    let max_iter = 100 * n * n;
+    let max_iter = SVD_QR_ITERATION_COEFF * n * n;
 
     let mut converged = false;
     for _iter in 0..max_iter {
@@ -1741,7 +1758,7 @@ fn tridiag_reduce(a: &[f64], n: usize) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
 /// accumulates the rotation product into the n×n matrix (for eigenvectors).
 fn tridiag_eig_qr(d: &mut [f64], e: &mut [f64], mut q: Option<&mut [f64]>, n: usize) {
     let eps = f64::EPSILON;
-    let max_iter = 60 * n * n;
+    let max_iter = EIGEN_QR_ITERATION_COEFF * n * n;
 
     for _iter in 0..max_iter {
         // Deflation: set small off-diagonals to zero
@@ -1903,7 +1920,7 @@ fn hessenberg_reduce(a: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
 /// If `z` is `Some`, accumulates the Schur vectors.
 fn hessenberg_qr_iter(h: &mut [f64], mut z: Option<&mut [f64]>, n: usize) {
     let eps = f64::EPSILON;
-    let max_iter = 60 * n * n;
+    let max_iter = EIGEN_QR_ITERATION_COEFF * n * n;
     let mut p = n; // active upper bound (exclusive of converged tail)
 
     // QR factorization of H[lo..p, lo..p] using Givens rotations
@@ -2077,13 +2094,28 @@ pub fn eigh_nxn(a: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), LinAlgError
     Ok((sorted_eigenvalues, sorted_v))
 }
 
+/// Infinity-norm of an n×n row-major matrix: max row sum of absolute values.
+/// Used internally for scale-relative threshold computation.
+fn matrix_inf_norm(a: &[f64], n: usize) -> f64 {
+    let mut max_row_sum = 0.0f64;
+    for i in 0..n {
+        let row_sum: f64 = (0..n).map(|j| a[i * n + j].abs()).sum();
+        max_row_sum = max_row_sum.max(row_sum);
+    }
+    max_row_sum
+}
+
 /// Extract eigenvalues from quasi-upper-triangular (real Schur) form.
 /// Returns interleaved `[re0, im0, re1, im1, ...]`.
 fn extract_schur_eigenvalues(m: &[f64], n: usize) -> Vec<f64> {
+    // Scale-relative threshold for detecting 2x2 blocks in Schur form.
+    // Matches LAPACK's approach: compare sub-diagonal to eps * local diagonal magnitude.
+    let mat_norm = matrix_inf_norm(m, n).max(f64::MIN_POSITIVE);
+    let block_eps = f64::EPSILON * mat_norm;
     let mut eigenvalues = Vec::with_capacity(n * 2);
     let mut i = 0;
     while i < n {
-        if i + 1 < n && m[(i + 1) * n + i].abs() > 1e-10 {
+        if i + 1 < n && m[(i + 1) * n + i].abs() > block_eps {
             let a11 = m[i * n + i];
             let a12 = m[i * n + (i + 1)];
             let a21 = m[(i + 1) * n + i];
@@ -2318,6 +2350,12 @@ pub fn eig_nxn_full(a: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), LinAlgE
     // Extract eigenvalues from quasi-upper-triangular Schur form
     let eigenvalues = extract_schur_eigenvalues(&h, n);
 
+    // Scale-relative thresholds for block detection and denominator checks.
+    let h_norm = matrix_inf_norm(&h, n).max(f64::MIN_POSITIVE);
+    let block_eps = f64::EPSILON * h_norm;
+    let denom_eps = f64::EPSILON * h_norm;
+    let denom_sq_eps = denom_eps * denom_eps;
+
     // Build eigenvectors of T via back-substitution, then transform by Z.
     // For each eigenvalue λ, solve (T - λI)x = 0 by back-substitution on the
     // quasi-upper-triangular Schur form, then compute v = Z * x.
@@ -2326,7 +2364,7 @@ pub fn eig_nxn_full(a: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), LinAlgE
 
     let mut col = 0;
     while col < n {
-        if col + 1 < n && h[(col + 1) * n + col].abs() > 1e-10 {
+        if col + 1 < n && h[(col + 1) * n + col].abs() > block_eps {
             // 2x2 block → complex conjugate eigenvalue pair
             let lam_re = eigenvalues[2 * col];
             let lam_im = eigenvalues[2 * col + 1];
@@ -2339,7 +2377,7 @@ pub fn eig_nxn_full(a: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), LinAlgE
             let a12 = h[col * n + (col + 1)];
             // (a11 - λ)*x1 + a12*x2 = 0, x1=1 → x2 = -(a11-λ)/a12
             let denom = a12;
-            if denom.abs() > 1e-15 {
+            if denom.abs() > denom_eps {
                 vr_re[(col + 1) * n + col] = -(a11 - lam_re) / denom;
                 vr_im[(col + 1) * n + col] = lam_im / denom;
             }
@@ -2347,8 +2385,8 @@ pub fn eig_nxn_full(a: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), LinAlgE
             // Back-substitute through rows above the block
             for j in (0..col).rev() {
                 // Check if row j is part of a 2x2 block
-                if j > 0 && h[j * n + (j - 1)].abs() > 1e-10 {
-                    continue; // will handle as part of the 2x2 block starting at j-1
+                if j > 0 && h[j * n + (j - 1)].abs() > block_eps {
+                    continue; // handled as part of the 2x2 block starting at j-1
                 }
                 // 1x1 row: solve (T[j,j] - λ)*x[j] = -sum_{k=j+1..col+2} T[j,k]*x[k]
                 let mut sum_re = 0.0;
@@ -2360,7 +2398,7 @@ pub fn eig_nxn_full(a: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), LinAlgE
                 let d_re = h[j * n + j] - lam_re;
                 let d_im = -lam_im;
                 let d_sq = d_re * d_re + d_im * d_im;
-                if d_sq > 1e-30 {
+                if d_sq > denom_sq_eps {
                     // x[j] = -sum / (T[j,j]-λ), complex division
                     vr_re[j * n + col] = -(sum_re * d_re + sum_im * d_im) / d_sq;
                     vr_im[j * n + col] = -(sum_im * d_re - sum_re * d_im) / d_sq;
@@ -2379,19 +2417,19 @@ pub fn eig_nxn_full(a: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), LinAlgE
             // Back-substitute: for j = col-1 down to 0
             for j in (0..col).rev() {
                 // Check if row j is part of a 2x2 block
-                if j > 0 && h[j * n + (j - 1)].abs() > 1e-10 {
-                    continue; // handle as 2x2
+                if j > 0 && h[j * n + (j - 1)].abs() > block_eps {
+                    continue; // handled as 2x2 block
                 }
                 let mut sum = 0.0;
                 for k in (j + 1)..=col {
                     sum += h[j * n + k] * vr_re[k * n + col];
                 }
                 let denom = h[j * n + j] - lam;
-                if denom.abs() > 1e-15 {
+                if denom.abs() > denom_eps {
                     vr_re[j * n + col] = -sum / denom;
                 } else {
                     // Near-singular: use sign-preserving epsilon to avoid sign flip
-                    let safe_denom = if denom >= 0.0 { 1e-15 } else { -1e-15 };
+                    let safe_denom = if denom >= 0.0 { denom_eps } else { -denom_eps };
                     vr_re[j * n + col] = -sum / safe_denom;
                 }
             }
@@ -2424,7 +2462,7 @@ pub fn eig_nxn_full(a: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), LinAlgE
             norm_sq += re * re + im * im;
         }
         let norm = norm_sq.sqrt();
-        if norm > 1e-15 {
+        if norm > f64::MIN_POSITIVE {
             for i in 0..n {
                 eigvecs_re[i * n + j] /= norm;
                 eigvecs_im[i * n + j] /= norm;
@@ -2544,7 +2582,7 @@ pub fn expm_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
         term[i * n + i] = 1.0; // identity = A^0 / 0!
     }
 
-    for k in 1..=30 {
+    for k in 1..=MATRIX_FUNC_TAYLOR_TERMS {
         // term = term * A_s / k
         let new_term = mat_mul_flat(&term, &a_s, n);
         let inv_k = 1.0 / k as f64;
@@ -2555,9 +2593,10 @@ pub fn expm_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
         for i in 0..n * n {
             result[i] += term[i];
         }
-        // Check convergence
-        let norm: f64 = term.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
-        if norm < 1e-16 {
+        // Adaptive convergence: stop when term is negligible relative to result
+        let term_norm: f64 = term.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+        let result_norm = matrix_inf_norm(&result, n).max(f64::MIN_POSITIVE);
+        if term_norm < f64::EPSILON * result_norm {
             break;
         }
     }
@@ -2593,7 +2632,7 @@ pub fn sqrtm_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
         z[i * n + i] = 1.0; // Z_0 = I
     }
 
-    for _ in 0..50 {
+    for _ in 0..SQRTM_MAX_ITERATIONS {
         let z_inv = inv_nxn(&z, n)?;
         let y_inv = inv_nxn(&y, n)?;
 
@@ -2604,15 +2643,16 @@ pub fn sqrtm_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
             z_new[i] = 0.5 * (z[i] + y_inv[i]);
         }
 
-        // Check convergence: ||Y_new - Y|| < tol
+        // Relative convergence: ||Y_new - Y||_inf / max(||Y||_inf, 1)
         let diff: f64 = y_new
             .iter()
             .zip(y.iter())
             .map(|(&a, &b)| (a - b).abs())
             .fold(0.0f64, f64::max);
+        let y_norm = matrix_inf_norm(&y, n).max(1.0);
         y = y_new;
         z = z_new;
-        if diff < 1e-14 {
+        if diff < f64::EPSILON * 64.0 * y_norm {
             break;
         }
     }
@@ -2638,7 +2678,7 @@ pub fn logm_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
     // Inverse scaling: compute A^{1/2^s} until close to identity
     let mut m = a.to_vec();
     let mut s = 0u32;
-    let max_s = 20;
+    let max_s = LOGM_MAX_SCALING_ITERATIONS as u32;
 
     let mut identity = vec![0.0; n * n];
     for i in 0..n {
@@ -2669,7 +2709,7 @@ pub fn logm_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
     // log(I + X) via Taylor series: X - X²/2 + X³/3 - X⁴/4 + ...
     let mut result = vec![0.0; n * n];
     let mut x_power = x.clone(); // X^1
-    for k in 1..=30 {
+    for k in 1..=MATRIX_FUNC_TAYLOR_TERMS {
         let sign = if k % 2 == 1 { 1.0 } else { -1.0 };
         let coeff = sign / k as f64;
         for i in 0..n * n {
@@ -2677,9 +2717,10 @@ pub fn logm_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
         }
         x_power = mat_mul_flat(&x_power, &x, n);
 
-        // Check convergence
-        let norm: f64 = x_power.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
-        if norm < 1e-15 {
+        // Adaptive convergence: stop when term is negligible relative to result
+        let term_norm: f64 = x_power.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+        let result_norm = matrix_inf_norm(&result, n).max(f64::MIN_POSITIVE);
+        if term_norm < f64::EPSILON * result_norm {
             break;
         }
     }
@@ -4358,13 +4399,13 @@ pub fn complex_qr_mxn(a: &[f64], m: usize, n: usize) -> Result<(Vec<f64>, Vec<f6
         }
         let norm = norm_sq.sqrt();
 
-        if norm < 1e-300 {
+        if norm < f64::MIN_POSITIVE {
             continue;
         }
 
         // Phase: e^{iθ} where θ = arg(v[0])
         let v0_abs = cabs2(v[0], v[1]).sqrt();
-        let (phase_re, phase_im) = if v0_abs > 1e-300 {
+        let (phase_re, phase_im) = if v0_abs > f64::MIN_POSITIVE {
             (v[0] / v0_abs, v[1] / v0_abs)
         } else {
             (1.0, 0.0)
@@ -4381,7 +4422,7 @@ pub fn complex_qr_mxn(a: &[f64], m: usize, n: usize) -> Result<(Vec<f64>, Vec<f6
             v_norm_sq += cabs2(v[2 * i], v[2 * i + 1]);
         }
         let v_norm = v_norm_sq.sqrt();
-        if v_norm < 1e-300 {
+        if v_norm < f64::MIN_POSITIVE {
             continue;
         }
         for i in 0..sub_len {
@@ -6284,6 +6325,62 @@ mod tests {
     fn eig_nxn_full_rejects_empty() {
         let result = eig_nxn_full(&[], 0);
         assert!(result.is_err());
+    }
+
+    // ── Extreme-scale regression tests (scale-relative threshold validation) ──
+
+    #[test]
+    fn eig_large_scale_matrix() {
+        // Matrix with entries ~1e10. Absolute 1e-10 threshold would misclassify.
+        let scale = 1e10;
+        let a = [3.0 * scale, 1.0 * scale, 1.0 * scale, 2.0 * scale];
+        let eigvals = eig_nxn(&a, 2).expect("large-scale eig");
+        // Eigenvalues of [[3s, s], [s, 2s]] = s * eigenvalues of [[3,1],[1,2]]
+        // Eigenvalues of [[3,1],[1,2]]: (5 ± sqrt(5))/2 ≈ 3.618, 1.382
+        let e0 = eigvals[0]; // real part
+        let e1 = eigvals[2];
+        assert!(
+            (e0 / scale - 3.618).abs() < 0.01 || (e1 / scale - 3.618).abs() < 0.01,
+            "eigenvalue ~3.618*1e10 not found: e0={e0}, e1={e1}"
+        );
+    }
+
+    #[test]
+    fn eig_small_scale_matrix() {
+        // Matrix with entries ~1e-12.
+        let scale = 1e-12;
+        let a = [2.0 * scale, 0.0, 0.0, 5.0 * scale];
+        let eigvals = eig_nxn(&a, 2).expect("small-scale eig");
+        let e0 = eigvals[0];
+        let e1 = eigvals[2];
+        let (lo, hi) = if e0 < e1 { (e0, e1) } else { (e1, e0) };
+        assert!((lo / scale - 2.0).abs() < 1e-6, "small eigenvalue: {lo}");
+        assert!((hi / scale - 5.0).abs() < 1e-6, "large eigenvalue: {hi}");
+    }
+
+    #[test]
+    fn sqrtm_large_scale() {
+        // sqrtm of a scaled identity: sqrtm(k*I) = sqrt(k)*I
+        let k = 1e8;
+        let a = [k, 0.0, 0.0, k];
+        let s = sqrtm_nxn(&a, 2).expect("sqrtm large scale");
+        let expected = k.sqrt();
+        assert!(
+            (s[0] - expected).abs() < expected * 1e-10,
+            "sqrtm[0,0]={}, expected {expected}",
+            s[0]
+        );
+        assert!(s[1].abs() < 1e-5, "sqrtm off-diag should be ~0");
+    }
+
+    #[test]
+    fn expm_near_zero_matrix() {
+        // expm of near-zero matrix should be near identity
+        let eps = 1e-15;
+        let a = [eps, 0.0, 0.0, eps];
+        let e = expm_nxn(&a, 2).expect("expm near zero");
+        assert!((e[0] - 1.0).abs() < 1e-12, "expm[0,0]={}", e[0]);
+        assert!((e[3] - 1.0).abs() < 1e-12, "expm[1,1]={}", e[3]);
     }
 
     #[test]

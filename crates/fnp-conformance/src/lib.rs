@@ -9222,8 +9222,8 @@ const DEFAULT_RNG_DRAWS: usize = 128;
 const DEFAULT_RNG_REPLAY_DRAWS: usize = 32;
 const DEFAULT_RNG_PREFIX_DRAWS: usize = 8;
 const DEFAULT_RNG_JUMP_STEPS: u64 = 32;
-const RNG_MAX_JUMP_OPS: u64 = 1024;
-const RNG_MAX_STATE_SCHEMA_FIELDS: u64 = 4096;
+use fnp_random::{MAX_RNG_JUMP_OPERATIONS as RNG_MAX_JUMP_OPS, MAX_RNG_STATE_SCHEMA_FIELDS};
+const RNG_MAX_STATE_SCHEMA_FIELDS_U64: u64 = MAX_RNG_STATE_SCHEMA_FIELDS as u64;
 const DEFAULT_RNG_STAT_DRAWS: usize = 8_192;
 const DEFAULT_RNG_KS_ALPHA: f64 = 0.01;
 const KS_CRITICAL_01: f64 = 1.63;
@@ -9904,7 +9904,7 @@ fn execute_rng_adversarial_operation(case: &RngAdversarialCase) -> Result<(), Rn
             }
         }
         "state_schema_budget_exceeded" => {
-            if case.steps > RNG_MAX_STATE_SCHEMA_FIELDS {
+            if case.steps > RNG_MAX_STATE_SCHEMA_FIELDS_U64 {
                 Err(RngSuiteError::new(
                     "rng_state_schema_invalid",
                     "state schema entries exceeded bounded budget",

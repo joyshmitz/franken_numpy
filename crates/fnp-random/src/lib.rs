@@ -193,12 +193,26 @@ fn random_loggam(x: f64) -> f64 {
 
 pub const DEFAULT_RNG_SEED: u64 = 0xC0DE_CAFE_F00D_BAAD;
 pub const DEFAULT_SEED_SEQUENCE_POOL_SIZE: usize = 4;
+/// Maximum entropy pool size for SeedSequence. NumPy default is 4 words; 256 is generous
+/// upper bound to prevent resource exhaustion from malformed seed material.
 pub const MAX_SEED_SEQUENCE_POOL_SIZE: usize = 256;
+/// Maximum child SeedSequences that can be spawned from a single parent. Prevents
+/// unbounded tree expansion in hierarchical seeding workflows.
 pub const MAX_SEED_SEQUENCE_CHILDREN: usize = 4096;
+/// Maximum words requestable from generate_state(). At 4 bytes per word, this caps a
+/// single state initialization at ~4 MB. Defends against malformed state restoration.
 pub const MAX_SEED_SEQUENCE_WORDS: usize = 1_048_576;
+/// Maximum consecutive jump-ahead operations on a generator. Each jump advances the
+/// state by 2^128 steps (PCG64) which is computationally cheap but logically irreversible.
 pub const MAX_RNG_JUMP_OPERATIONS: u64 = 1024;
+/// Maximum fields in a serialized RNG state schema. Defends against deserialization of
+/// malformed state blobs with millions of spurious fields.
 pub const MAX_RNG_STATE_SCHEMA_FIELDS: usize = 4096;
+/// Schema version for bit-generator state serialization. Incremented when the state
+/// layout changes in a backward-incompatible way.
 pub const BIT_GENERATOR_STATE_SCHEMA_VERSION: u32 = 1;
+/// Maximum trials for direct binomial sampling (before switching to approximation).
+/// Set to i64::MAX to match the u64-to-i64 boundary in NumPy's implementation.
 const MAX_BINOMIAL_DIRECT_TRIALS: u64 = i64::MAX as u64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

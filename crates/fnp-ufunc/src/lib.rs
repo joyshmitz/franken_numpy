@@ -2067,6 +2067,10 @@ impl UFuncArrayView {
             return false;
         }
 
+        // Maximum byte offsets to enumerate for exact memory-overlap detection.
+        // Falls back to conservative (fast-path) overlap check if exceeded.
+        // 200K offsets × 8 bytes = ~1.6 MB temporary allocation, acceptable for
+        // the precision gain over the conservative O(ndim) estimate.
         const MAX_EXACT_OFFSETS: usize = 200_000;
         match (
             self.collect_offsets(MAX_EXACT_OFFSETS),
@@ -4246,6 +4250,16 @@ impl UFuncArray {
         }
     }
 
+    /// NumPy 2.0 alias for cumsum (np.cumulative_sum).
+    pub fn cumulative_sum(&self, axis: Option<isize>) -> Result<Self, UFuncError> {
+        self.cumsum(axis)
+    }
+
+    /// NumPy 2.0 alias for cumprod (np.cumulative_prod).
+    pub fn cumulative_prod(&self, axis: Option<isize>) -> Result<Self, UFuncError> {
+        self.cumprod(axis)
+    }
+
     /// General accumulate: applies a binary function cumulatively along axis=0 of the
     /// flattened array (np.ufunc.accumulate).
     /// `op` maps `(accumulator, element) -> new_accumulator`.
@@ -4698,6 +4712,19 @@ impl UFuncArray {
             dtype: self.dtype,
             integer_sidecar: self.reindexed_integer_sidecar(&source_indices),
         })
+    }
+
+    /// Transpose the last two axes of an array (np.matrix_transpose, NumPy 2.0).
+    pub fn matrix_transpose(&self) -> Result<Self, UFuncError> {
+        let ndim = self.shape.len();
+        if ndim < 2 {
+            return Err(UFuncError::Msg(
+                "matrix_transpose: input must be at least 2-D".to_string(),
+            ));
+        }
+        let mut axes: Vec<usize> = (0..ndim).collect();
+        axes.swap(ndim - 2, ndim - 1);
+        self.transpose(Some(&axes))
     }
 
     /// Return a 1-D copy of the array. Matches `numpy.ndarray.flatten()`.
@@ -10658,6 +10685,12 @@ impl UFuncArray {
             }
             aug[r * (m + 1) + m] = xty[r];
         }
+        // Overall matrix scale for relative singularity detection.
+        let aug_scale = aug
+            .iter()
+            .map(|v| v.abs())
+            .fold(0.0f64, f64::max)
+            .max(f64::MIN_POSITIVE);
         for col in 0..m {
             // Partial pivoting
             let mut max_row = col;
@@ -10675,7 +10708,8 @@ impl UFuncArray {
                 }
             }
             let pivot = aug[col * (m + 1) + col];
-            if pivot.abs() < 1e-15 {
+            // Scale-relative singularity check: pivot negligible vs initial matrix scale
+            if pivot.abs() < f64::EPSILON * aug_scale {
                 return Err(UFuncError::Msg("polyfit: singular matrix".to_string()));
             }
             for c in col..=m {
@@ -10854,16 +10888,10 @@ impl UFuncArray {
             .map_err(|e| UFuncError::Msg(format!("roots: eigenvalue computation failed: {e}")))?;
 
         // eigenvalues are interleaved (real, imag) pairs
+        // Both real and complex roots push the real part (f64 array can't hold complex)
         let mut values: Vec<f64> = Vec::with_capacity(d + trailing_zeros);
         for i in 0..d {
-            let re = eigenvalues[2 * i];
-            let im = eigenvalues[2 * i + 1];
-            if im.abs() < 1e-10 {
-                values.push(re);
-            } else {
-                // Complex root — return real part (NaN convention for full complex)
-                values.push(re);
-            }
+            values.push(eigenvalues[2 * i]);
         }
 
         // Sort by descending absolute value (NumPy convention)
@@ -13606,6 +13634,11 @@ impl UFuncArray {
         }
     }
 
+    /// Legacy alias for trapezoid (np.trapz, deprecated in NumPy 2.0).
+    pub fn trapz(&self, dx: f64, axis: Option<isize>) -> Result<Self, UFuncError> {
+        self.trapezoid(dx, axis)
+    }
+
     /// Sinc function (np.sinc): sin(pi*x) / (pi*x), with sinc(0)=1.
     pub fn sinc(&self) -> Self {
         let values: Vec<f64> = self
@@ -15211,6 +15244,8 @@ pub struct PrintOptions {
 }
 
 impl Default for PrintOptions {
+    /// Defaults match `np.get_printoptions()`: threshold=1000, edgeitems=3,
+    /// precision=8, suppress=False, separator=' '.
     fn default() -> Self {
         Self {
             threshold: 1000,
@@ -26332,6 +26367,42 @@ mod tests {
         let out = arr.transpose(Some(&[0, 1])).expect("identity transpose");
         assert_eq!(out.shape(), &[2, 3]);
         assert_eq!(out.values(), arr.values());
+    }
+
+    #[test]
+    fn matrix_transpose_swaps_last_two_axes() {
+        let arr = UFuncArray::new(
+            vec![2, 3, 4],
+            (0..24).map(|i| i as f64).collect(),
+            DType::F64,
+        )
+        .unwrap();
+        let out = arr.matrix_transpose().unwrap();
+        assert_eq!(out.shape(), &[2, 4, 3]);
+        // Element at [0, 0, 1] in input = 1.0 should be at [0, 1, 0] in output
+        assert_eq!(out.values()[3], 1.0);
+    }
+
+    #[test]
+    fn matrix_transpose_rejects_1d() {
+        let arr = UFuncArray::new(vec![3], vec![1.0, 2.0, 3.0], DType::F64).unwrap();
+        assert!(arr.matrix_transpose().is_err());
+    }
+
+    #[test]
+    fn cumulative_sum_is_cumsum() {
+        let arr = UFuncArray::new(vec![4], vec![1.0, 2.0, 3.0, 4.0], DType::F64).unwrap();
+        let cs = arr.cumsum(None).unwrap();
+        let cs2 = arr.cumulative_sum(None).unwrap();
+        assert_eq!(cs.values(), cs2.values());
+    }
+
+    #[test]
+    fn cumulative_prod_is_cumprod() {
+        let arr = UFuncArray::new(vec![4], vec![1.0, 2.0, 3.0, 4.0], DType::F64).unwrap();
+        let cp = arr.cumprod(None).unwrap();
+        let cp2 = arr.cumulative_prod(None).unwrap();
+        assert_eq!(cp.values(), cp2.values());
     }
 
     #[test]
