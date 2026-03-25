@@ -2032,10 +2032,8 @@ pub fn validate_io_policy_metadata(mode: &str, class: &str) -> Result<(), IOErro
 /// Parse a string of numbers into an array of f64 values (np.fromstring equivalent).
 ///
 /// Supports two modes:
-/// - Text mode (`sep` is non-empty): split text on separator, parse as floats
+/// - Text mode (`sep` is non-empty): split text on separator and honor dtype-specific parsing
 /// - Binary mode (`sep` is empty): interpret raw bytes as binary data of the given dtype
-///
-/// For text mode, `dtype` is ignored (always parsed as f64).
 pub fn fromstring(data: &[u8], dtype: IOSupportedDType, sep: &str) -> Result<Vec<f64>, IOError> {
     if sep.is_empty() {
         // Binary mode: decode bytes as dtype
@@ -2048,11 +2046,79 @@ pub fn fromstring(data: &[u8], dtype: IOSupportedDType, sep: &str) -> Result<Vec
         let values: Vec<f64> = text
             .split(sep)
             .filter(|s| !s.trim().is_empty())
-            .map(|s| s.trim().parse::<f64>())
+            .map(|s| parse_text_element_for_dtype(s.trim(), dtype))
             .collect::<Result<Vec<_>, _>>()
             .map_err(|_| IOError::ReadPayloadIncomplete("fromstring: parse error"))?;
         Ok(values)
     }
+}
+
+fn parse_text_element_for_dtype(token: &str, dtype: IOSupportedDType) -> Result<f64, IOError> {
+    match dtype {
+        IOSupportedDType::Bool => Ok(
+            if token
+                .parse::<f64>()
+                .map_err(|_| IOError::ReadPayloadIncomplete("fromstring: parse error"))?
+                != 0.0
+            {
+                1.0
+            } else {
+                0.0
+            },
+        ),
+        IOSupportedDType::I8 => Ok((parse_signed_text_token(token)? as i8) as f64),
+        IOSupportedDType::I16 | IOSupportedDType::I16Be => {
+            Ok((parse_signed_text_token(token)? as i16) as f64)
+        }
+        IOSupportedDType::I32 | IOSupportedDType::I32Be => {
+            Ok((parse_signed_text_token(token)? as i32) as f64)
+        }
+        IOSupportedDType::I64 | IOSupportedDType::I64Be => {
+            let value = parse_signed_text_token(token)?;
+            let normalized = i64::try_from(value).unwrap_or(i64::MAX);
+            Ok(normalized as f64)
+        }
+        IOSupportedDType::U8 => Ok((parse_unsigned_text_token(token)? as u8) as f64),
+        IOSupportedDType::U16 | IOSupportedDType::U16Be => {
+            Ok((parse_unsigned_text_token(token)? as u16) as f64)
+        }
+        IOSupportedDType::U32 | IOSupportedDType::U32Be => {
+            Ok((parse_unsigned_text_token(token)? as u32) as f64)
+        }
+        IOSupportedDType::U64 | IOSupportedDType::U64Be => {
+            let value = parse_unsigned_text_token(token)?;
+            let normalized = u64::try_from(value).unwrap_or(u64::MAX);
+            Ok(normalized as f64)
+        }
+        IOSupportedDType::F32 | IOSupportedDType::F32Be => {
+            Ok(f64::from(token.parse::<f32>().map_err(|_| {
+                IOError::ReadPayloadIncomplete("fromstring: parse error")
+            })?))
+        }
+        IOSupportedDType::F64 | IOSupportedDType::F64Be => token
+            .parse::<f64>()
+            .map_err(|_| IOError::ReadPayloadIncomplete("fromstring: parse error")),
+        IOSupportedDType::Complex64
+        | IOSupportedDType::Complex64Be
+        | IOSupportedDType::Complex128
+        | IOSupportedDType::Complex128Be
+        | IOSupportedDType::Bytes(_)
+        | IOSupportedDType::Unicode(_)
+        | IOSupportedDType::UnicodeBe(_)
+        | IOSupportedDType::Object => Err(IOError::DTypeDescriptorInvalid),
+    }
+}
+
+fn parse_signed_text_token(token: &str) -> Result<i128, IOError> {
+    token
+        .parse::<i128>()
+        .map_err(|_| IOError::ReadPayloadIncomplete("fromstring: parse error"))
+}
+
+fn parse_unsigned_text_token(token: &str) -> Result<u128, IOError> {
+    token
+        .parse::<u128>()
+        .map_err(|_| IOError::ReadPayloadIncomplete("fromstring: parse error"))
 }
 
 /// Serialize array values to a byte buffer (np.ndarray.tobytes equivalent).
@@ -4147,6 +4213,20 @@ mod tests {
     }
 
     #[test]
+    fn fromstring_text_mode_honors_unsigned_dtype_wrapping() {
+        let data = b"255 256 257";
+        let vals = fromstring(data, IOSupportedDType::U8, " ").unwrap();
+        assert_eq!(vals, vec![255.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn fromstring_text_mode_honors_bool_dtype_coercion() {
+        let data = b"0 2 -3";
+        let vals = fromstring(data, IOSupportedDType::Bool, " ").unwrap();
+        assert_eq!(vals, vec![0.0, 1.0, 1.0]);
+    }
+
+    #[test]
     fn fromstring_binary_mode_f64() {
         let original = vec![1.5, -2.7, 3.25];
         let bytes = tobytes(&original, IOSupportedDType::F64).unwrap();
@@ -4173,6 +4253,14 @@ mod tests {
     fn fromstring_text_invalid_parse() {
         let data = b"1.0 abc 3.0";
         let err = fromstring(data, IOSupportedDType::F64, " ").expect_err("parse should fail");
+        assert!(matches!(err, IOError::ReadPayloadIncomplete(_)));
+    }
+
+    #[test]
+    fn fromstring_text_integer_dtype_rejects_decimal_tokens() {
+        let data = b"1.9 2.1";
+        let err = fromstring(data, IOSupportedDType::I32, " ")
+            .expect_err("integer dtype should reject decimal tokens");
         assert!(matches!(err, IOError::ReadPayloadIncomplete(_)));
     }
 
