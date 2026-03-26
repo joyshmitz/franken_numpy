@@ -921,6 +921,7 @@ impl ArrayStorage {
     }
 
     /// Write element at `index` from an f64 value (lossy cast to target type).
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     pub fn set_f64(&mut self, index: usize, val: f64) -> Result<(), StorageError> {
         let n = self.len();
         if index >= n {
@@ -1009,6 +1010,7 @@ impl ArrayStorage {
     }
 
     /// Write element at `index` from an i128 value (lossy cast to target type).
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     pub fn set_i128(&mut self, index: usize, val: i128) -> Result<(), StorageError> {
         let n = self.len();
         if index >= n {

@@ -1163,7 +1163,9 @@ pub fn write_npz_bytes_with_compression(
         };
         let fname_bytes = file_name.as_bytes();
 
-        let local_offset = buf.len() as u32;
+        let local_offset = u32::try_from(buf.len()).map_err(|_| {
+            IOError::NpzArchiveContractViolation("npz: file offset exceeds 4GB limits")
+        })?;
         let crc = crc32_ieee(&npy_data);
         let encoded_data = match compression {
             NpzCompression::Store => npy_data.clone(),

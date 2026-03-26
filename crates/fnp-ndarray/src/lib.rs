@@ -431,7 +431,7 @@ impl NdLayout {
         if self.shape.contains(&0) {
             return true;
         }
-        let mut expected_stride = self.item_size as isize;
+        let mut expected_stride = isize::try_from(self.item_size).unwrap_or(isize::MAX);
         for (&dim, &stride) in self.shape.iter().zip(&self.strides).rev() {
             if dim == 1 {
                 // Dimensions of size 1 don't constrain the stride
@@ -467,7 +467,7 @@ impl NdLayout {
         if self.shape.contains(&0) {
             return true;
         }
-        let mut expected_stride = self.item_size as isize;
+        let mut expected_stride = isize::try_from(self.item_size).unwrap_or(isize::MAX);
         for (&dim, &stride) in self.shape.iter().zip(&self.strides) {
             if dim == 1 {
                 continue;
