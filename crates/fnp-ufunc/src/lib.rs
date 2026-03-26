@@ -6037,6 +6037,43 @@ impl UFuncArray {
         Self::concatenate(&expanded_refs, axis_isize)
     }
 
+    /// Split an array along an axis into a list of arrays, removing that axis (np.unstack, NumPy 2.1).
+    ///
+    /// For a shape `[a, b, c]` array unstacked along axis=1, returns `b` arrays
+    /// each of shape `[a, c]`.
+    pub fn unstack(&self, axis: isize) -> Result<Vec<Self>, UFuncError> {
+        let ndim = self.shape.len();
+        if ndim == 0 {
+            return Err(UFuncError::Msg(
+                "unstack: cannot unstack a scalar".to_string(),
+            ));
+        }
+        let axis = normalize_axis(axis, ndim)?;
+        let axis_len = self.shape[axis];
+        let mut out_shape: Vec<usize> = self.shape.clone();
+        out_shape.remove(axis);
+        let out_count: usize = out_shape.iter().product();
+
+        let outer: usize = self.shape[..axis].iter().product();
+        let inner: usize = self.shape[axis + 1..].iter().product();
+
+        let mut result = Vec::with_capacity(axis_len);
+        for k in 0..axis_len {
+            let mut values = Vec::with_capacity(out_count);
+            for o in 0..outer {
+                for i in 0..inner {
+                    values.push(self.values[o * axis_len * inner + k * inner + i]);
+                }
+            }
+            result.push(Self::from_values_with_dtype(
+                out_shape.clone(),
+                values,
+                self.dtype,
+            )?);
+        }
+        Ok(result)
+    }
+
     // ── Additional array manipulation operations ─────────────────────
 
     /// Split an array into sub-arrays along an axis.
@@ -26857,6 +26894,41 @@ mod tests {
         let a = UFuncArray::new(vec![2], vec![1.0, 2.0], DType::F64).expect("a");
         let b = UFuncArray::new(vec![3], vec![3.0, 4.0, 5.0], DType::F64).expect("b");
         assert!(UFuncArray::stack(&[&a, &b], 0).is_err());
+    }
+
+    #[test]
+    fn unstack_axis0() {
+        // [[1,2],[3,4]] unstacked along axis=0 → [1,2] and [3,4]
+        let arr = UFuncArray::new(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0], DType::F64).unwrap();
+        let parts = arr.unstack(0).unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].shape(), &[2]);
+        assert_eq!(parts[0].values(), &[1.0, 2.0]);
+        assert_eq!(parts[1].values(), &[3.0, 4.0]);
+    }
+
+    #[test]
+    fn unstack_axis1() {
+        // [[1,2,3],[4,5,6]] unstacked along axis=1 → [1,4], [2,5], [3,6]
+        let arr =
+            UFuncArray::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
+        let parts = arr.unstack(1).unwrap();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0].shape(), &[2]);
+        assert_eq!(parts[0].values(), &[1.0, 4.0]);
+        assert_eq!(parts[1].values(), &[2.0, 5.0]);
+        assert_eq!(parts[2].values(), &[3.0, 6.0]);
+    }
+
+    #[test]
+    fn unstack_roundtrip_with_stack() {
+        let arr =
+            UFuncArray::new(vec![3, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], DType::F64).unwrap();
+        let parts = arr.unstack(0).unwrap();
+        let refs: Vec<&UFuncArray> = parts.iter().collect();
+        let reassembled = UFuncArray::stack(&refs, 0).unwrap();
+        assert_eq!(reassembled.shape(), arr.shape());
+        assert_eq!(reassembled.values(), arr.values());
     }
 
     #[test]

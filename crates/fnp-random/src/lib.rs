@@ -142,10 +142,10 @@ const LOGFACT: [f64; 126] = [
 /// Uses a lookup table for k <= 125, Stirling series for larger k.
 fn logfactorial(k: i64) -> f64 {
     debug_assert!(k >= 0, "logfactorial called with negative k={k}");
-    if let Ok(idx) = usize::try_from(k) {
-        if idx < LOGFACT.len() {
-            return LOGFACT[idx];
-        }
+    if let Ok(idx) = usize::try_from(k)
+        && idx < LOGFACT.len()
+    {
+        return LOGFACT[idx];
     }
     let kf = k as f64;
     let halfln2pi = 0.9189385332046728;
