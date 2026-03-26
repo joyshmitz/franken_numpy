@@ -398,7 +398,7 @@ pub fn inv_2x2(matrix: [[f64; 2]; 2]) -> Result<[[f64; 2]; 2], LinAlgError> {
 /// buffer.  `perm[i]` records the original row index that ended up at
 /// position i after pivoting; `sign` is +1 or -1.
 fn lu_decompose(a: &[f64], n: usize) -> Result<(Vec<f64>, Vec<usize>, f64), LinAlgError> {
-    if a.len() != n * n || n == 0 {
+    if Some(a.len()) != n.checked_mul(n) || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
             "LU input must be n*n with n > 0",
         ));
@@ -499,7 +499,7 @@ pub fn solve_nxn(a: &[f64], b: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError
 /// Determinant of an NxN matrix (flat row-major).  Returns 0.0 for singular
 /// matrices instead of erroring.
 pub fn det_nxn(a: &[f64], n: usize) -> Result<f64, LinAlgError> {
-    if a.len() != n * n || n == 0 {
+    if Some(a.len()) != n.checked_mul(n) || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
             "det_nxn: input must be n*n with n > 0",
         ));
@@ -525,7 +525,7 @@ pub fn det_nxn(a: &[f64], n: usize) -> Result<f64, LinAlgError> {
 
 /// Sign and log-absolute-determinant for an NxN matrix.
 pub fn slogdet_nxn(a: &[f64], n: usize) -> Result<(f64, f64), LinAlgError> {
-    if a.len() != n * n || n == 0 {
+    if Some(a.len()) != n.checked_mul(n) || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
             "slogdet_nxn: input must be n*n with n > 0",
         ));
@@ -579,7 +579,7 @@ pub fn lu_solve_multi(
     n: usize,
     m: usize,
 ) -> Result<Vec<f64>, LinAlgError> {
-    if lu.len() != n * n || b.len() != n * m || n == 0 || m == 0 {
+    if Some(lu.len()) != n.checked_mul(n) || Some(b.len()) != n.checked_mul(m) || n == 0 || m == 0 {
         return Err(LinAlgError::ShapeContractViolation(
             "lu_solve_multi: LU must be n*n, B must be n*m, with n,m > 0",
         ));
@@ -630,7 +630,7 @@ pub fn lu_factor_nxn(a: &[f64], n: usize) -> Result<(Vec<f64>, Vec<usize>, f64),
 ///
 /// Matches `scipy.linalg.lu_solve` semantics.
 pub fn lu_solve(lu: &[f64], perm: &[usize], b: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
-    if lu.len() != n * n || n == 0 {
+    if Some(lu.len()) != n.checked_mul(n) || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
             "lu_solve: LU buffer must be n*n with n > 0",
         ));
@@ -660,12 +660,12 @@ pub fn lu_solve(lu: &[f64], perm: &[usize], b: &[f64], n: usize) -> Result<Vec<f
 ///
 /// Matches `numpy.linalg.solve` semantics when B is 2-D.
 pub fn solve_nxn_multi(a: &[f64], b: &[f64], n: usize, m: usize) -> Result<Vec<f64>, LinAlgError> {
-    if a.len() != n * n || n == 0 {
+    if Some(a.len()) != n.checked_mul(n) || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
             "solve_nxn_multi: A must be n*n with n > 0",
         ));
     }
-    if b.len() != n * m {
+    if Some(b.len()) != n.checked_mul(m) {
         return Err(LinAlgError::ShapeContractViolation(
             "solve_nxn_multi: B must be n*m",
         ));
@@ -704,7 +704,7 @@ pub fn solve_triangular(
     lower: bool,
     unit_diagonal: bool,
 ) -> Result<Vec<f64>, LinAlgError> {
-    if a.len() != n * n || n == 0 {
+    if Some(a.len()) != n.checked_mul(n) || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
             "solve_triangular: A must be n*n with n > 0",
         ));
@@ -763,7 +763,7 @@ pub fn solve_triangular(
 /// Returns the lower-triangular factor L such that A = L L^T.
 /// `a` is n*n row-major.
 pub fn cholesky_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
-    if a.len() != n * n || n == 0 {
+    if Some(a.len()) != n.checked_mul(n) || n == 0 {
         return Err(LinAlgError::CholeskyContractViolation(
             "cholesky_nxn: input must be n*n with n > 0",
         ));
@@ -806,7 +806,7 @@ pub fn cholesky_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
 /// `l` is the n×n lower-triangular Cholesky factor (row-major, n*n elements).
 /// `b` is the n-element right-hand side.
 pub fn cholesky_solve(l: &[f64], b: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
-    if l.len() != n * n || b.len() != n || n == 0 {
+    if Some(l.len()) != n.checked_mul(n) || b.len() != n || n == 0 {
         return Err(LinAlgError::CholeskyContractViolation(
             "cholesky_solve: L must be n*n, b must be n, with n > 0",
         ));
@@ -854,7 +854,7 @@ pub fn cholesky_solve_multi(
     n: usize,
     m: usize,
 ) -> Result<Vec<f64>, LinAlgError> {
-    if l.len() != n * n || b.len() != n * m || n == 0 || m == 0 {
+    if Some(l.len()) != n.checked_mul(n) || Some(b.len()) != n.checked_mul(m) || n == 0 || m == 0 {
         return Err(LinAlgError::CholeskyContractViolation(
             "cholesky_solve_multi: L must be n*n, B must be n*m, with n,m > 0",
         ));
@@ -943,7 +943,7 @@ pub fn tensorsolve(
         ));
     }
 
-    if a_data.len() != n * m {
+    if Some(a_data.len()) != n.checked_mul(m) {
         return Err(LinAlgError::ShapeContractViolation(
             "tensorsolve: a_data length must be prod(a_shape)",
         ));
@@ -984,7 +984,7 @@ pub fn tensorinv(
             "tensorinv: product of first ind dims must equal product of remaining dims",
         ));
     }
-    if a_data.len() != n * n {
+    if Some(a_data.len()) != n.checked_mul(n) {
         return Err(LinAlgError::ShapeContractViolation(
             "tensorinv: data length does not match shape",
         ));
@@ -1002,7 +1002,7 @@ pub fn tensorinv(
 /// QR decomposition via Householder reflections for NxN matrix.
 /// Returns (q, r) as flat row-major n*n buffers.
 pub fn qr_nxn(a: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), LinAlgError> {
-    if a.len() != n * n || n == 0 {
+    if Some(a.len()) != n.checked_mul(n) || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
             "qr_nxn: input must be n*n with n > 0",
         ));
@@ -1081,7 +1081,7 @@ pub fn qr_nxn(a: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), LinAlgError> 
 /// This is the "complete" mode (full Q). For `reduced` mode, the caller
 /// can take only the first n columns of Q and first n rows of R.
 pub fn qr_mxn(a: &[f64], m: usize, n: usize) -> Result<(Vec<f64>, Vec<f64>), LinAlgError> {
-    if a.len() != m * n || m == 0 || n == 0 {
+    if Some(a.len()) != m.checked_mul(n) || m == 0 || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
             "qr_mxn: input must be m*n with m,n > 0",
         ));
@@ -1166,7 +1166,7 @@ pub fn qr_mxn(a: &[f64], m: usize, n: usize) -> Result<(Vec<f64>, Vec<f64>), Lin
 ///
 /// For the full decomposition (U, S, V^T), use `svd_mxn_full`.
 pub fn svd_mxn(a: &[f64], m: usize, n: usize) -> Result<Vec<f64>, LinAlgError> {
-    if a.len() != m * n || m == 0 || n == 0 {
+    if Some(a.len()) != m.checked_mul(n) || m == 0 || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
             "svd_mxn: input must be m*n with m,n > 0",
         ));
@@ -1192,7 +1192,7 @@ pub fn svd_mxn(a: &[f64], m: usize, n: usize) -> Result<Vec<f64>, LinAlgError> {
 /// 2. Implicit QR on bidiagonal B to diagonalize: B = U2 * S * V2^T
 /// 3. Final: U = U1*U2, Vt = V2^T * V1^T
 pub fn svd_mxn_full(a: &[f64], m: usize, n: usize) -> Result<SvdFullResult, LinAlgError> {
-    if a.len() != m * n || m == 0 || n == 0 {
+    if Some(a.len()) != m.checked_mul(n) || m == 0 || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
             "svd_mxn_full: input must be m*n with m,n > 0",
         ));
@@ -1504,7 +1504,7 @@ fn transpose_mat(a: &[f64], m: usize, n: usize) -> Vec<f64> {
 
 /// Frobenius norm of an NxN matrix (flat row-major).
 pub fn matrix_norm_frobenius(a: &[f64], n: usize) -> Result<f64, LinAlgError> {
-    if a.len() != n * n || n == 0 {
+    if Some(a.len()) != n.checked_mul(n) || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
             "matrix_norm: input must be n*n with n > 0",
         ));
@@ -1521,7 +1521,7 @@ pub fn matrix_norm_frobenius(a: &[f64], n: usize) -> Result<f64, LinAlgError> {
 /// Supports: "fro" (Frobenius), "1" (max column sum), "inf" (max row sum),
 /// "2" (spectral, i.e. largest singular value), "nuc" (nuclear/trace norm).
 pub fn matrix_norm_nxn(a: &[f64], m: usize, n: usize, ord: &str) -> Result<f64, LinAlgError> {
-    if a.len() != m * n || m == 0 || n == 0 {
+    if Some(a.len()) != m.checked_mul(n) || m == 0 || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
             "matrix_norm_nxn: input must be m*n with m,n > 0",
         ));
@@ -1619,7 +1619,7 @@ pub fn matrix_norm_nxn(a: &[f64], m: usize, n: usize, ord: &str) -> Result<f64, 
 
 /// Trace of an NxN flat matrix (sum of diagonal elements).
 pub fn trace_nxn(a: &[f64], n: usize) -> Result<f64, LinAlgError> {
-    if a.len() != n * n {
+    if Some(a.len()) != n.checked_mul(n) {
         return Err(LinAlgError::ShapeContractViolation(
             "trace_nxn: input must be n*n",
         ));
@@ -1630,7 +1630,7 @@ pub fn trace_nxn(a: &[f64], n: usize) -> Result<f64, LinAlgError> {
 /// Matrix rank via SVD for MxN matrices.
 /// Returns the number of singular values above `rcond * sigma_max`.
 pub fn matrix_rank_mxn(a: &[f64], m: usize, n: usize, rcond: f64) -> Result<usize, LinAlgError> {
-    if a.len() != m * n || m == 0 || n == 0 {
+    if Some(a.len()) != m.checked_mul(n) || m == 0 || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
             "matrix_rank_mxn: input must be m*n with m,n > 0",
         ));
@@ -2047,7 +2047,7 @@ fn hessenberg_qr_iter(h: &mut [f64], mut z: Option<&mut [f64]>, n: usize) {
 /// Returns eigenvalues in ascending order (NumPy convention).
 /// The matrix must be symmetric; behavior is undefined for non-symmetric input.
 pub fn eigvalsh_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
-    if a.len() != n * n || n == 0 {
+    if Some(a.len()) != n.checked_mul(n) || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
             "eigvalsh_nxn: input must be n*n with n > 0",
         ));
@@ -2067,7 +2067,7 @@ pub fn eigvalsh_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
 /// Returns (eigenvalues, eigenvectors_flat) where eigenvectors are stored as columns
 /// in a row-major n*n array. Eigenvalues are in ascending order (NumPy convention).
 pub fn eigh_nxn(a: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), LinAlgError> {
-    if a.len() != n * n || n == 0 {
+    if Some(a.len()) != n.checked_mul(n) || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
             "eigh_nxn: input must be n*n with n > 0",
         ));
@@ -2153,7 +2153,7 @@ fn extract_schur_eigenvalues(m: &[f64], n: usize) -> Vec<f64> {
 /// The QR iteration converges to a quasi-upper-triangular (real Schur) form;
 /// 1x1 diagonal blocks give real eigenvalues, 2x2 blocks give complex conjugate pairs.
 pub fn eig_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
-    if a.len() != n * n || n == 0 {
+    if Some(a.len()) != n.checked_mul(n) || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
             "eig_nxn: input must be n*n with n > 0",
         ));
@@ -2177,7 +2177,7 @@ pub fn eig_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
 /// (real Schur form: 1x1 and 2x2 blocks on diagonal), and `Z` is orthogonal.
 /// Both returned as row-major flat arrays of length `n*n`.
 pub fn schur_nxn(a: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), LinAlgError> {
-    if a.len() != n * n || n == 0 {
+    if Some(a.len()) != n.checked_mul(n) || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
             "schur_nxn: input must be n*n with n > 0",
         ));
@@ -2221,7 +2221,7 @@ pub fn kron_nxn(
     p: usize,
     q: usize,
 ) -> Result<Vec<f64>, LinAlgError> {
-    if a.len() != m * n || b.len() != p * q {
+    if Some(a.len()) != m.checked_mul(n) || Some(b.len()) != p.checked_mul(q) {
         return Err(LinAlgError::ShapeContractViolation(
             "kron_nxn: input size mismatch",
         ));
@@ -2334,7 +2334,7 @@ pub fn multi_dot(
 /// For real eigenvalues the imaginary parts are zero.
 /// For complex conjugate pairs the two eigenvectors are also conjugate.
 pub fn eig_nxn_full(a: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), LinAlgError> {
-    if a.len() != n * n || n == 0 {
+    if Some(a.len()) != n.checked_mul(n) || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
             "eig_nxn_full: input must be n*n with n > 0",
         ));
@@ -2502,7 +2502,7 @@ pub fn cond_nxn(a: &[f64], n: usize) -> Result<f64, LinAlgError> {
 /// Matrix exponentiation: compute A^p for integer p (np.linalg.matrix_power).
 /// Uses repeated squaring. p can be negative (requires invertible matrix).
 pub fn matrix_power_nxn(a: &[f64], n: usize, p: i64) -> Result<Vec<f64>, LinAlgError> {
-    if a.len() != n * n || n == 0 {
+    if Some(a.len()) != n.checked_mul(n) || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
             "matrix_power_nxn: input must be n*n with n > 0",
         ));
@@ -2542,7 +2542,7 @@ pub fn matrix_power_nxn(a: &[f64], n: usize, p: i64) -> Result<Vec<f64>, LinAlgE
 /// Uses scaling-and-squaring: scale A by 2^(-s) so the norm is small,
 /// compute exp via truncated Taylor series, then square s times.
 pub fn expm_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
-    if a.len() != n * n || n == 0 {
+    if Some(a.len()) != n.checked_mul(n) || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
             "expm_nxn: input must be n*n with n > 0",
         ));
@@ -2565,13 +2565,13 @@ pub fn expm_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
 
     // Determine scaling factor s such that ||A/2^s|| < 1
     let s = if norm1 > 1.0 {
-        (norm1.log2().ceil() as u32) + 1
+        (norm1.log2().ceil().max(0.0) as u32) + 1
     } else {
         0
     };
 
     // Scale: A_s = A / 2^s
-    let scale = 2.0f64.powi(s as i32);
+    let scale = 2.0f64.powi(s.try_into().unwrap_or(0));
     let a_s: Vec<f64> = a.iter().map(|&v| v / scale).collect();
 
     // Taylor series: exp(A_s) = I + A_s + A_s^2/2! + A_s^3/3! + ...
@@ -2622,7 +2622,7 @@ pub fn expm_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
 ///   Z_{k+1} = 0.5 * (Z_k + Y_k^{-1})
 /// with Y_0 = A, Z_0 = I, and Y_∞ = A^{1/2}.
 pub fn sqrtm_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
-    if a.len() != n * n || n == 0 {
+    if Some(a.len()) != n.checked_mul(n) || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
             "sqrtm_nxn: input must be n*n with n > 0",
         ));
@@ -2671,7 +2671,7 @@ pub fn sqrtm_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
 /// Uses repeated square roots to bring the matrix close to I, then
 /// applies the series log(I + X) ≈ X - X²/2 + X³/3 - ...
 pub fn logm_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
-    if a.len() != n * n || n == 0 {
+    if Some(a.len()) != n.checked_mul(n) || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
             "logm_nxn: input must be n*n with n > 0",
         ));
@@ -2683,7 +2683,7 @@ pub fn logm_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
     // Inverse scaling: compute A^{1/2^s} until close to identity
     let mut m = a.to_vec();
     let mut s = 0u32;
-    let max_s = LOGM_MAX_SCALING_ITERATIONS as u32;
+    let max_s = u32::try_from(LOGM_MAX_SCALING_ITERATIONS).unwrap_or(u32::MAX);
 
     let mut identity = vec![0.0; n * n];
     for i in 0..n {
@@ -2731,7 +2731,7 @@ pub fn logm_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
     }
 
     // Undo scaling: multiply by 2^s
-    let scale = 2.0f64.powi(s as i32);
+    let scale = 2.0f64.powi(s.try_into().unwrap_or(0));
     for v in &mut result {
         *v *= scale;
     }
@@ -2750,7 +2750,7 @@ pub fn logm_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
 ///
 /// Equivalent to `scipy.linalg.funm(A, func)`.
 pub fn funm_nxn(a: &[f64], n: usize, f: impl Fn(f64) -> f64) -> Result<Vec<f64>, LinAlgError> {
-    if a.len() != n * n || n == 0 {
+    if Some(a.len()) != n.checked_mul(n) || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
             "funm_nxn: input must be n*n with n > 0",
         ));
@@ -2799,7 +2799,7 @@ pub fn funm_nxn(a: &[f64], n: usize, f: impl Fn(f64) -> f64) -> Result<Vec<f64>,
 ///
 /// Equivalent to `scipy.linalg.polar(a)`.
 pub fn polar_nxn(a: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), LinAlgError> {
-    if a.len() != n * n || n == 0 {
+    if Some(a.len()) != n.checked_mul(n) || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
             "polar_nxn: input must be n*n with n > 0",
         ));
@@ -2846,7 +2846,7 @@ pub fn lstsq_svd(
     n: usize,
     rcond: f64,
 ) -> Result<LstsqResult, LinAlgError> {
-    if a.len() != m * n || b.len() != m || m == 0 || n == 0 {
+    if Some(a.len()) != m.checked_mul(n) || b.len() != m || m == 0 || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
             "lstsq_svd: a must be m*n, b must be m",
         ));
@@ -2919,7 +2919,7 @@ pub fn lstsq_nxn(a: &[f64], b: &[f64], m: usize, n: usize) -> Result<Vec<f64>, L
 
 /// Pseudoinverse of an MxN matrix (np.linalg.pinv) via SVD.
 pub fn pinv_mxn(a: &[f64], m: usize, n: usize, rcond: f64) -> Result<Vec<f64>, LinAlgError> {
-    if a.len() != m * n || m == 0 || n == 0 {
+    if Some(a.len()) != m.checked_mul(n) || m == 0 || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
             "pinv_mxn: a must be m*n with m,n > 0",
         ));
@@ -3749,7 +3749,7 @@ fn parse_batched_square(shape: &[usize]) -> Result<(usize, usize), LinAlgError> 
 pub fn batch_inv(data: &[f64], shape: &[usize]) -> Result<Vec<f64>, LinAlgError> {
     let (batch, n) = parse_batched_square(shape)?;
     let mat_size = n * n;
-    if data.len() != batch * mat_size {
+    if Some(data.len()) != batch.checked_mul(mat_size) {
         return Err(LinAlgError::ShapeContractViolation(
             "batch_inv: data length does not match shape",
         ));
@@ -3767,7 +3767,7 @@ pub fn batch_inv(data: &[f64], shape: &[usize]) -> Result<Vec<f64>, LinAlgError>
 pub fn batch_det(data: &[f64], shape: &[usize]) -> Result<Vec<f64>, LinAlgError> {
     let (batch, n) = parse_batched_square(shape)?;
     let mat_size = n * n;
-    if data.len() != batch * mat_size {
+    if Some(data.len()) != batch.checked_mul(mat_size) {
         return Err(LinAlgError::ShapeContractViolation(
             "batch_det: data length does not match shape",
         ));
@@ -3784,7 +3784,7 @@ pub fn batch_det(data: &[f64], shape: &[usize]) -> Result<Vec<f64>, LinAlgError>
 pub fn batch_slogdet(data: &[f64], shape: &[usize]) -> Result<(Vec<f64>, Vec<f64>), LinAlgError> {
     let (batch, n) = parse_batched_square(shape)?;
     let mat_size = n * n;
-    if data.len() != batch * mat_size {
+    if Some(data.len()) != batch.checked_mul(mat_size) {
         return Err(LinAlgError::ShapeContractViolation(
             "batch_slogdet: data length does not match shape",
         ));
@@ -3854,12 +3854,12 @@ pub fn batch_solve(
         ));
     }
     let mat_size = n * n;
-    if a.len() != a_batch * mat_size {
+    if Some(a.len()) != a_batch.checked_mul(mat_size) {
         return Err(LinAlgError::ShapeContractViolation(
             "batch_solve: A data length does not match shape",
         ));
     }
-    if b.len() != b_batch * rhs_width {
+    if Some(b.len()) != b_batch.checked_mul(rhs_width) {
         return Err(LinAlgError::ShapeContractViolation(
             "batch_solve: B data length does not match shape",
         ));
@@ -3886,7 +3886,7 @@ pub fn batch_solve(
 pub fn batch_eigvalsh(data: &[f64], shape: &[usize]) -> Result<Vec<f64>, LinAlgError> {
     let (batch, n) = parse_batched_square(shape)?;
     let mat_size = n * n;
-    if data.len() != batch * mat_size {
+    if Some(data.len()) != batch.checked_mul(mat_size) {
         return Err(LinAlgError::ShapeContractViolation(
             "batch_eigvalsh: data length does not match shape",
         ));
@@ -3904,7 +3904,7 @@ pub fn batch_eigvalsh(data: &[f64], shape: &[usize]) -> Result<Vec<f64>, LinAlgE
 pub fn batch_eigh(data: &[f64], shape: &[usize]) -> Result<(Vec<f64>, Vec<f64>), LinAlgError> {
     let (batch, n) = parse_batched_square(shape)?;
     let mat_size = n * n;
-    if data.len() != batch * mat_size {
+    if Some(data.len()) != batch.checked_mul(mat_size) {
         return Err(LinAlgError::ShapeContractViolation(
             "batch_eigh: data length does not match shape",
         ));
@@ -3924,7 +3924,7 @@ pub fn batch_eigh(data: &[f64], shape: &[usize]) -> Result<(Vec<f64>, Vec<f64>),
 pub fn batch_eig(data: &[f64], shape: &[usize]) -> Result<Vec<f64>, LinAlgError> {
     let (batch, n) = parse_batched_square(shape)?;
     let mat_size = n * n;
-    if data.len() != batch * mat_size {
+    if Some(data.len()) != batch.checked_mul(mat_size) {
         return Err(LinAlgError::ShapeContractViolation(
             "batch_eig: data length does not match shape",
         ));
@@ -3943,7 +3943,7 @@ pub fn batch_svd(data: &[f64], shape: &[usize]) -> Result<Vec<f64>, LinAlgError>
     let (batch, m, n) = parse_batched_shape(shape)?;
     let mat_size = m * n;
     let k = m.min(n);
-    if data.len() != batch * mat_size {
+    if Some(data.len()) != batch.checked_mul(mat_size) {
         return Err(LinAlgError::ShapeContractViolation(
             "batch_svd: data length does not match shape",
         ));
@@ -3962,7 +3962,7 @@ pub fn batch_svd_full(data: &[f64], shape: &[usize]) -> Result<SvdFullResult, Li
     let (batch, m, n) = parse_batched_shape(shape)?;
     let mat_size = m * n;
     let k = m.min(n);
-    if data.len() != batch * mat_size {
+    if Some(data.len()) != batch.checked_mul(mat_size) {
         return Err(LinAlgError::ShapeContractViolation(
             "batch_svd_full: data length does not match shape",
         ));
@@ -3984,7 +3984,7 @@ pub fn batch_svd_full(data: &[f64], shape: &[usize]) -> Result<SvdFullResult, Li
 pub fn batch_qr(data: &[f64], shape: &[usize]) -> Result<(Vec<f64>, Vec<f64>), LinAlgError> {
     let (batch, m, n) = parse_batched_shape(shape)?;
     let mat_size = m * n;
-    if data.len() != batch * mat_size {
+    if Some(data.len()) != batch.checked_mul(mat_size) {
         return Err(LinAlgError::ShapeContractViolation(
             "batch_qr: data length does not match shape",
         ));
@@ -4004,7 +4004,7 @@ pub fn batch_qr(data: &[f64], shape: &[usize]) -> Result<(Vec<f64>, Vec<f64>), L
 pub fn batch_cholesky(data: &[f64], shape: &[usize]) -> Result<Vec<f64>, LinAlgError> {
     let (batch, n) = parse_batched_square(shape)?;
     let mat_size = n * n;
-    if data.len() != batch * mat_size {
+    if Some(data.len()) != batch.checked_mul(mat_size) {
         return Err(LinAlgError::ShapeContractViolation(
             "batch_cholesky: data length does not match shape",
         ));
@@ -4026,7 +4026,7 @@ pub fn batch_matrix_norm(
 ) -> Result<Vec<f64>, LinAlgError> {
     let (batch, m, n) = parse_batched_shape(shape)?;
     let mat_size = m * n;
-    if data.len() != batch * mat_size {
+    if Some(data.len()) != batch.checked_mul(mat_size) {
         return Err(LinAlgError::ShapeContractViolation(
             "batch_matrix_norm: data length does not match shape",
         ));
@@ -4052,7 +4052,7 @@ pub fn batch_matrix_rank(
         ));
     }
     let mat_size = n * n;
-    if data.len() != batch * mat_size {
+    if Some(data.len()) != batch.checked_mul(mat_size) {
         return Err(LinAlgError::ShapeContractViolation(
             "batch_matrix_rank: data length does not match shape",
         ));
@@ -4069,7 +4069,7 @@ pub fn batch_matrix_rank(
 pub fn batch_trace(data: &[f64], shape: &[usize]) -> Result<Vec<f64>, LinAlgError> {
     let (batch, n) = parse_batched_square(shape)?;
     let mat_size = n * n;
-    if data.len() != batch * mat_size {
+    if Some(data.len()) != batch.checked_mul(mat_size) {
         return Err(LinAlgError::ShapeContractViolation(
             "batch_trace: data length does not match shape",
         ));
@@ -4122,7 +4122,7 @@ fn complex_lu_decompose(
     a: &[f64],
     n: usize,
 ) -> Result<(Vec<f64>, Vec<usize>, f64, f64), LinAlgError> {
-    if a.len() != 2 * n * n || n == 0 {
+    if Some(a.len()) != n.checked_mul(n).and_then(|x| x.checked_mul(2)) || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
             "complex LU input must be 2*n*n with n > 0",
         ));
@@ -4243,7 +4243,7 @@ fn complex_lu_forward_back(lu: &[f64], perm: &[usize], b: &[f64], n: usize) -> V
 /// Solve Ax = b for a complex NxN system via LU decomposition.
 /// `a` is 2·n·n interleaved, `b` is 2·n interleaved.
 pub fn complex_solve_nxn(a: &[f64], b: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
-    if b.len() != 2 * n {
+    if Some(b.len()) != n.checked_mul(2) {
         return Err(LinAlgError::ShapeContractViolation(
             "complex_solve_nxn: rhs length must equal 2*n",
         ));
@@ -4263,7 +4263,7 @@ pub fn complex_solve_nxn(a: &[f64], b: &[f64], n: usize) -> Result<Vec<f64>, Lin
 /// Determinant of a complex NxN matrix.
 /// Returns (det_re, det_im).
 pub fn complex_det_nxn(a: &[f64], n: usize) -> Result<(f64, f64), LinAlgError> {
-    if a.len() != 2 * n * n || n == 0 {
+    if Some(a.len()) != n.checked_mul(n).and_then(|x| x.checked_mul(2)) || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
             "complex_det_nxn: input must be 2*n*n with n > 0",
         ));
@@ -4310,7 +4310,7 @@ pub fn complex_inv_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
 /// A = L·L^H where L is lower triangular.
 /// Input: 2·n·n interleaved. Output: 2·n·n interleaved lower-triangular L.
 pub fn complex_cholesky_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError> {
-    if a.len() != 2 * n * n || n == 0 {
+    if Some(a.len()) != n.checked_mul(n).and_then(|x| x.checked_mul(2)) || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
             "complex_cholesky: input must be 2*n*n with n > 0",
         ));
@@ -4367,7 +4367,7 @@ pub fn complex_cholesky_nxn(a: &[f64], n: usize) -> Result<Vec<f64>, LinAlgError
 /// QR decomposition for complex m×n matrix (m ≥ 1, n ≥ 1) using Householder.
 /// Input: 2·m·n interleaved. Returns (Q: 2·m·m, R: 2·m·n).
 pub fn complex_qr_mxn(a: &[f64], m: usize, n: usize) -> Result<(Vec<f64>, Vec<f64>), LinAlgError> {
-    if a.len() != 2 * m * n || m == 0 || n == 0 {
+    if Some(a.len()) != m.checked_mul(n).and_then(|x| x.checked_mul(2)) || m == 0 || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
             "complex_qr: input must be 2*m*n with m,n > 0",
         ));
@@ -4496,7 +4496,7 @@ pub fn complex_matrix_norm_frobenius(a: &[f64]) -> f64 {
 
 /// Trace of a complex NxN matrix. Returns (re, im).
 pub fn complex_trace_nxn(a: &[f64], n: usize) -> Result<(f64, f64), LinAlgError> {
-    if a.len() != 2 * n * n || n == 0 {
+    if Some(a.len()) != n.checked_mul(n).and_then(|x| x.checked_mul(2)) || n == 0 {
         return Err(LinAlgError::ShapeContractViolation(
             "complex_trace: input must be 2*n*n with n > 0",
         ));
