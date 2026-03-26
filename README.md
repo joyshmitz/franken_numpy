@@ -4,10 +4,10 @@
   <img src="franken_numpy_illustration.webp" alt="FrankenNumPy - memory-safe clean-room NumPy reimplementation in Rust" width="400">
 
   **Memory-safe, clean-room NumPy reimplementation in Rust.**<br>
-  Zero unsafe code. 2,358 tests. Bit-exact RNG parity. Every feature family green.
+  Zero unsafe code. 2,426 tests. Bit-exact RNG parity. Every feature family green.
 
   ![Rust](https://img.shields.io/badge/Rust-nightly%202024-orange)
-  ![Tests](https://img.shields.io/badge/tests-2%2C358%20passing-brightgreen)
+  ![Tests](https://img.shields.io/badge/tests-2%2C426%20passing-brightgreen)
   ![Unsafe](https://img.shields.io/badge/unsafe-0%20blocks-blue)
   ![License](https://img.shields.io/badge/license-MIT-green)
 </div>
@@ -149,7 +149,7 @@ cargo test --workspace --all-features
       ▼           ▼               ▼              ▼           ▼
  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐
  │ fnp-ufunc│ │fnp-linalg│ │fnp-random│ │  fnp-io  │ │ fnp-fft  │
- │ 1372     │ │ 199      │ │ 183      │ │ 146      │ │ (in-ufunc│
+ │ 1421     │ │ 205      │ │ 191      │ │ 154      │ │ (in-ufunc│
  │ tests    │ │ tests    │ │ tests    │ │ tests    │ │  module) │
  └─────┬────┘ └──────────┘ └──────────┘ └──────────┘ └──────────┘
        │
@@ -158,7 +158,7 @@ cargo test --workspace --all-features
  ▼                                                          ▼
  ┌──────────┐ ┌────────────┐ ┌──────────┐ ┌──────────────┐
  │ fnp-dtype│ │ fnp-ndarray│ │ fnp-iter │ │ fnp-runtime  │
- │ 116 tests│ │ 55 tests   │ │ 102 tests│ │ 53 tests     │
+ │ 117 tests│ │ 55 tests   │ │ 103 tests│ │ 54 tests     │
  │ promote  │ │ SCE core   │ │ transfer │ │ strict/      │
  │ cast     │ │ strides    │ │ semantics│ │ hardened     │
  └──────────┘ └────────────┘ └──────────┘ └──────────────┘
@@ -766,16 +766,16 @@ let restored = Generator::from_pickle_payload(payload)?;
 
 | Crate | Tests | What it covers |
 |---|---|---|
-| `fnp-ufunc` | 1,372 | Array ops, math, sorting, polynomials, reductions, oracle tests, linalg bridge, FFT, masked cov/corrcoef, datetime parsing, gufunc validation |
-| `fnp-linalg` | 199 | Decompositions, solvers, norms, 16 NumPy oracle tests |
-| `fnp-random` | 183 | 40 oracle-verified distributions, seeding, reproducibility |
-| `fnp-io` | 146 | NPY/NPZ read/write, text formats, compression, 7 format oracle tests |
-| `fnp-dtype` | 116 | Dtype taxonomy, promotion table, cast policy |
-| `fnp-conformance` | 114 | Differential parity, metamorphic identities, adversarial fuzzing, matmul conformance |
+| `fnp-ufunc` | 1,421 | Array ops, math, sorting, polynomials, reductions, oracle tests, linalg bridge, FFT, masked cov/corrcoef, datetime parsing, gufunc validation |
+| `fnp-linalg` | 205 | Decompositions, solvers, norms, 16 NumPy oracle tests, extreme-scale regression |
+| `fnp-random` | 191 | 40 oracle-verified distributions, seeding, reproducibility, large-n binomial/multinomial |
+| `fnp-io` | 154 | NPY/NPZ read/write, text formats, compression, 7 format oracle tests |
+| `fnp-dtype` | 117 | Dtype taxonomy, promotion table, cast policy, NumPy byte-width parsing |
+| `fnp-conformance` | 117 | Differential parity, metamorphic identities, adversarial fuzzing, matmul conformance |
 | `fnp-ndarray` | 55 | Shape legality, stride calculus, broadcast contracts, multi-axis negative strides |
-| `fnp-iter` | 102 | Transfer semantics, NDIter traversal/broadcast/overlap, flatiter contracts, ndindex/ndenumerate |
-| `fnp-runtime` | 53 | Mode split, fail-closed decoding, override-audit gate, Bayesian decision engine, evidence ledger |
-| **Total** | **2,358** | **All passing in workspace** |
+| `fnp-iter` | 103 | Transfer semantics, NDIter traversal/broadcast/overlap, flatiter contracts, ndindex/ndenumerate |
+| `fnp-runtime` | 54 | Mode split, fail-closed decoding, override-audit gate, Bayesian decision engine, evidence ledger |
+| **Total** | **2,426** | **All passing in workspace** |
 
 ### Oracle Test Strategy
 

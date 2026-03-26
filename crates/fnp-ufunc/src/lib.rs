@@ -2341,13 +2341,12 @@ impl UFuncArrayView {
                     break;
                 } else {
                     coords[i] = 0;
-                    let dim_minus_1 = isize::try_from(self.shape[i] - 1)
-                        .map_err(|_| UFuncError::Msg("shared view: dimension overflow".to_string()))?;
-                    let reset_span = dim_minus_1
-                        .checked_mul(self.strides[i])
-                        .ok_or_else(|| {
-                            UFuncError::Msg("shared view: offset overflow".to_string())
-                        })?;
+                    let dim_minus_1 = isize::try_from(self.shape[i] - 1).map_err(|_| {
+                        UFuncError::Msg("shared view: dimension overflow".to_string())
+                    })?;
+                    let reset_span = dim_minus_1.checked_mul(self.strides[i]).ok_or_else(|| {
+                        UFuncError::Msg("shared view: offset overflow".to_string())
+                    })?;
                     current_offset = current_offset.checked_sub(reset_span).ok_or_else(|| {
                         UFuncError::Msg("shared view: offset overflow".to_string())
                     })?;
@@ -2610,13 +2609,12 @@ impl UFuncArrayView {
                     break;
                 } else {
                     coords[i] = 0;
-                    let dim_minus_1 = isize::try_from(self.shape[i] - 1)
-                        .map_err(|_| UFuncError::Msg("shared view: dimension overflow".to_string()))?;
-                    let reset_span = dim_minus_1
-                        .checked_mul(self.strides[i])
-                        .ok_or_else(|| {
-                            UFuncError::Msg("shared view: offset overflow".to_string())
-                        })?;
+                    let dim_minus_1 = isize::try_from(self.shape[i] - 1).map_err(|_| {
+                        UFuncError::Msg("shared view: dimension overflow".to_string())
+                    })?;
+                    let reset_span = dim_minus_1.checked_mul(self.strides[i]).ok_or_else(|| {
+                        UFuncError::Msg("shared view: offset overflow".to_string())
+                    })?;
                     current_offset = current_offset.checked_sub(reset_span).ok_or_else(|| {
                         UFuncError::Msg("shared view: offset overflow".to_string())
                     })?;
@@ -19428,13 +19426,19 @@ pub fn unique_values(x: &UFuncArray) -> UFuncArray {
 /// `numpy.unique_counts(x)` — sorted unique values and their counts.
 pub fn unique_counts(x: &UFuncArray) -> (UFuncArray, UFuncArray) {
     let (values, _, _, counts) = x.unique_with_info(false, false, true);
-    (values, counts.unwrap_or_else(|| unreachable!("counts requested")))
+    (
+        values,
+        counts.unwrap_or_else(|| unreachable!("counts requested")),
+    )
 }
 
 /// `numpy.unique_inverse(x)` — sorted unique values and indices to reconstruct.
 pub fn unique_inverse(x: &UFuncArray) -> (UFuncArray, UFuncArray) {
     let (values, _, inverse, _) = x.unique_with_info(false, true, false);
-    (values, inverse.unwrap_or_else(|| unreachable!("inverse requested")))
+    (
+        values,
+        inverse.unwrap_or_else(|| unreachable!("inverse requested")),
+    )
 }
 
 /// `numpy.unique_all(x)` — sorted unique values, first indices, inverse indices, and counts.
