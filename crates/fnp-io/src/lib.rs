@@ -2147,7 +2147,9 @@ pub fn fromstring(data: &[u8], dtype: IOSupportedDType, sep: &str) -> Result<Vec
 
         let parse_tokens = |tokens: Vec<&str>| {
             if tokens.len() > MAX_TEXT_ELEMENTS {
-                return Err(IOError::ReadPayloadIncomplete("fromstring: text exceeds MAX_TEXT_ELEMENTS budget"));
+                return Err(IOError::ReadPayloadIncomplete(
+                    "fromstring: text exceeds MAX_TEXT_ELEMENTS budget",
+                ));
             }
             tokens
                 .into_iter()
