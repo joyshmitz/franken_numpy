@@ -2175,11 +2175,21 @@ impl UFuncArrayView {
                 .map_err(|_| UFuncError::Msg("shared view: sidecar lock poisoned".to_string()))?;
             match &mut *s {
                 IntegerSidecar::I64(v) => {
-                    ensure_exact_integer_bridge_value_supported(value, DType::I64, "itemset", offset)?;
+                    ensure_exact_integer_bridge_value_supported(
+                        value,
+                        DType::I64,
+                        "itemset",
+                        offset,
+                    )?;
                     v[offset] = value as i64;
                 }
                 IntegerSidecar::U64(v) => {
-                    ensure_exact_integer_bridge_value_supported(value, DType::U64, "itemset", offset)?;
+                    ensure_exact_integer_bridge_value_supported(
+                        value,
+                        DType::U64,
+                        "itemset",
+                        offset,
+                    )?;
                     v[offset] = value as u64;
                 }
             }
@@ -30169,7 +30179,9 @@ mod tests {
         let mut arr = UFuncArray::from_storage(vec![2], ArrayStorage::I64(vec![1, 2])).unwrap();
         let mask = UFuncArray::new(vec![2], vec![1.0, 0.0], DType::Bool).unwrap();
 
-        let err = arr.place(&mask, &[1.5]).expect_err("fractional integer write must fail");
+        let err = arr
+            .place(&mask, &[1.5])
+            .expect_err("fractional integer write must fail");
         assert!(matches!(err, UFuncError::Msg(message) if message.contains("place")));
     }
 
@@ -30177,13 +30189,16 @@ mod tests {
     fn put_rejects_inexact_integer_bridge_values() {
         let mut arr = UFuncArray::from_storage(vec![2], ArrayStorage::I64(vec![1, 2])).unwrap();
 
-        let err = arr.put(&[0], &[1.5]).expect_err("fractional integer write must fail");
+        let err = arr
+            .put(&[0], &[1.5])
+            .expect_err("fractional integer write must fail");
         assert!(matches!(err, UFuncError::Msg(message) if message.contains("put")));
     }
 
     #[test]
     fn fill_diagonal_rejects_inexact_integer_bridge_values() {
-        let mut arr = UFuncArray::from_storage(vec![2, 2], ArrayStorage::I64(vec![1, 2, 3, 4])).unwrap();
+        let mut arr =
+            UFuncArray::from_storage(vec![2, 2], ArrayStorage::I64(vec![1, 2, 3, 4])).unwrap();
 
         let err = arr
             .fill_diagonal(1.5)

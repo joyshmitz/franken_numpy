@@ -681,7 +681,10 @@ mod tests {
         // NumPy rejects np.zeros(0).reshape(0, -1) with a ValueError
         // because the inferred dimension is ambiguous.
         let err = fix_unknown_dimension(&[0, -1], 0).expect_err("ambiguous reshape should fail");
-        assert!(matches!(err, ShapeError::IncompatibleElementCount { old: 0, new: 0 }));
+        assert!(matches!(
+            err,
+            ShapeError::IncompatibleElementCount { old: 0, new: 0 }
+        ));
     }
 
     #[test]
