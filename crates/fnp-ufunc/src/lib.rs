@@ -7691,7 +7691,7 @@ impl UFuncArray {
     /// Supports batch dimensions: for inputs with shapes `(..., n)`, returns shape `(...)`.
     pub fn vecdot(&self, other: &Self, axis: Option<isize>) -> Result<Self, UFuncError> {
         let ndim = self.shape.len();
-        if ndim == 0 || other.shape.len() == 0 {
+        if ndim == 0 || other.shape.is_empty() {
             return Err(UFuncError::Msg(
                 "vecdot: inputs must have at least 1 dimension".to_string(),
             ));
