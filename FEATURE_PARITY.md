@@ -36,7 +36,7 @@
 | Datetime/timedelta | parity_green | DatetimeArray, TimedeltaArray with arithmetic, comparison, busday_count, busday_offset, is_busday | — |
 | Stride tricks | parity_green | as_strided, sliding_window_view | — |
 | numpy.lib.scimath | parity_green | scimath_sqrt, scimath_log, scimath_log2, scimath_log10, scimath_power, scimath_arccos, scimath_arcsin, scimath_arctanh | — |
-| NumPy 2.0+ API | parity_green | unique_all, unique_counts, unique_inverse, unique_values, permuted, matrix_transpose, cumulative_sum, cumulative_prod, trapezoid, unstack | — |
+| NumPy 2.0+ API | parity_green | unique_all, unique_counts, unique_inverse, unique_values, permuted, matrix_transpose, cumulative_sum, cumulative_prod, trapezoid, unstack, vecdot | — |
 | Parameter completeness | parity_green | count_nonzero(axis,keepdims), isin(invert), searchsorted(side,sorter), where(1-arg), sum/prod(initial), copyto(casting), partition/argpartition(axis), packbits/unpackbits(axis) | — |
 | Linalg | parity_green | solve, det, inv, eig, svd, qr, cholesky, lstsq, norm, matrix_rank, matrix_power, multi_dot, tensorsolve, tensorinv, pinv, cond, slogdet, funm; 199 tests | — |
 | Random (numpy.random) | parity_green | PCG64DXSM generator with 40 oracle-verified distributions; Lemire bounded integers + buffered uint32; BTPE binomial + inversion; HRUA hypergeometric + direct; PTRS Poisson + multiplicative; NumPy-exact gamma (shape<1 rejection, shape=1 exponential, Marsaglia-Tsang); zipf with Umin clamping; 40/40 oracle tests passing; 182 tests | — |
