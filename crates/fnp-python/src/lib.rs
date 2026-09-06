@@ -65164,9 +65164,66 @@ fn fix(py: Python<'_>, x: Py<PyAny>, out: Option<Py<PyAny>>) -> PyResult<Py<PyAn
     fallback()
 }
 
+/// The three-state reader for `np.tril(m, k=0)` and `np.triu(m, k=0)`
+/// (`deadlock-audit-defaulted-argument-three-state-parse-kqn3n`). The old
+/// `k: i64` rejected an explicit `k=None` with PyO3's TypeError while numpy raises
+/// "bad operand type for unary -: 'NoneType'" from `arange(-k, M - k)`.
+/// Returns `(m, k)` when `k` reads as an int (or is omitted -> default 0);
+/// any non-int value, unknown keyword, duplicate positional+keyword, or missing
+/// `m` returns `None` so the caller delegates VERBATIM and numpy raises or
+/// answers with exactly what it was given.
+fn parse_tril_triu_args<'py>(
+    _py: Python<'py>,
+    args: &Bound<'py, PyTuple>,
+    kwargs: Option<&Bound<'py, PyDict>>,
+) -> PyResult<Option<(Py<PyAny>, i64)>> {
+    const NAMES: [&str; 2] = ["m", "k"];
+    if args.len() > 2 {
+        return Ok(None);
+    }
+    let mut slots: [Option<Bound<'py, PyAny>>; 2] = [None, None];
+    for (index, value) in args.iter().enumerate() {
+        slots[index] = Some(value);
+    }
+    if let Some(kwargs) = kwargs {
+        for key in kwargs.keys() {
+            let Ok(name) = key.extract::<String>() else {
+                return Ok(None);
+            };
+            match NAMES.iter().position(|candidate| *candidate == name) {
+                Some(index) => {
+                    if slots[index].is_some() {
+                        return Ok(None);
+                    }
+                    slots[index] = kwargs.get_item(name.as_str())?;
+                }
+                None => return Ok(None),
+            }
+        }
+    }
+    let Some(m) = slots[0].take() else {
+        return Ok(None);
+    };
+    let k = match slots[1].take() {
+        None => 0,
+        Some(val) => match integer_argument(&val) {
+            Some(k) => k,
+            None => return Ok(None),
+        },
+    };
+    Ok(Some((m.unbind(), k)))
+}
+
 #[pyfunction]
-#[pyo3(signature = (m, k=0))]
-fn tril(py: Python<'_>, m: Py<PyAny>, k: i64) -> PyResult<Py<PyAny>> {
+#[pyo3(signature = (*args, **kwargs))]
+fn tril(
+    py: Python<'_>,
+    args: &Bound<'_, PyTuple>,
+    kwargs: Option<&Bound<'_, PyDict>>,
+) -> PyResult<Py<PyAny>> {
+    let Some((m, k)) = parse_tril_triu_args(py, args, kwargs)? else {
+        return core_numpy_passthrough_interned(py, intern!(py, "tril"), args, kwargs);
+    };
     // Native tril via UFuncArray::tril for real numeric inputs. Falls
     // back to np.tril for complex, integer sidecar, structured, and
     // object-array cases so numpy's dispatch surface stays exact.
@@ -65174,8 +65231,15 @@ fn tril(py: Python<'_>, m: Py<PyAny>, k: i64) -> PyResult<Py<PyAny>> {
 }
 
 #[pyfunction]
-#[pyo3(signature = (m, k=0))]
-fn triu(py: Python<'_>, m: Py<PyAny>, k: i64) -> PyResult<Py<PyAny>> {
+#[pyo3(signature = (*args, **kwargs))]
+fn triu(
+    py: Python<'_>,
+    args: &Bound<'_, PyTuple>,
+    kwargs: Option<&Bound<'_, PyDict>>,
+) -> PyResult<Py<PyAny>> {
+    let Some((m, k)) = parse_tril_triu_args(py, args, kwargs)? else {
+        return core_numpy_passthrough_interned(py, intern!(py, "triu"), args, kwargs);
+    };
     // Native triu via UFuncArray::triu. Same fallback contract as tril.
     triangular_impl(py, m, k, /*upper=*/ true, "triu")
 }
@@ -87022,6 +87086,19 @@ fn diag_indices(
     // `n` numpy converts but we cannot DELEGATES rather than raising
     // (`deadlock-audit-strict-scalar-argument-typing-soeis`): `np.diag_indices(np.array(2,
     // dtype=object))` answers, in object dtype, which this builder cannot produce.
+    // Delegates with the ndim the CALLER actually wrote: `(n,)` when absent so
+    // numpy applies its own default 2, `(n, raw)` when supplied (numpy then
+    // raises its own "can't multiply sequence by non-int" for garbage values).
+    let delegate = |ndim: Option<Bound<'_, PyAny>>| -> PyResult<Py<PyAny>> {
+        match ndim {
+            Some(ndim) => Ok(cached_numpy(py)?
+                .call_method1(intern!(py, "diag_indices"), (&n, ndim))?
+                .unbind()),
+            None => Ok(cached_numpy(py)?
+                .call_method1(intern!(py, "diag_indices"), (&n,))?
+                .unbind()),
+        }
+    };
     match integer_argument(&n).filter(|value| *value >= 0) {
         Some(size) => match ndim.as_ref().map(|value| value.extract::<i64>()) {
             None => build_diag_indices_tuple(py, size as usize, 2),
@@ -87030,13 +87107,9 @@ fn diag_indices(
             }
             // An `ndim` numpy cannot multiply with the index tuple stays NUMPY's
             // error to raise ("can't multiply sequence by non-int ...").
-            _ => Ok(cached_numpy(py)?
-                .call_method1(intern!(py, "diag_indices"), (n, ndim))?
-                .unbind()),
+            _ => delegate(ndim),
         },
-        None => Ok(cached_numpy(py)?
-            .call_method1(intern!(py, "diag_indices"), (n, ndim))?
-            .unbind()),
+        None => delegate(ndim),
     }
 }
 
@@ -87086,6 +87159,7 @@ fn parse_diag_indices_args<'py>(
     Ok(Some((n, slots[1].take())))
 }
 
+#[cfg(test)]
 fn diag_indices_impl(py: Python<'_>, n: &Bound<'_, PyAny>, ndim: usize) -> PyResult<Py<PyAny>> {
     // An `n` numpy converts but we cannot DELEGATES rather than raising
     // (`deadlock-audit-strict-scalar-argument-typing-soeis`): `np.diag_indices(np.array(2,

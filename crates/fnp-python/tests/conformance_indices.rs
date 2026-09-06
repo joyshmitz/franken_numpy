@@ -173,6 +173,61 @@ print(all(np.array_equal(r, e) for r, e in zip(result, expected)))
     Ok(())
 }
 
+#[test]
+fn diag_indices_three_state_argument_forms_match_numpy() -> Result<(), String> {
+    let make_script = |module: &str| {
+        format!(
+            r#"
+import numpy as np
+results = []
+def run(label, fn):
+    try:
+        val = fn()
+        if isinstance(val, tuple):
+            rep = tuple(list(np.asarray(x)) for x in val)
+        else:
+            rep = repr(val)
+        results.append(label + "=" + repr(rep))
+    except Exception as e:
+        results.append(label + "=" + type(e).__name__)
+
+run("omitted", lambda: {module}.diag_indices(3))
+run("pos_ndim", lambda: {module}.diag_indices(3, 3))
+run("kw_ndim", lambda: {module}.diag_indices(3, ndim=3))
+run("kw_n", lambda: {module}.diag_indices(n=3))
+run("both_kw", lambda: {module}.diag_indices(n=3, ndim=2))
+run("ndim_none", lambda: {module}.diag_indices(3, ndim=None))
+run("ndim_string", lambda: {module}.diag_indices(3, "bad"))
+run("unknown_kw", lambda: {module}.diag_indices(3, bogus=1))
+run("too_many_args", lambda: {module}.diag_indices(3, 2, 1))
+run("duplicate_n", lambda: {module}.diag_indices(3, n=3))
+run("negative_ndim", lambda: {module}.diag_indices(3, -1))
+run("zero_ndim", lambda: {module}.diag_indices(3, 0))
+for r in results:
+    print(r)
+"#
+        )
+    };
+    let numpy_lines: Vec<String> = numpy_oracle(&make_script("np"))?
+        .lines()
+        .map(str::to_string)
+        .collect();
+    let fnp_lines: Vec<String> = numpy_oracle(&fnp_script(make_script("fnp")))?
+        .lines()
+        .map(str::to_string)
+        .collect();
+
+    assert_eq!(
+        numpy_lines.len(),
+        fnp_lines.len(),
+        "case count diverged\nnumpy: {numpy_lines:?}\nfnp: {fnp_lines:?}"
+    );
+    for (np_line, fnp_line) in numpy_lines.iter().zip(fnp_lines.iter()) {
+        assert_eq!(np_line.trim(), fnp_line.trim(), "three-state form mismatch");
+    }
+    Ok(())
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // tril_indices / triu_indices
 // ─────────────────────────────────────────────────────────────────────────────
