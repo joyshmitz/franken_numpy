@@ -7761,6 +7761,10 @@ fn numpy_array_from_slice_shaped<'py, T: pyo3::buffer::Element + Copy>(
     dtype_name: &str,
     shape: &[usize],
 ) -> PyResult<Bound<'py, PyAny>> {
+    if shape.is_empty() {
+        let array = numpy_array_from_slice(py, numpy, values, dtype_name)?;
+        return array.call_method1(intern!(py, "reshape"), (PyTuple::empty(py),));
+    }
     let array = if let [only] = shape {
         numpy.call_method1(intern!(py, "empty"), (*only, dtype_name))?
     } else {
@@ -47712,11 +47716,9 @@ fn try_zerocopy_f16_sum_nonlast_axis(
         out_shape.push(1);
     }
     out_shape.extend_from_slice(&shape[k + 1..]);
-    let flat_u16 = numpy_array_from_slice(py, numpy, &out, "uint16")?;
+    let flat_u16 = numpy_array_from_slice_shaped(py, numpy, &out, "uint16", &out_shape)?;
     let flat = flat_u16.call_method1(intern!(py, "view"), (cached_float16_type(py)?,))?;
-    let output_shape = PyTuple::new(py, out_shape.iter().copied())?;
-    let reshaped = flat.call_method1(intern!(py, "reshape"), (&output_shape,))?;
-    Ok(Some(reshaped.unbind()))
+    finish_preshaped_output(flat, &out_shape).map(Some)
 }
 
 // Native parallel f16 nanmean along a NON-LAST axis -> f16 array. Per lane = float16( float32(seq_f16_
@@ -47815,11 +47817,9 @@ fn try_zerocopy_f16_nanmean_nonlast_axis(
         out_shape.push(1);
     }
     out_shape.extend_from_slice(&shape[k + 1..]);
-    let flat_u16 = numpy_array_from_slice(py, numpy, &out, "uint16")?;
+    let flat_u16 = numpy_array_from_slice_shaped(py, numpy, &out, "uint16", &out_shape)?;
     let flat = flat_u16.call_method1(intern!(py, "view"), (cached_float16_type(py)?,))?;
-    let output_shape = PyTuple::new(py, out_shape.iter().copied())?;
-    let reshaped = flat.call_method1(intern!(py, "reshape"), (&output_shape,))?;
-    Ok(Some(reshaped.unbind()))
+    finish_preshaped_output(flat, &out_shape).map(Some)
 }
 
 // Native parallel f16 nanvar/nanstd along a NON-LAST axis -> f16 array. numpy reduces a strided f16 axis
@@ -47944,11 +47944,9 @@ fn try_zerocopy_f16_nanvar_nonlast_axis(
         out_shape.push(1);
     }
     out_shape.extend_from_slice(&shape[k + 1..]);
-    let flat_u16 = numpy_array_from_slice(py, numpy, &out, "uint16")?;
+    let flat_u16 = numpy_array_from_slice_shaped(py, numpy, &out, "uint16", &out_shape)?;
     let flat = flat_u16.call_method1(intern!(py, "view"), (cached_float16_type(py)?,))?;
-    let output_shape = PyTuple::new(py, out_shape.iter().copied())?;
-    let reshaped = flat.call_method1(intern!(py, "reshape"), (&output_shape,))?;
-    Ok(Some(reshaped.unbind()))
+    finish_preshaped_output(flat, &out_shape).map(Some)
 }
 
 // Native parallel f16 var/std/nanvar/nanstd along the LAST (contiguous) axis -> f16 array. Unlike the
@@ -48068,11 +48066,9 @@ fn try_zerocopy_f16_nanvar_lastaxis(
     if keepdims {
         out_shape.push(1);
     }
-    let flat_u16 = numpy_array_from_slice(py, numpy, &out, "uint16")?;
+    let flat_u16 = numpy_array_from_slice_shaped(py, numpy, &out, "uint16", &out_shape)?;
     let flat = flat_u16.call_method1(intern!(py, "view"), (cached_float16_type(py)?,))?;
-    let output_shape = PyTuple::new(py, out_shape.iter().copied())?;
-    let reshaped = flat.call_method1(intern!(py, "reshape"), (&output_shape,))?;
-    Ok(Some(reshaped.unbind()))
+    finish_preshaped_output(flat, &out_shape).map(Some)
 }
 
 // Native parallel flat np.sum for a C-contiguous float16 ndarray -> float16 scalar. numpy's f16 sum is
@@ -48829,15 +48825,8 @@ fn try_zerocopy_f64_nanprod_axis(
     };
     let mut out_shape = shape.clone();
     out_shape.remove(ax);
-    let flat = numpy_array_from_slice(py, numpy, &out, "float64")?;
-    let reshaped = flat.call_method1(
-        intern!(py, "reshape"),
-        (PyTuple::new(py, out_shape.iter().copied())?,),
-    )?;
-    if out_shape.is_empty() {
-        return Ok(Some(reshaped.get_item(())?.unbind()));
-    }
-    Ok(Some(reshaped.unbind()))
+    let flat = numpy_array_from_slice_shaped(py, numpy, &out, "float64", &out_shape)?;
+    finish_preshaped_output(flat, &out_shape).map(Some)
 }
 
 // Single-pass portable-SIMD nan-ignoring max/min over an f64 slice. `take_max`
@@ -49270,17 +49259,10 @@ fn try_zerocopy_f64_nanextreme_axis(
             ("All-NaN slice encountered", &category),
         )?;
     }
-    let flat = numpy_array_from_slice(py, numpy, &out, "float64")?;
     let mut out_shape: Vec<usize> = shape[..ax].to_vec();
     out_shape.extend_from_slice(&shape[ax + 1..]);
-    let reshaped = flat.call_method1(
-        intern!(py, "reshape"),
-        (PyTuple::new(py, out_shape.iter().copied())?,),
-    )?;
-    if out_shape.is_empty() {
-        return Ok(Some(reshaped.get_item(())?.unbind()));
-    }
-    Ok(Some(reshaped.unbind()))
+    let flat = numpy_array_from_slice_shaped(py, numpy, &out, "float64", &out_shape)?;
+    finish_preshaped_output(flat, &out_shape).map(Some)
 }
 
 // f32 twin of try_zerocopy_f64_nanextreme_axis (nanmax/nanmin per axis). f32 had no nanextreme-axis
@@ -49436,17 +49418,10 @@ fn try_zerocopy_f32_nanextreme_axis(
             ("All-NaN slice encountered", &category),
         )?;
     }
-    let flat = numpy_array_from_slice(py, numpy, &out, "float32")?;
     let mut out_shape: Vec<usize> = shape[..ax].to_vec();
     out_shape.extend_from_slice(&shape[ax + 1..]);
-    let reshaped = flat.call_method1(
-        intern!(py, "reshape"),
-        (PyTuple::new(py, out_shape.iter().copied())?,),
-    )?;
-    if out_shape.is_empty() {
-        return Ok(Some(reshaped.get_item(())?.unbind()));
-    }
-    Ok(Some(reshaped.unbind()))
+    let flat = numpy_array_from_slice_shaped(py, numpy, &out, "float32", &out_shape)?;
+    finish_preshaped_output(flat, &out_shape).map(Some)
 }
 
 // Zero-copy SIMD-pairwise nanmean over the CONTIGUOUS LAST axis of a C-contiguous
@@ -49512,16 +49487,9 @@ fn try_zerocopy_f64_nanmean_axis(
         let category = py.get_type::<pyo3::exceptions::PyRuntimeWarning>();
         warnings.call_method1(intern!(py, "warn"), ("Mean of empty slice", &category))?;
     }
-    let flat = numpy_array_from_slice(py, numpy, &out, "float64")?;
     let out_shape: Vec<usize> = shape[..ax].to_vec();
-    let reshaped = flat.call_method1(
-        intern!(py, "reshape"),
-        (PyTuple::new(py, out_shape.iter().copied())?,),
-    )?;
-    if out_shape.is_empty() {
-        return Ok(Some(reshaped.get_item(())?.unbind()));
-    }
-    Ok(Some(reshaped.unbind()))
+    let flat = numpy_array_from_slice_shaped(py, numpy, &out, "float64", &out_shape)?;
+    finish_preshaped_output(flat, &out_shape).map(Some)
 }
 
 // NaN-ignoring np.nanmean along the FIRST axis (axis=0) of a C-contiguous f64 ndarray —
@@ -49598,19 +49566,12 @@ fn try_zerocopy_f64_nanmean_axis0(
         let category = py.get_type::<pyo3::exceptions::PyRuntimeWarning>();
         warnings.call_method1(intern!(py, "warn"), ("Mean of empty slice", &category))?;
     }
-    let flat = numpy_array_from_slice(py, numpy, &out, "float64")?;
     let mut out_shape: Vec<usize> = shape[1..].to_vec();
     if keepdims {
         out_shape.insert(0, 1);
     }
-    let reshaped = flat.call_method1(
-        intern!(py, "reshape"),
-        (PyTuple::new(py, out_shape.iter().copied())?,),
-    )?;
-    if out_shape.is_empty() {
-        return Ok(Some(reshaped.get_item(())?.unbind()));
-    }
-    Ok(Some(reshaped.unbind()))
+    let flat = numpy_array_from_slice_shaped(py, numpy, &out, "float64", &out_shape)?;
+    finish_preshaped_output(flat, &out_shape).map(Some)
 }
 
 // NaN-ignoring np.nanmean along a single MIDDLE axis (0 < ax < ndim-1) of a C-contiguous
@@ -49713,21 +49674,14 @@ fn try_zerocopy_f64_nanmean_nonlast_axis(
         let category = py.get_type::<pyo3::exceptions::PyRuntimeWarning>();
         warnings.call_method1(intern!(py, "warn"), ("Mean of empty slice", &category))?;
     }
-    let flat = numpy_array_from_slice(py, numpy, &out, "float64")?;
     let mut out_shape: Vec<usize> = Vec::with_capacity(shape.len());
     out_shape.extend_from_slice(&shape[..axu]);
     if keepdims {
         out_shape.push(1);
     }
     out_shape.extend_from_slice(&shape[axu + 1..]);
-    let reshaped = flat.call_method1(
-        intern!(py, "reshape"),
-        (PyTuple::new(py, out_shape.iter().copied())?,),
-    )?;
-    if out_shape.is_empty() {
-        return Ok(Some(reshaped.get_item(())?.unbind()));
-    }
-    Ok(Some(reshaped.unbind()))
+    let flat = numpy_array_from_slice_shaped(py, numpy, &out, "float64", &out_shape)?;
+    finish_preshaped_output(flat, &out_shape).map(Some)
 }
 
 // NaN-ignoring np.nanmean along a NON-LAST single axis (0 <= ax < ndim-1) of a C-contiguous
@@ -49844,21 +49798,14 @@ fn try_zerocopy_f32_nanmean_nonlast_axis(
         let category = py.get_type::<pyo3::exceptions::PyRuntimeWarning>();
         warnings.call_method1(intern!(py, "warn"), ("Mean of empty slice", &category))?;
     }
-    let flat = numpy_array_from_slice(py, numpy, &out, "float32")?;
     let mut out_shape: Vec<usize> = Vec::with_capacity(shape.len());
     out_shape.extend_from_slice(&shape[..axu]);
     if keepdims {
         out_shape.push(1);
     }
     out_shape.extend_from_slice(&shape[axu + 1..]);
-    let reshaped = flat.call_method1(
-        intern!(py, "reshape"),
-        (PyTuple::new(py, out_shape.iter().copied())?,),
-    )?;
-    if out_shape.is_empty() {
-        return Ok(Some(reshaped.get_item(())?.unbind()));
-    }
-    Ok(Some(reshaped.unbind()))
+    let flat = numpy_array_from_slice_shaped(py, numpy, &out, "float32", &out_shape)?;
+    finish_preshaped_output(flat, &out_shape).map(Some)
 }
 
 // f32 nansum/nanprod along a NON-LAST axis. numpy's nansum/nanprod materialize a whole-array temp
@@ -49949,21 +49896,14 @@ fn try_zerocopy_f32_nansum_nanprod_nonlast_axis(
             process_block(&data[o * block..(o + 1) * block], dst);
         }
     }
-    let flat = numpy_array_from_slice(py, numpy, &out, "float32")?;
     let mut out_shape: Vec<usize> = Vec::with_capacity(shape.len());
     out_shape.extend_from_slice(&shape[..axu]);
     if keepdims {
         out_shape.push(1);
     }
     out_shape.extend_from_slice(&shape[axu + 1..]);
-    let reshaped = flat.call_method1(
-        intern!(py, "reshape"),
-        (PyTuple::new(py, out_shape.iter().copied())?,),
-    )?;
-    if out_shape.is_empty() {
-        return Ok(Some(reshaped.get_item(())?.unbind()));
-    }
-    Ok(Some(reshaped.unbind()))
+    let flat = numpy_array_from_slice_shaped(py, numpy, &out, "float32", &out_shape)?;
+    finish_preshaped_output(flat, &out_shape).map(Some)
 }
 
 // Zero-copy per-block pairwise nanvar/nanstd over the CONTIGUOUS TRAILING axes of a
@@ -50078,20 +50018,13 @@ fn try_zerocopy_f64_nanvar_axis(
     let Some(out): Option<Vec<f64>> = results.into_iter().collect() else {
         return Ok(None);
     };
-    let flat = numpy_array_from_slice(py, numpy, &out, "float64")?;
     let mut out_shape: Vec<usize> = shape[..keep].to_vec();
     if keepdims {
         // numpy keeps every reduced trailing axis as length 1.
         out_shape.extend(std::iter::repeat_n(1, (ndim as usize).saturating_sub(keep)));
     }
-    let reshaped = flat.call_method1(
-        intern!(py, "reshape"),
-        (PyTuple::new(py, out_shape.iter().copied())?,),
-    )?;
-    if out_shape.is_empty() {
-        return Ok(Some(reshaped.get_item(())?.unbind()));
-    }
-    Ok(Some(reshaped.unbind()))
+    let flat = numpy_array_from_slice_shaped(py, numpy, &out, "float64", &out_shape)?;
+    finish_preshaped_output(flat, &out_shape).map(Some)
 }
 
 // NaN-ignoring np.nanmean over the contiguous TRAILING axes of a C-contiguous FLOAT32
@@ -50198,19 +50131,12 @@ fn try_zerocopy_f32_nanmean_last_axis(
         let category = py.get_type::<pyo3::exceptions::PyRuntimeWarning>();
         warnings.call_method1(intern!(py, "warn"), ("Mean of empty slice", &category))?;
     }
-    let flat = numpy_array_from_slice(py, numpy, &out, "float32")?;
     let mut out_shape: Vec<usize> = shape[..keep].to_vec();
     if keepdims {
         out_shape.extend(std::iter::repeat_n(1, (ndim as usize).saturating_sub(keep)));
     }
-    let reshaped = flat.call_method1(
-        intern!(py, "reshape"),
-        (PyTuple::new(py, out_shape.iter().copied())?,),
-    )?;
-    if out_shape.is_empty() {
-        return Ok(Some(reshaped.get_item(())?.unbind()));
-    }
-    Ok(Some(reshaped.unbind()))
+    let flat = numpy_array_from_slice_shaped(py, numpy, &out, "float32", &out_shape)?;
+    finish_preshaped_output(flat, &out_shape).map(Some)
 }
 
 // NaN-ignoring np.nanvar / np.nanstd over the contiguous TRAILING axes of a C-contiguous
@@ -50314,19 +50240,12 @@ fn try_zerocopy_f32_nanvar_last_axis(
     let Some(out): Option<Vec<f32>> = results.into_iter().collect() else {
         return Ok(None);
     };
-    let flat = numpy_array_from_slice(py, numpy, &out, "float32")?;
     let mut out_shape: Vec<usize> = shape[..keep].to_vec();
     if keepdims {
         out_shape.extend(std::iter::repeat_n(1, (ndim as usize).saturating_sub(keep)));
     }
-    let reshaped = flat.call_method1(
-        intern!(py, "reshape"),
-        (PyTuple::new(py, out_shape.iter().copied())?,),
-    )?;
-    if out_shape.is_empty() {
-        return Ok(Some(reshaped.get_item(())?.unbind()));
-    }
-    Ok(Some(reshaped.unbind()))
+    let flat = numpy_array_from_slice_shaped(py, numpy, &out, "float32", &out_shape)?;
+    finish_preshaped_output(flat, &out_shape).map(Some)
 }
 
 // Plain (NaN-propagating) np.var / np.std over the contiguous TRAILING axes - either a
@@ -50428,20 +50347,13 @@ fn try_zerocopy_f64_var_axis(
     let Some(out): Option<Vec<f64>> = results.into_iter().collect() else {
         return Ok(None);
     };
-    let flat = numpy_array_from_slice(py, numpy, &out, "float64")?;
     let mut out_shape: Vec<usize> = shape[..keep].to_vec();
     if keepdims {
         // numpy keeps every reduced trailing axis as length 1.
         out_shape.extend(std::iter::repeat_n(1, (ndim as usize).saturating_sub(keep)));
     }
-    let reshaped = flat.call_method1(
-        intern!(py, "reshape"),
-        (PyTuple::new(py, out_shape.iter().copied())?,),
-    )?;
-    if out_shape.is_empty() {
-        return Ok(Some(reshaped.get_item(())?.unbind()));
-    }
-    Ok(Some(reshaped.unbind()))
+    let flat = numpy_array_from_slice_shaped(py, numpy, &out, "float64", &out_shape)?;
+    finish_preshaped_output(flat, &out_shape).map(Some)
 }
 
 // Plain (NaN-propagating) np.var / np.std along the FIRST axis (axis=0) of a C-contiguous
@@ -50535,19 +50447,12 @@ fn try_zerocopy_f64_var_axis0(
     // noisier than this cache-friendly serial stream. The win here is numpy's temp
     // avoidance (it materializes a-mean and (a-mean)^2 whole-array temps), not threads.
     process(0, &mut out);
-    let flat = numpy_array_from_slice(py, numpy, &out, "float64")?;
     let mut out_shape: Vec<usize> = shape[1..].to_vec();
     if keepdims {
         out_shape.insert(0, 1); // numpy keeps the reduced first axis as length 1
     }
-    let reshaped = flat.call_method1(
-        intern!(py, "reshape"),
-        (PyTuple::new(py, out_shape.iter().copied())?,),
-    )?;
-    if out_shape.is_empty() {
-        return Ok(Some(reshaped.get_item(())?.unbind()));
-    }
-    Ok(Some(reshaped.unbind()))
+    let flat = numpy_array_from_slice_shaped(py, numpy, &out, "float64", &out_shape)?;
+    finish_preshaped_output(flat, &out_shape).map(Some)
 }
 
 // Plain (NaN-propagating) np.var / np.std along a single MIDDLE axis (0 < ax < ndim-1)
@@ -50646,21 +50551,14 @@ fn try_zerocopy_f64_var_nonlast_axis(
             process_block(&data[o * block..(o + 1) * block], dst);
         }
     }
-    let flat = numpy_array_from_slice(py, numpy, &out, "float64")?;
     let mut out_shape: Vec<usize> = Vec::with_capacity(shape.len());
     out_shape.extend_from_slice(&shape[..axu]);
     if keepdims {
         out_shape.push(1);
     }
     out_shape.extend_from_slice(&shape[axu + 1..]);
-    let reshaped = flat.call_method1(
-        intern!(py, "reshape"),
-        (PyTuple::new(py, out_shape.iter().copied())?,),
-    )?;
-    if out_shape.is_empty() {
-        return Ok(Some(reshaped.get_item(())?.unbind()));
-    }
-    Ok(Some(reshaped.unbind()))
+    let flat = numpy_array_from_slice_shaped(py, numpy, &out, "float64", &out_shape)?;
+    finish_preshaped_output(flat, &out_shape).map(Some)
 }
 
 // Plain (NaN-propagating) np.var / np.std along a NON-LAST single axis (0 <= ax < ndim-1)
@@ -50773,21 +50671,14 @@ fn try_zerocopy_f32_var_nonlast_axis(
             process_block(&data[o * block..(o + 1) * block], dst);
         }
     }
-    let flat = numpy_array_from_slice(py, numpy, &out, "float32")?;
     let mut out_shape: Vec<usize> = Vec::with_capacity(shape.len());
     out_shape.extend_from_slice(&shape[..axu]);
     if keepdims {
         out_shape.push(1);
     }
     out_shape.extend_from_slice(&shape[axu + 1..]);
-    let reshaped = flat.call_method1(
-        intern!(py, "reshape"),
-        (PyTuple::new(py, out_shape.iter().copied())?,),
-    )?;
-    if out_shape.is_empty() {
-        return Ok(Some(reshaped.get_item(())?.unbind()));
-    }
-    Ok(Some(reshaped.unbind()))
+    let flat = numpy_array_from_slice_shaped(py, numpy, &out, "float32", &out_shape)?;
+    finish_preshaped_output(flat, &out_shape).map(Some)
 }
 
 // NaN-ignoring np.nanvar / np.nanstd along the FIRST axis (axis=0) of a C-contiguous f64
@@ -50877,19 +50768,12 @@ fn try_zerocopy_f64_nanvar_axis0(
         let var = sq[j] / (cnt[j] as usize - ddof) as f64;
         out[j] = if take_sqrt { var.sqrt() } else { var };
     }
-    let flat = numpy_array_from_slice(py, numpy, &out, "float64")?;
     let mut out_shape: Vec<usize> = shape[1..].to_vec();
     if keepdims {
         out_shape.insert(0, 1);
     }
-    let reshaped = flat.call_method1(
-        intern!(py, "reshape"),
-        (PyTuple::new(py, out_shape.iter().copied())?,),
-    )?;
-    if out_shape.is_empty() {
-        return Ok(Some(reshaped.get_item(())?.unbind()));
-    }
-    Ok(Some(reshaped.unbind()))
+    let flat = numpy_array_from_slice_shaped(py, numpy, &out, "float64", &out_shape)?;
+    finish_preshaped_output(flat, &out_shape).map(Some)
 }
 
 // NaN-ignoring np.nanvar / np.nanstd along a single MIDDLE axis (0 < ax < ndim-1) of a
@@ -51009,21 +50893,14 @@ fn try_zerocopy_f64_nanvar_nonlast_axis(
     if defer.load(Ordering::Relaxed) {
         return Ok(None); // a count <= ddof lane exists -> let numpy warn + emit NaN
     }
-    let flat = numpy_array_from_slice(py, numpy, &out, "float64")?;
     let mut out_shape: Vec<usize> = Vec::with_capacity(shape.len());
     out_shape.extend_from_slice(&shape[..axu]);
     if keepdims {
         out_shape.push(1);
     }
     out_shape.extend_from_slice(&shape[axu + 1..]);
-    let reshaped = flat.call_method1(
-        intern!(py, "reshape"),
-        (PyTuple::new(py, out_shape.iter().copied())?,),
-    )?;
-    if out_shape.is_empty() {
-        return Ok(Some(reshaped.get_item(())?.unbind()));
-    }
-    Ok(Some(reshaped.unbind()))
+    let flat = numpy_array_from_slice_shaped(py, numpy, &out, "float64", &out_shape)?;
+    finish_preshaped_output(flat, &out_shape).map(Some)
 }
 
 // NaN-ignoring np.nanvar / np.nanstd along a NON-LAST single axis (0 <= ax < ndim-1) of a
@@ -51157,21 +51034,14 @@ fn try_zerocopy_f32_nanvar_nonlast_axis(
     if defer.load(Ordering::Relaxed) {
         return Ok(None); // a count <= ddof lane exists -> let numpy warn + emit NaN
     }
-    let flat = numpy_array_from_slice(py, numpy, &out, "float32")?;
     let mut out_shape: Vec<usize> = Vec::with_capacity(shape.len());
     out_shape.extend_from_slice(&shape[..axu]);
     if keepdims {
         out_shape.push(1);
     }
     out_shape.extend_from_slice(&shape[axu + 1..]);
-    let reshaped = flat.call_method1(
-        intern!(py, "reshape"),
-        (PyTuple::new(py, out_shape.iter().copied())?,),
-    )?;
-    if out_shape.is_empty() {
-        return Ok(Some(reshaped.get_item(())?.unbind()));
-    }
-    Ok(Some(reshaped.unbind()))
+    let flat = numpy_array_from_slice_shaped(py, numpy, &out, "float32", &out_shape)?;
+    finish_preshaped_output(flat, &out_shape).map(Some)
 }
 
 // Which contiguous-last-axis vector norm the native fold computes.
@@ -51420,15 +51290,8 @@ fn try_zerocopy_f64_vector_norm_axis(
         s.extend_from_slice(&shape[ax + 1..]);
         (out_vec, s)
     };
-    let flat = numpy_array_from_slice(py, numpy, &out, "float64")?;
-    let reshaped = flat.call_method1(
-        intern!(py, "reshape"),
-        (PyTuple::new(py, out_shape.iter().copied())?,),
-    )?;
-    if out_shape.is_empty() {
-        return Ok(Some(reshaped.get_item(())?.unbind()));
-    }
-    Ok(Some(reshaped.unbind()))
+    let flat = numpy_array_from_slice_shaped(py, numpy, &out, "float64", &out_shape)?;
+    finish_preshaped_output(flat, &out_shape).map(Some)
 }
 
 // f32 twin of try_zerocopy_f64_vector_norm_axis, ORDER-FREE ords only (ord=+inf MaxAbs, -inf MinAbs,
@@ -51649,15 +51512,8 @@ fn try_zerocopy_f32_vector_norm_axis(
         s.extend_from_slice(&shape[ax + 1..]);
         (out_vec, s)
     };
-    let flat = numpy_array_from_slice(py, numpy, &out, "float32")?;
-    let reshaped = flat.call_method1(
-        intern!(py, "reshape"),
-        (PyTuple::new(py, out_shape.iter().copied())?,),
-    )?;
-    if out_shape.is_empty() {
-        return Ok(Some(reshaped.get_item(())?.unbind()));
-    }
-    Ok(Some(reshaped.unbind()))
+    let flat = numpy_array_from_slice_shaped(py, numpy, &out, "float32", &out_shape)?;
+    finish_preshaped_output(flat, &out_shape).map(Some)
 }
 
 // np.linalg.norm(x, ord in {None,'fro','f'}, axis=(<-2>,<-1>)) - the Frobenius norm
@@ -51720,20 +51576,13 @@ fn try_zerocopy_f64_frobenius_lastaxes(
     } else {
         data.chunks_exact(block).map(lane_norm).collect()
     };
-    let flat = numpy_array_from_slice(py, numpy, &out, "float64")?;
     let mut out_shape: Vec<usize> = shape[..nd - 2].to_vec();
     if keepdims {
         out_shape.push(1);
         out_shape.push(1);
     }
-    let reshaped = flat.call_method1(
-        intern!(py, "reshape"),
-        (PyTuple::new(py, out_shape.iter().copied())?,),
-    )?;
-    if out_shape.is_empty() {
-        return Ok(Some(reshaped.get_item(())?.unbind()));
-    }
-    Ok(Some(reshaped.unbind()))
+    let flat = numpy_array_from_slice_shaped(py, numpy, &out, "float64", &out_shape)?;
+    finish_preshaped_output(flat, &out_shape).map(Some)
 }
 
 // Which induced matrix p-norm the native fold computes over the trailing 2 axes.
@@ -51854,20 +51703,13 @@ fn try_zerocopy_f64_matrix_norm_lastaxes(
     } else {
         data.chunks_exact(block).map(&block_norm).collect()
     };
-    let flat = numpy_array_from_slice(py, numpy, &out, "float64")?;
     let mut out_shape: Vec<usize> = shape[..nd - 2].to_vec();
     if keepdims {
         out_shape.push(1);
         out_shape.push(1);
     }
-    let reshaped = flat.call_method1(
-        intern!(py, "reshape"),
-        (PyTuple::new(py, out_shape.iter().copied())?,),
-    )?;
-    if out_shape.is_empty() {
-        return Ok(Some(reshaped.get_item(())?.unbind()));
-    }
-    Ok(Some(reshaped.unbind()))
+    let flat = numpy_array_from_slice_shaped(py, numpy, &out, "float64", &out_shape)?;
+    finish_preshaped_output(flat, &out_shape).map(Some)
 }
 
 #[pyfunction]
@@ -53138,11 +52980,8 @@ fn try_zerocopy_f32_nanarg_lastaxis(
     }
     let indices: Vec<i64> = per.into_iter().map(|i| i.unwrap() as i64).collect();
     let out_shape: Vec<usize> = shape[..ndim - 1].to_vec();
-    let flat = numpy_array_from_slice(py, numpy, &indices, "intp")?;
-    Ok(Some(
-        flat.call_method1(intern!(py, "reshape"), (out_shape,))?
-            .unbind(),
-    ))
+    let flat = numpy_array_from_slice_shaped(py, numpy, &indices, "intp", &out_shape)?;
+    finish_preshaped_output(flat, &out_shape).map(Some)
 }
 
 // f64 twin of try_zerocopy_f32_nanarg_lastaxis: np.nanargmax/nanargmin(M, axis=-1) per contiguous
@@ -53229,11 +53068,8 @@ fn try_zerocopy_f64_nanarg_lastaxis(
     }
     let indices: Vec<i64> = per.into_iter().map(|i| i.unwrap() as i64).collect();
     let out_shape: Vec<usize> = shape[..ndim - 1].to_vec();
-    let flat = numpy_array_from_slice(py, numpy, &indices, "intp")?;
-    Ok(Some(
-        flat.call_method1(intern!(py, "reshape"), (out_shape,))?
-            .unbind(),
-    ))
+    let flat = numpy_array_from_slice_shaped(py, numpy, &indices, "intp", &out_shape)?;
+    finish_preshaped_output(flat, &out_shape).map(Some)
 }
 
 // The two IEEE floats, so the non-last nanarg kernel below is generic over f32/f64.
@@ -53342,13 +53178,8 @@ fn try_zerocopy_float_nanarg_nonlast_axis<T: NanArgFloat>(
     }
     let mut out_shape: Vec<usize> = shape[..k].to_vec();
     out_shape.extend_from_slice(&shape[k + 1..]);
-    let flat = numpy_array_from_slice(py, numpy, &indices, "intp")?;
-    let output_shape = PyTuple::new(py, out_shape.iter().copied())?;
-    let reshaped = flat.call_method1(intern!(py, "reshape"), (&output_shape,))?;
-    if out_shape.is_empty() {
-        return Ok(Some(reshaped.get_item(())?.unbind()));
-    }
-    Ok(Some(reshaped.unbind()))
+    let flat = numpy_array_from_slice_shaped(py, numpy, &indices, "intp", &out_shape)?;
+    finish_preshaped_output(flat, &out_shape).map(Some)
 }
 
 #[pyfunction]
@@ -70005,35 +69836,19 @@ fn try_zerocopy_f64_average_axis(
         }
         let out_shape: Vec<usize> = shape[..ax].to_vec();
         let avg: Vec<f64> = pairs.iter().map(|(n, d)| n / d).collect();
-        let avg_flat = numpy_array_from_slice(py, numpy, &avg, "float64")?;
-        let avg_arr = avg_flat.call_method1(
-            intern!(py, "reshape"),
-            (PyTuple::new(py, out_shape.iter().copied())?,),
-        )?;
-        let avg_output = if out_shape.is_empty() {
-            avg_arr.get_item(())?
-        } else {
-            avg_arr
-        };
+        let avg_arr = numpy_array_from_slice_shaped(py, numpy, &avg, "float64", &out_shape)?;
+        let avg_output = finish_preshaped_output(avg_arr, &out_shape)?;
         if returned {
             let sow: Vec<f64> = pairs.iter().map(|(_, d)| *d).collect();
-            let sow_flat = numpy_array_from_slice(py, numpy, &sow, "float64")?;
-            let sow_arr = sow_flat.call_method1(
-                intern!(py, "reshape"),
-                (PyTuple::new(py, out_shape.iter().copied())?,),
-            )?;
-            let sow_output = if out_shape.is_empty() {
-                sow_arr.get_item(())?
-            } else {
-                sow_arr
-            };
+            let sow_arr = numpy_array_from_slice_shaped(py, numpy, &sow, "float64", &out_shape)?;
+            let sow_output = finish_preshaped_output(sow_arr, &out_shape)?;
             return Ok(Some(
-                PyTuple::new(py, [avg_output, sow_output])?
+                PyTuple::new(py, [avg_output.bind(py), sow_output.bind(py)])?
                     .into_any()
                     .unbind(),
             ));
         }
-        return Ok(Some(avg_output.unbind()));
+        return Ok(Some(avg_output));
     }
 
     let (weights_vec, denominator) = match weights {
@@ -70080,10 +69895,15 @@ fn try_zerocopy_f64_average_axis(
     let Some(asl) = ab.as_slice(py) else {
         return Ok(None);
     };
+    let mut out_shape: Vec<usize> = shape[..ax].to_vec();
+    out_shape.extend_from_slice(&shape[ax + 1..]);
     let total_out = outer * inner;
-    let kwargs = PyDict::new(py);
-    kwargs.set_item(intern!(py, "dtype"), "float64")?;
-    let flat = numpy.call_method(intern!(py, "empty"), (total_out,), Some(&kwargs))?;
+    let flat = if out_shape.is_empty() {
+        numpy.call_method1(intern!(py, "empty"), (total_out, intern!(py, "float64")))?
+    } else {
+        let shape_tuple = PyTuple::new(py, out_shape.iter().copied())?;
+        numpy.call_method1(intern!(py, "empty"), (&shape_tuple, intern!(py, "float64")))?
+    };
     if total_out > 0 {
         let Ok(ob) = PyBuffer::<f64>::get(&flat) else {
             return Ok(None);
@@ -70174,14 +69994,10 @@ fn try_zerocopy_f64_average_axis(
         }
     }
 
-    let mut out_shape: Vec<usize> = shape[..ax].to_vec();
-    out_shape.extend_from_slice(&shape[ax + 1..]);
-    let shape_tuple = PyTuple::new(py, out_shape.iter().copied())?;
-    let avg_arr = flat.call_method1(intern!(py, "reshape"), (&shape_tuple,))?;
     let avg_output = if out_shape.is_empty() {
-        avg_arr.get_item(())?
+        flat.get_item(0)?
     } else {
-        avg_arr
+        flat
     };
     if returned {
         let sow = if out_shape.is_empty() {
@@ -70189,6 +70005,7 @@ fn try_zerocopy_f64_average_axis(
                 .getattr(intern!(py, "float64"))?
                 .call1((denominator,))?
         } else {
+            let shape_tuple = PyTuple::new(py, out_shape.iter().copied())?;
             let sum_kwargs = PyDict::new(py);
             sum_kwargs.set_item(intern!(py, "dtype"), "float64")?;
             numpy.call_method(
@@ -70198,7 +70015,9 @@ fn try_zerocopy_f64_average_axis(
             )?
         };
         return Ok(Some(
-            PyTuple::new(py, [avg_output, sow])?.into_any().unbind(),
+            PyTuple::new(py, [&avg_output, &sow])?
+                .into_any()
+                .unbind(),
         ));
     }
     Ok(Some(avg_output.unbind()))
@@ -88887,19 +88706,12 @@ fn try_zerocopy_f64_sum_lastaxis(
     } else {
         data.chunks_exact(axis_len).map(lane_sum).collect()
     };
-    let flat = numpy_array_from_slice(py, numpy, &out, "float64")?;
     let mut out_shape: Vec<usize> = shape[..ax].to_vec();
     if keepdims {
         out_shape.push(1);
     }
-    let reshaped = flat.call_method1(
-        intern!(py, "reshape"),
-        (PyTuple::new(py, out_shape.iter().copied())?,),
-    )?;
-    if out_shape.is_empty() {
-        return Ok(Some(reshaped.get_item(())?.unbind()));
-    }
-    Ok(Some(reshaped.unbind()))
+    let flat = numpy_array_from_slice_shaped(py, numpy, &out, "float64", &out_shape)?;
+    finish_preshaped_output(flat, &out_shape).map(Some)
 }
 
 // Large flat float32/float64 sum using NumPy's exact arithmetic tree across the
@@ -89505,9 +89317,12 @@ fn try_zerocopy_f64_prod(
     };
 
     let out_elems = outer * inner;
-    let kwargs = PyDict::new(py);
-    kwargs.set_item(intern!(py, "dtype"), "float64")?;
-    let flat = numpy.call_method(intern!(py, "empty"), (out_elems,), Some(&kwargs))?;
+    let flat = if out_shape.is_empty() {
+        numpy.call_method1(intern!(py, "empty"), (out_elems, intern!(py, "float64")))?
+    } else {
+        let shape_tuple = PyTuple::new(py, out_shape.iter().copied())?;
+        numpy.call_method1(intern!(py, "empty"), (&shape_tuple, intern!(py, "float64")))?
+    };
     if out_elems > 0 {
         let Ok(out_buffer) = PyBuffer::<f64>::get(&flat) else {
             return Ok(None);
@@ -89578,15 +89393,9 @@ fn try_zerocopy_f64_prod(
         }
     }
     if out_shape.is_empty() {
-        // Scalar result: reshape to 0-d and unwrap to a numpy scalar.
-        let zerod = flat.call_method1(intern!(py, "reshape"), (PyTuple::empty(py),))?;
-        return Ok(Some(zerod.get_item(())?.unbind()));
+        return Ok(Some(flat.get_item(0)?.unbind()));
     }
-    let output_shape = PyTuple::new(py, out_shape.iter().copied())?;
-    let output = flat
-        .call_method1(intern!(py, "reshape"), (&output_shape,))?
-        .unbind();
-    Ok(Some(output))
+    Ok(Some(flat.unbind()))
 }
 
 #[derive(Clone, Copy)]
@@ -89713,16 +89522,8 @@ fn try_zerocopy_f64_minmax_parallel(
     let Some(out_vec) = out_vec else {
         return Ok(None);
     };
-    let flat = numpy_array_from_slice(py, numpy, &out_vec, "float64")?;
-    if out_shape.is_empty() {
-        let zerod = flat.call_method1(intern!(py, "reshape"), (PyTuple::empty(py),))?;
-        return Ok(Some(zerod.get_item(())?.unbind()));
-    }
-    let output_shape = PyTuple::new(py, out_shape.iter().copied())?;
-    Ok(Some(
-        flat.call_method1(intern!(py, "reshape"), (&output_shape,))?
-            .unbind(),
-    ))
+    let flat = numpy_array_from_slice_shaped(py, numpy, &out_vec, "float64", out_shape)?;
+    finish_preshaped_output(flat, out_shape).map(Some)
 }
 
 fn try_zerocopy_f64_minmax(
@@ -89836,9 +89637,8 @@ fn try_zerocopy_f64_minmax(
     }
 
     let out_elems = outer * inner;
-    let kwargs = PyDict::new(py);
-    kwargs.set_item(intern!(py, "dtype"), "float64")?;
-    let flat = numpy.call_method(intern!(py, "empty"), (out_elems,), Some(&kwargs))?;
+    let shape_tuple = PyTuple::new(py, out_shape.iter().copied())?;
+    let flat = numpy.call_method1(intern!(py, "empty"), (&shape_tuple, intern!(py, "float64")))?;
     if out_elems > 0 {
         let Ok(out_buffer) = PyBuffer::<f64>::get(&flat) else {
             return Ok(F64MinMaxFastPath::NotApplicable);
@@ -89888,14 +89688,7 @@ fn try_zerocopy_f64_minmax(
             }
         }
     }
-    if out_shape.is_empty() {
-        let zerod = flat.call_method1(intern!(py, "reshape"), (PyTuple::empty(py),))?;
-        return Ok(F64MinMaxFastPath::Output(zerod.get_item(())?.unbind()));
-    }
-    let output_shape = PyTuple::new(py, out_shape.iter().copied())?;
-    let output = flat
-        .call_method1(intern!(py, "reshape"), (&output_shape,))?
-        .unbind();
+    let output = finish_preshaped_output(flat, &out_shape)?;
     Ok(F64MinMaxFastPath::Output(output))
 }
 
@@ -89974,10 +89767,9 @@ where
     }
 
     let out_elems = outer * inner;
+    let shape_tuple = PyTuple::new(py, out_shape.iter().copied())?;
     let dt = a.getattr(intern!(py, "dtype"))?;
-    let kwargs = PyDict::new(py);
-    kwargs.set_item(intern!(py, "dtype"), &dt)?;
-    let flat = numpy.call_method(intern!(py, "empty"), (out_elems,), Some(&kwargs))?;
+    let flat = numpy.call_method1(intern!(py, "empty"), (&shape_tuple, &dt))?;
     if out_elems > 0 {
         let Ok(out_buffer) = PyBuffer::<T>::get(&flat) else {
             return Ok(None);
@@ -90093,15 +89885,7 @@ where
             }
         }
     }
-    if out_shape.is_empty() {
-        let zerod = flat.call_method1(intern!(py, "reshape"), (PyTuple::empty(py),))?;
-        return Ok(Some(zerod.get_item(())?.unbind()));
-    }
-    let output_shape = PyTuple::new(py, out_shape.iter().copied())?;
-    let output = flat
-        .call_method1(intern!(py, "reshape"), (&output_shape,))?
-        .unbind();
-    Ok(Some(output))
+    finish_preshaped_output(flat, &out_shape).map(Some)
 }
 
 /// True when EVERY byte of `raw` is nonzero, read eight bytes at a time.
